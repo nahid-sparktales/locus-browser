@@ -24,6 +24,13 @@ resolved by the main-process broker. Unknown decisions appear only in trusted
 browser chrome; allow/block choices are scoped to the active browser profile,
 and private-window choices are never persisted.
 
+Credential observation runs in a named isolated world with a DevTools binding
+scoped only to that world. A candidate password is held only in main-process
+memory until the user accepts the trusted-chrome prompt. `safeStorage`
+encryption, reveal, autofill, and deletion are profile scoped and require an
+explicit browser-chrome action; the password is never serialized into renderer
+state or any Work/agent protocol.
+
 ## Tab ownership
 
 Browser tabs are independent of conversations. `TabAccessRegistry` grants one

@@ -19,6 +19,9 @@ of truth.
   partitions and profile-scoped history, bookmarks, downloads, settings, and
   permission decisions. Search provider, appearance, downloads folder, and
   sleeping policy are user-selectable.
+- First-run onboarding that keeps remote pages hidden until the user explicitly
+  chooses an unsponsored search provider, Locus appearance, and tab-sleep
+  policy. No provider is preselected and no Locus data is imported.
 - Persisted tab groups with collapse/reorder membership, media pause/resume and
   mute controls, and real background-tab sleeping. Sleeping destroys the tab
   renderer and restores it on selection while protecting active audio,
@@ -33,7 +36,11 @@ of truth.
 - Explicit per-session tab grants, agent-created tabs, visible indicators,
   one-click revoke, protected URLs/fields, screenshot consent/masking,
   background CDP input, console/network capture, and quarantined downloads.
-- OS-encrypted credential vault boundary requiring a user gesture.
+- Profile-scoped, OS-encrypted credential save/update, explicit account-driven
+  autofill, and deletion. Password values move only between the sandboxed
+  page's private isolated world and the main process; trusted renderers, Work
+  Mode, browser state, and agent APIs receive metadata only. Private windows
+  never capture or save credentials.
 - Signed `.locusx` verifier, API/permission registry, permission-expansion
   checks, inventory validation, remote-code rules, and dual signatures.
 - X25519 device keys, sealed account-key delivery, XChaCha20-Poly1305 records,
@@ -44,12 +51,9 @@ of truth.
 
 ## Required before canary
 
-- Add the first-run onboarding ceremony, including an explicit unsponsored
-  search-provider choice, accessibility preferences, and import opt-in.
-- Connect the credential vault to user-driven save/autofill UI and add passkey
-  account ceremony. The current sync service starts at authenticated device
-  tokens; the production passkey registration/authentication edge is not yet
-  implemented.
+- Add the production passkey account ceremony. The current sync service starts
+  at authenticated device tokens; its registration/authentication edge is not
+  yet implemented.
 - Connect encrypted sync queues to desktop collections and add 90-day
   tombstone cleanup, rotation UI, S3-backed large opaque envelopes, replay
   protection, and full multi-device simulations.

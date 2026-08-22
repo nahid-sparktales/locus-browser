@@ -71,6 +71,23 @@ export interface BrowserSettingsState {
   searchEngine: SearchEngine;
   sleepAfterMinutes: 0 | 15 | 30 | 60;
   downloadDirectory: string;
+  onboardingComplete: boolean;
+}
+
+export interface CredentialSuggestionState {
+  id: string;
+  username: string;
+}
+
+export interface SavedCredentialState extends CredentialSuggestionState {
+  origin: string;
+  updatedAt: number;
+}
+
+export interface PendingCredentialPrompt {
+  origin: string;
+  username: string;
+  action: "save" | "update";
 }
 
 export interface BookmarkState {
@@ -149,6 +166,11 @@ export interface BrowserAppState {
   downloads: DownloadState[];
   sitePermissions: SitePermissionState[];
   pendingSitePermission?: PendingSitePermission;
+  pendingCredential?: PendingCredentialPrompt;
+  credentialSuggestions: CredentialSuggestionState[];
+  savedCredentials: SavedCredentialState[];
+  passwordManagerAvailable: boolean;
+  onboardingRequired: boolean;
   settings: BrowserSettingsState;
   activePageBookmarked: boolean;
   find: FindState;

@@ -2,6 +2,10 @@ import type { LocusBrowserAPI } from "../preload/index.js";
 import type { BrowserCommand } from "../shared/ipc.js";
 import type { BrowserAppState } from "../shared/types.js";
 
+const previewParams = new URLSearchParams(window.location.search);
+const previewOnboarding = previewParams.has("onboarding");
+const previewCredential = previewParams.has("credential");
+
 const previewState: BrowserAppState = {
   windowId: "preview",
   profileId: "default",
@@ -58,7 +62,12 @@ const previewState: BrowserAppState = {
   ],
   downloads: [],
   sitePermissions: [],
-  settings: { appearance: "system", searchEngine: "duckduckgo", sleepAfterMinutes: 30, downloadDirectory: "/Users/nahid/Downloads" },
+  ...(previewCredential ? { pendingCredential: { origin: "https://github.com", username: "nahid@example.com", action: "save" as const } } : {}),
+  credentialSuggestions: [{ id: "demo-login", username: "nahid@example.com" }],
+  savedCredentials: [{ id: "demo-login", origin: "https://github.com", username: "nahid@example.com", updatedAt: 1_787_408_000 }],
+  passwordManagerAvailable: true,
+  onboardingRequired: previewOnboarding,
+  settings: { appearance: "system", searchEngine: "duckduckgo", sleepAfterMinutes: 30, downloadDirectory: "/Users/nahid/Downloads", onboardingComplete: !previewOnboarding },
   activePageBookmarked: true,
   find: { open: false, query: "", matches: 0, activeMatchOrdinal: 0 },
   zoomFactor: 1,
@@ -191,6 +200,25 @@ function applyPreviewCommand(command: BrowserCommand): void {
       break;
     case "delete-profile":
       previewState.profiles = previewState.profiles.filter((profile) => profile.id !== command.profileId);
+      break;
+    case "complete-onboarding":
+      previewState.settings = {
+        ...previewState.settings,
+        searchEngine: command.searchEngine,
+        appearance: command.appearance,
+        sleepAfterMinutes: command.sleepAfterMinutes,
+        onboardingComplete: true,
+      };
+      previewState.searchEngine = command.searchEngine;
+      previewState.onboardingRequired = false;
+      break;
+    case "dismiss-pending-credential":
+    case "save-pending-credential":
+      delete previewState.pendingCredential;
+      break;
+    case "delete-credential":
+      previewState.savedCredentials = previewState.savedCredentials.filter((credential) => credential.id !== command.credentialId);
+      previewState.credentialSuggestions = previewState.credentialSuggestions.filter((credential) => credential.id !== command.credentialId);
       break;
     default:
       break;

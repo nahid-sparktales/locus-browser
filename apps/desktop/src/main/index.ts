@@ -2,6 +2,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BrowserWindow, Menu, app, ipcMain, type IpcMainInvokeEvent } from "electron";
 import { BrowserController, platformRootFromApp } from "./BrowserController.js";
+import { requiresShellSender } from "./BrowserCommandPolicy.js";
 import { BrowserCommandSchema, ipcChannels } from "../shared/ipc.js";
 
 app.name = "Locus Browser";
@@ -125,6 +126,11 @@ function controllerForSender(event: IpcMainInvokeEvent): BrowserController {
 function installIpc(): void {
   ipcMain.handle(ipcChannels.getState, (event) => controllerForSender(event).state());
   ipcMain.handle(ipcChannels.command, async (event, raw) => {
-    return await controllerForSender(event).command(BrowserCommandSchema.parse(raw));
+    const controller = controllerForSender(event);
+    const command = BrowserCommandSchema.parse(raw);
+    if (requiresShellSender(command) && !controller.ownsShellSender(event.sender.id)) {
+      throw new Error("This command requires trusted browser chrome");
+    }
+    return await controller.command(command);
   });
 }

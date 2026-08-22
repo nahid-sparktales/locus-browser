@@ -1,6 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { BrowserDatabase } from "./BrowserDatabase.js";
 
@@ -118,6 +119,33 @@ describe("BrowserDatabase", () => {
 
     expect(database.loadTabGroups("group-window")).toMatchObject([{ id: "group-1", name: "Research", collapsed: 1 }]);
     expect(database.loadTabs("group-window")[0]?.groupId).toBe("group-1");
+    database.close();
+  });
+
+  it("migrates legacy unscoped credentials into the default profile", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "locus-credentials-migration-")), "browser.sqlite");
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      CREATE TABLE browser_credentials (
+        id TEXT PRIMARY KEY,
+        origin TEXT NOT NULL,
+        username TEXT NOT NULL,
+        encrypted_password BLOB NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX browser_credentials_origin ON browser_credentials(origin);
+      INSERT INTO browser_credentials(id, origin, username, encrypted_password, updated_at)
+      VALUES ('legacy-login', 'https://example.com', 'person', X'0102', 123);
+    `);
+    legacy.close();
+
+    const database = new BrowserDatabase(path);
+    expect(database.listCredentials("default")).toEqual([{
+      id: "legacy-login",
+      origin: "https://example.com",
+      username: "person",
+      updatedAt: 123,
+    }]);
     database.close();
   });
 });

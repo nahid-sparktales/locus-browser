@@ -34,6 +34,9 @@ import type {
 } from "../shared/types.js";
 import { AgentRuntime, type AgentEvent } from "./AgentRuntime.js";
 import { BrowserDatabase, type StoredDownload, type StoredTab, type StoredTabGroup } from "./BrowserDatabase.js";
+import { CredentialVault } from "./CredentialVault.js";
+import { credentialAutofillInvocation, credentialObserverSource, parseCredentialCandidate, type PageCredentialCandidate } from "./CredentialPageBridge.js";
+import { electronCredentialCipher } from "./ElectronCredentialCipher.js";
 import { TabAccessRegistry } from "./TabAccessRegistry.js";
 import { canSleepTab, shouldSleepTab } from "./TabSleepingPolicy.js";
 
@@ -47,6 +50,7 @@ const WORK_MAX = 720;
 const AGENT_DOWNLOAD_CAP = 25 * 1024 * 1024;
 const BRIDGE_WORLD = 99_941;
 const SITE_PERMISSION_HEIGHT = 46;
+const CREDENTIAL_PROMPT_HEIGHT = 46;
 const SLEEP_CHECK_INTERVAL = 60_000;
 const GROUP_COLORS = ["lime", "blue", "coral", "violet", "gold"];
 const ALLOWED_SITE_PERMISSIONS = new Set(["camera", "microphone", "media", "geolocation", "notifications", "clipboard-read"]);
@@ -59,6 +63,7 @@ interface TabRecord {
   sessionCreatedBy: string | undefined;
   agentDownloadArmedUntil: number;
   lastActiveAt: number;
+  credentialBindingName: string;
 }
 
 interface BrowserPermissionWaiter {
@@ -71,6 +76,11 @@ interface SitePermissionWaiter {
   contentsId: number;
   origin: string;
   permission: string;
+}
+
+interface PendingCredentialRecord extends PageCredentialCandidate {
+  tabId: string;
+  action: "save" | "update";
 }
 
 export interface BrowserControllerOptions {
@@ -92,6 +102,7 @@ export class BrowserController {
   readonly #onOpenProfile: ((profileId: string) => void) | undefined;
   readonly #canDeleteProfile: ((profileId: string) => boolean) | undefined;
   readonly #database: BrowserDatabase;
+  readonly #credentials: CredentialVault;
   readonly #grants = new TabAccessRegistry();
   readonly #tabs = new Map<string, TabRecord>();
   readonly #groups = new Map<string, TabGroupState>();
@@ -127,6 +138,7 @@ export class BrowserController {
   ];
   #pendingPermission: PendingPermission | undefined;
   #pendingSitePermission: PendingSitePermission | undefined;
+  #pendingCredential: PendingCredentialRecord | undefined;
   #find = { open: false, query: "", matches: 0, activeMatchOrdinal: 0 };
   #saveTimer: NodeJS.Timeout | undefined;
   #sleepTimer: NodeJS.Timeout | undefined;
@@ -142,6 +154,7 @@ export class BrowserController {
     const profile = this.#database.profile(requestedProfileId) ?? this.#database.profile("default")!;
     this.#profileId = profile.id;
     this.#partitionName = profile.partitionName;
+    this.#credentials = new CredentialVault(this.#database, electronCredentialCipher, this.#profileId);
     this.#windowId = options.windowId ?? (this.#privateWindow ? `private-${randomUUID()}` : this.#profileId === "default" ? "primary" : `primary-${this.#profileId}`);
     this.#settings = this.#loadSettings();
     this.#runtime = new AgentRuntime(platformRoot, join(app.getPath("userData"), "agent"));
@@ -184,6 +197,7 @@ export class BrowserController {
 
   state(): BrowserAppState {
     const activeUrl = this.#active()?.state.url ?? "";
+    const credentialSuggestions = this.#credentialSuggestions(activeUrl);
     return {
       windowId: this.#windowId,
       profileId: this.#profileId,
@@ -207,6 +221,17 @@ export class BrowserController {
       })),
       sitePermissions: this.#privateWindow ? [] : this.#database.listSitePermissions(this.#profileId),
       ...(this.#pendingSitePermission ? { pendingSitePermission: this.#pendingSitePermission } : {}),
+      ...(this.#pendingCredential ? {
+        pendingCredential: {
+          origin: this.#pendingCredential.origin,
+          username: this.#pendingCredential.username,
+          action: this.#pendingCredential.action,
+        },
+      } : {}),
+      credentialSuggestions,
+      savedCredentials: this.#credentials.list(),
+      passwordManagerAvailable: this.#credentials.available(),
+      onboardingRequired: !this.#privateWindow && !this.#settings.onboardingComplete,
       settings: this.#settings,
       activePageBookmarked: Boolean(!this.#privateWindow && activeUrl && this.#database.bookmarkForUrl(this.#profileId, activeUrl)),
       find: this.#find,
@@ -238,6 +263,10 @@ export class BrowserController {
 
   ownsSender(senderId: number): boolean {
     return this.window.webContents.id === senderId || this.#workView?.webContents.id === senderId;
+  }
+
+  ownsShellSender(senderId: number): boolean {
+    return this.window.webContents.id === senderId;
   }
 
   async command(command: BrowserCommand): Promise<BrowserAppState> {
@@ -413,6 +442,41 @@ export class BrowserController {
         }
         break;
       }
+      case "complete-onboarding": {
+        const previousHome = searchHome(this.#settings.searchEngine);
+        this.#settings = {
+          ...this.#settings,
+          searchEngine: command.searchEngine,
+          appearance: command.appearance,
+          sleepAfterMinutes: command.sleepAfterMinutes,
+          onboardingComplete: true,
+        };
+        this.#database.setSetting(this.#profileId, "searchEngine", command.searchEngine);
+        this.#database.setSetting(this.#profileId, "appearance", command.appearance);
+        this.#database.setSetting(this.#profileId, "sleepAfterMinutes", command.sleepAfterMinutes);
+        this.#database.setSetting(this.#profileId, "onboardingComplete", true);
+        this.window.setBackgroundColor(this.#surfaceBackground());
+        this.#workView?.setBackgroundColor(this.#surfaceBackground());
+        const tab = this.#active();
+        if (tab && (tab.state.url === "about:blank" || tab.state.url === previousHome)) {
+          await this.#navigateActive(searchHome(command.searchEngine));
+        }
+        this.#layout(false);
+        break;
+      }
+      case "autofill-credential":
+        await this.#autofillCredential(command.credentialId);
+        break;
+      case "save-pending-credential":
+        this.#savePendingCredential();
+        break;
+      case "dismiss-pending-credential":
+        this.#pendingCredential = undefined;
+        this.#layout(true);
+        break;
+      case "delete-credential":
+        this.#credentials.delete(command.credentialId, true);
+        break;
       case "toggle-work":
         if (this.#privateWindow) break;
         this.#workOpen = !this.#workOpen;
@@ -471,6 +535,7 @@ export class BrowserController {
       waiter.callback(false);
     }
     this.#sitePermissionWaiters.clear();
+    this.#pendingCredential = undefined;
     for (const tab of this.#tabs.values()) {
       if (tab.view && !tab.view.webContents.isDestroyed()) tab.view.webContents.close();
     }
@@ -499,7 +564,7 @@ export class BrowserController {
     }
     const tabs = this.#database.loadTabs(this.#windowId);
     if (tabs.length === 0) {
-      this.#createTab(searchHome(this.#settings.searchEngine), { active: true });
+      this.#createTab(this.#settings.onboardingComplete ? searchHome(this.#settings.searchEngine) : "about:blank", { active: true });
       return;
     }
     for (const stored of tabs) {
@@ -527,6 +592,7 @@ export class BrowserController {
       sessionCreatedBy: options.sessionId,
       agentDownloadArmedUntil: 0,
       lastActiveAt: Date.now(),
+      credentialBindingName: `__locusCredential_${id.replace(/[^a-zA-Z0-9_]/g, "_")}`,
       state: {
         id,
         title: options.title || "New Tab",
@@ -643,11 +709,33 @@ export class BrowserController {
       const contents = tab.view?.webContents;
       if (!contents || contents.isDestroyed()) return;
       if (!contents.debugger.isAttached()) contents.debugger.attach("1.3");
-      await contents.debugger.sendCommand("Network.enable");
+      await Promise.all([
+        contents.debugger.sendCommand("Network.enable"),
+        contents.debugger.sendCommand("Runtime.enable"),
+        contents.debugger.sendCommand("Page.enable"),
+      ]);
+      if (!tab.state.private) {
+        const source = credentialObserverSource(tab.credentialBindingName);
+        const worldName = `locus-credentials-${tab.state.id}`;
+        await contents.debugger.sendCommand("Runtime.addBinding", {
+          name: tab.credentialBindingName,
+          executionContextName: worldName,
+        });
+        await contents.debugger.sendCommand("Page.addScriptToEvaluateOnNewDocument", {
+          source,
+          worldName,
+        });
+        await this.#evaluateCredentialScript(tab, source).catch(() => undefined);
+      }
       contents.debugger.on("message", (_event, method, params) => {
         if (method === "Network.responseReceived") {
           const response = (params as { response?: { status?: number; url?: string; mimeType?: string } }).response;
           if (response) pushBounded(tab.network, `${response.status ?? 0} ${response.url ?? ""} ${response.mimeType ?? ""}`);
+        } else if (method === "Runtime.bindingCalled" && !tab.state.private) {
+          const binding = params as { name?: string; payload?: string };
+          if (binding.name === tab.credentialBindingName && typeof binding.payload === "string") {
+            this.#acceptCredentialPayload(tab, binding.payload);
+          }
         }
       });
     } catch {
@@ -666,6 +754,7 @@ export class BrowserController {
     }
     this.#tabs.delete(id);
     this.#grants.revoke(this.#sessionId, id);
+    if (this.#pendingCredential?.tabId === id) this.#pendingCredential = undefined;
     if (this.#activeTabId === id) {
       this.#activeTabId = undefined;
       const next = ids[index + 1] ?? ids[index - 1];
@@ -783,6 +872,13 @@ export class BrowserController {
 
   #layout(animate: boolean): void {
     if (this.window.isDestroyed()) return;
+    if (!this.#privateWindow && !this.#settings.onboardingComplete) {
+      for (const tab of this.#tabs.values()) tab.view?.setVisible(false);
+      this.#workView?.setVisible(false);
+      this.#workOverlay = false;
+      this.#broadcast();
+      return;
+    }
     const [width = 1, height = 1] = this.window.getContentSize();
     const left = this.#sidebarOpen ? SIDEBAR_WIDTH : 0;
     const availableWidth = Math.max(width - left, 1);
@@ -843,7 +939,10 @@ export class BrowserController {
   }
 
   #chromeHeight(): number {
-    return CHROME_HEIGHT + (this.#find.open ? 38 : 0) + (this.#pendingSitePermission ? SITE_PERMISSION_HEIGHT : 0);
+    return CHROME_HEIGHT
+      + (this.#find.open ? 38 : 0)
+      + (this.#pendingSitePermission ? SITE_PERMISSION_HEIGHT : 0)
+      + (this.#pendingCredential ? CREDENTIAL_PROMPT_HEIGHT : 0);
   }
 
   #broadcast(): void {
@@ -957,11 +1056,13 @@ export class BrowserController {
     const searchEngine = this.#database.setting(this.#profileId, "searchEngine");
     const sleepAfterMinutes = this.#database.setting(this.#profileId, "sleepAfterMinutes");
     const downloadDirectory = this.#database.setting(this.#profileId, "downloadDirectory");
+    const onboardingComplete = this.#database.setting(this.#profileId, "onboardingComplete");
     return {
       appearance: isAppearance(appearance) ? appearance : "system",
       searchEngine: isSearchEngine(searchEngine) ? searchEngine : "duckduckgo",
       sleepAfterMinutes: isSleepInterval(sleepAfterMinutes) ? sleepAfterMinutes : 30,
       downloadDirectory: typeof downloadDirectory === "string" && downloadDirectory ? downloadDirectory : app.getPath("downloads"),
+      onboardingComplete: onboardingComplete === true,
     };
   }
 
@@ -969,6 +1070,89 @@ export class BrowserController {
     const dark = this.#privateWindow || this.#settings.appearance === "dark"
       || (this.#settings.appearance === "system" && nativeTheme.shouldUseDarkColors);
     return dark ? "#1b1b17" : "#f8f6f0";
+  }
+
+  #credentialSuggestions(rawUrl: string) {
+    if (!this.#credentials.available()) return [];
+    try { return this.#credentials.suggestions(rawUrl); } catch { return []; }
+  }
+
+  #acceptCredentialPayload(tab: TabRecord, payload: string): void {
+    if (this.#privateWindow || !this.#credentials.available() || tab.view?.webContents.isDestroyed()) return;
+    let value: unknown;
+    try { value = JSON.parse(payload); } catch { return; }
+    const candidate = parseCredentialCandidate(value);
+    if (!candidate || !isSecurePermissionOrigin(candidate.origin)) return;
+    try {
+      if (new URL(tab.view!.webContents.getURL()).origin !== candidate.origin) return;
+    } catch {
+      return;
+    }
+    if (this.#pendingCredential
+      && this.#pendingCredential.origin === candidate.origin
+      && this.#pendingCredential.username === candidate.username
+      && this.#pendingCredential.password === candidate.password) return;
+    const action = this.#credentials.suggestions(candidate.origin)
+      .some((credential) => credential.username === candidate.username.trim()) ? "update" : "save";
+    this.#pendingCredential = { ...candidate, tabId: tab.state.id, action };
+    this.#layout(true);
+    this.#broadcast();
+  }
+
+  #savePendingCredential(): void {
+    const pending = this.#pendingCredential;
+    if (!pending || !this.#credentials.available()) return;
+    this.#credentials.save(pending.origin, pending.username, pending.password, true);
+    this.#pendingCredential = undefined;
+    this.#layout(true);
+  }
+
+  async #autofillCredential(credentialId: string): Promise<void> {
+    const tab = this.#active();
+    if (!tab || !this.#credentials.available()) return;
+    await this.#wakeTab(tab);
+    let password: string;
+    let suggestion: { id: string; username: string } | undefined;
+    try {
+      suggestion = this.#credentials.suggestions(tab.state.url).find((credential) => credential.id === credentialId);
+      if (!suggestion) return;
+      password = this.#credentials.reveal(tab.state.url, credentialId, true);
+    } catch {
+      return;
+    }
+    const result = await this.#evaluateCredentialScript(
+      tab,
+      credentialAutofillInvocation(suggestion.username, password),
+      true,
+    ).catch(() => ({ filled: false })) as { filled?: boolean };
+    if (!result.filled) {
+      await dialog.showMessageBox(this.window, {
+        type: "info",
+        message: "No password field is available on this page.",
+        detail: "Open the site’s sign-in form, then choose the saved login again.",
+      });
+    }
+  }
+
+  async #evaluateCredentialScript(tab: TabRecord, expression: string, userGesture = false): Promise<unknown> {
+    const contents = tab.view?.webContents;
+    if (!contents || contents.isDestroyed() || !contents.debugger.isAttached()) throw new Error("Credential world is unavailable");
+    const frameTree = await contents.debugger.sendCommand("Page.getFrameTree") as { frameTree?: { frame?: { id?: string } } };
+    const frameId = frameTree.frameTree?.frame?.id;
+    if (!frameId) throw new Error("Credential frame is unavailable");
+    const world = await contents.debugger.sendCommand("Page.createIsolatedWorld", {
+      frameId,
+      worldName: `locus-credentials-${tab.state.id}`,
+    }) as { executionContextId?: number };
+    if (!world.executionContextId) throw new Error("Credential execution context is unavailable");
+    const evaluation = await contents.debugger.sendCommand("Runtime.evaluate", {
+      expression,
+      contextId: world.executionContextId,
+      returnByValue: true,
+      userGesture,
+    }) as { result?: { value?: unknown }; exceptionDetails?: unknown };
+    if (evaluation.exceptionDetails) throw new Error("Credential page script failed");
+    return evaluation.result?.value;
   }
 
   #createTabGroup(tabId?: string): void {

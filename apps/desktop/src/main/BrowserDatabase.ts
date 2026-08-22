@@ -35,6 +35,14 @@ export interface StoredCredential {
   origin: string;
   username: string;
   encryptedPassword: Uint8Array;
+  updatedAt?: number;
+}
+
+export interface StoredCredentialMetadata {
+  id: string;
+  origin: string;
+  username: string;
+  updatedAt: number;
 }
 
 export interface StoredBookmark {
@@ -136,7 +144,7 @@ export class BrowserDatabase {
     if (id === "default") throw new Error("The default profile cannot be deleted");
     this.#database.exec("BEGIN IMMEDIATE");
     try {
-      for (const table of ["history_visits", "bookmarks", "downloads", "site_permissions", "browser_settings", "extension_installs"]) {
+      for (const table of ["history_visits", "bookmarks", "downloads", "site_permissions", "browser_settings", "browser_credentials", "extension_installs"]) {
         this.#database.prepare(`DELETE FROM ${table} WHERE profile_id = ?`).run(id);
       }
       this.#database.prepare("DELETE FROM browser_windows WHERE profile_id = ?").run(id);
@@ -380,21 +388,32 @@ export class BrowserDatabase {
     `).run(profileId, key, JSON.stringify(value));
   }
 
-  saveCredential(credential: StoredCredential): void {
+  saveCredential(profileId: string, credential: StoredCredential): void {
     this.#database.prepare(`
-      INSERT INTO browser_credentials(id, origin, username, encrypted_password, updated_at)
-      VALUES (?, ?, ?, ?, unixepoch())
+      INSERT INTO browser_credentials(id, profile_id, origin, username, encrypted_password, updated_at)
+      VALUES (?, ?, ?, ?, ?, unixepoch())
       ON CONFLICT(id) DO UPDATE SET
-        origin=excluded.origin, username=excluded.username,
+        profile_id=excluded.profile_id, origin=excluded.origin, username=excluded.username,
         encrypted_password=excluded.encrypted_password, updated_at=excluded.updated_at
-    `).run(credential.id, credential.origin, credential.username, credential.encryptedPassword);
+    `).run(credential.id, profileId, credential.origin, credential.username, credential.encryptedPassword);
   }
 
-  credentialsForOrigin(origin: string): StoredCredential[] {
+  credentialsForOrigin(profileId: string, origin: string): StoredCredential[] {
     return this.#database.prepare(`
-      SELECT id, origin, username, encrypted_password AS encryptedPassword
-      FROM browser_credentials WHERE origin = ? ORDER BY updated_at DESC
-    `).all(origin) as unknown as StoredCredential[];
+      SELECT id, origin, username, encrypted_password AS encryptedPassword, updated_at AS updatedAt
+      FROM browser_credentials WHERE profile_id = ? AND origin = ? ORDER BY updated_at DESC
+    `).all(profileId, origin) as unknown as StoredCredential[];
+  }
+
+  listCredentials(profileId: string): StoredCredentialMetadata[] {
+    return this.#database.prepare(`
+      SELECT id, origin, username, updated_at AS updatedAt
+      FROM browser_credentials WHERE profile_id = ? ORDER BY updated_at DESC, origin ASC
+    `).all(profileId) as unknown as StoredCredentialMetadata[];
+  }
+
+  deleteCredential(profileId: string, id: string): void {
+    this.#database.prepare("DELETE FROM browser_credentials WHERE profile_id = ? AND id = ?").run(profileId, id);
   }
 
   #migrate(): void {
@@ -490,6 +509,7 @@ export class BrowserDatabase {
       );
       CREATE TABLE IF NOT EXISTS browser_credentials (
         id TEXT PRIMARY KEY,
+        profile_id TEXT NOT NULL DEFAULT 'default',
         origin TEXT NOT NULL,
         username TEXT NOT NULL,
         encrypted_password BLOB NOT NULL,
@@ -532,11 +552,14 @@ export class BrowserDatabase {
     this.#ensureColumn("history_visits", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
     this.#ensureColumn("bookmarks", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
     this.#ensureColumn("downloads", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
+    this.#ensureColumn("browser_credentials", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
     this.#database.exec(`
       CREATE INDEX IF NOT EXISTS history_visits_profile_time ON history_visits(profile_id, visited_at DESC);
       CREATE INDEX IF NOT EXISTS bookmarks_profile_position ON bookmarks(profile_id, position ASC);
       CREATE INDEX IF NOT EXISTS downloads_profile_time ON downloads(profile_id, started_at DESC);
+      CREATE INDEX IF NOT EXISTS browser_credentials_profile_origin ON browser_credentials(profile_id, origin);
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (2, unixepoch());
+      INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (3, unixepoch());
     `);
   }
 

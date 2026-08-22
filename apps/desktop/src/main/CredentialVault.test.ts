@@ -20,6 +20,24 @@ describe("CredentialVault", () => {
     expect(vault.suggestions("https://example.com/other")).toEqual([{ id, username: "nahid" }]);
     expect(() => vault.reveal("https://example.com", id, false)).toThrow("user gesture");
     expect(vault.reveal("https://example.com", id, true)).toBe("secret");
+    const updatedId = vault.save("https://example.com/login", "nahid", "new-secret", true);
+    expect(updatedId).toBe(id);
+    expect(vault.reveal("https://example.com", id, true)).toBe("new-secret");
+    vault.delete(id, true);
+    expect(vault.suggestions("https://example.com")).toEqual([]);
+    database.close();
+  });
+
+  it("isolates credentials by browser profile", () => {
+    const database = new BrowserDatabase(join(mkdtempSync(join(tmpdir(), "locus-vault-")), "browser.sqlite"));
+    const workProfile = database.createProfile("Work");
+    const personal = new CredentialVault(database, cipher, "default");
+    const work = new CredentialVault(database, cipher, workProfile.id);
+    personal.save("https://example.com", "personal", "one", true);
+    work.save("https://example.com", "work", "two", true);
+
+    expect(personal.suggestions("https://example.com")).toMatchObject([{ username: "personal" }]);
+    expect(work.suggestions("https://example.com")).toMatchObject([{ username: "work" }]);
     database.close();
   });
 

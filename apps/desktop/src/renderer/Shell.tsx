@@ -2,13 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import {
   ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bookmark, Bot, Check, ChevronDown,
   CircleAlert, Clock3, Download, EyeOff, FileDown, Globe2, History,
-  Layers3, LayoutList, LockKeyhole, Minus, Moon, MoreHorizontal, PanelLeft,
+  KeyRound, Layers3, LayoutList, LockKeyhole, Minus, Monitor, Moon, MoreHorizontal, PanelLeft,
   Pause, Play, Plus, Printer, RefreshCw, Search, Settings, ShieldCheck,
-  Sparkles, Square, UserRound, UsersRound, Volume2, VolumeX, X,
+  Sparkles, Square, Sun, UserRound, UsersRound, Volume2, VolumeX, X,
 } from "lucide-react";
 import type { BrowserCommand } from "../shared/ipc.js";
-import type { BrowserAppState, BrowserTabState, SidebarSection } from "../shared/types.js";
+import type { Appearance, BrowserAppState, BrowserTabState, SearchEngine, SidebarSection } from "../shared/types.js";
 import { useBrowserState } from "./useBrowserState.js";
+
+const searchProviders: Array<{ id: SearchEngine; name: string; detail: string; mark: string }> = [
+  { id: "duckduckgo", name: "DuckDuckGo", detail: "Privacy-focused", mark: "D" },
+  { id: "brave", name: "Brave Search", detail: "Independent index", mark: "B" },
+  { id: "google", name: "Google", detail: "Familiar results", mark: "G" },
+  { id: "bing", name: "Bing", detail: "Microsoft search", mark: "B" },
+];
 
 export function Shell() {
   const state = useBrowserState();
@@ -16,6 +23,7 @@ export function Shell() {
   const [addressFocused, setAddressFocused] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [passwordMenuOpen, setPasswordMenuOpen] = useState(false);
   const addressRef = useRef<HTMLInputElement>(null);
   const active = state?.tabs.find((tab) => tab.id === state.activeTabId);
 
@@ -37,17 +45,19 @@ export function Shell() {
   }, []);
 
   useEffect(() => {
-    if (!profileOpen && !menuOpen) return;
+    if (!profileOpen && !menuOpen && !passwordMenuOpen) return;
     const closeOnPointerDown = (event: PointerEvent) => {
       if (!(event.target instanceof Element) || !event.target.closest(".toolbar-popover-wrap")) {
         setProfileOpen(false);
         setMenuOpen(false);
+        setPasswordMenuOpen(false);
       }
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setProfileOpen(false);
         setMenuOpen(false);
+        setPasswordMenuOpen(false);
       }
     };
     document.addEventListener("pointerdown", closeOnPointerDown);
@@ -56,13 +66,17 @@ export function Shell() {
       document.removeEventListener("pointerdown", closeOnPointerDown);
       document.removeEventListener("keydown", closeOnEscape);
     };
-  }, [menuOpen, profileOpen]);
+  }, [menuOpen, passwordMenuOpen, profileOpen]);
 
   if (!state) return <LoadingSurface />;
+  if (state.onboardingRequired) return <OnboardingSurface state={state} />;
 
   const sharedGrant = active?.grants.find((grant) => grant.sessionId === state.work.sessionId);
   const workTone = state.work.pendingPermission ? "attention" : state.work.busy ? "working" : "idle";
-  const chromeHeight = 92 + (state.find.open ? 38 : 0) + (state.pendingSitePermission ? 46 : 0);
+  const chromeHeight = 92
+    + (state.find.open ? 38 : 0)
+    + (state.pendingSitePermission ? 46 : 0)
+    + (state.pendingCredential ? 46 : 0);
   const visibleTabs = state.tabs.filter((tab) => {
     const group = tab.groupId ? state.groups.find((candidate) => candidate.id === tab.groupId) : undefined;
     return !group?.collapsed || tab.active;
@@ -119,6 +133,16 @@ export function Shell() {
             )}
           </form>
 
+          {state.credentialSuggestions.length > 0 && (
+            <div className="toolbar-popover-wrap">
+              <button className={`chrome-button password-button ${passwordMenuOpen ? "selected" : ""}`} title="Saved logins"
+                onClick={() => { setPasswordMenuOpen((open) => !open); setProfileOpen(false); setMenuOpen(false); }}>
+                <KeyRound size={15} />
+              </button>
+              {passwordMenuOpen && <PasswordMenu state={state} close={() => setPasswordMenuOpen(false)} />}
+            </div>
+          )}
+
           {sharedGrant && (
             <button className="access-pill" title="Revoke Locus access" onClick={() => void command({ type: "revoke-active-tab" })}>
               <ShieldCheck size={14} /><span>{sharedGrant.level === "interact" ? "Locus controls" : "Shared"}</span><X size={12} />
@@ -140,7 +164,7 @@ export function Shell() {
           </button>
           <div className="toolbar-popover-wrap">
             <button className={`profile-button ${profileOpen ? "selected" : ""}`} title={state.privateWindow ? `Private ${state.currentProfile.name} profile` : `${state.currentProfile.name} profile`}
-              onClick={() => { setProfileOpen((open) => !open); setMenuOpen(false); }}>
+              onClick={() => { setProfileOpen((open) => !open); setMenuOpen(false); setPasswordMenuOpen(false); }}>
               {state.privateWindow ? <EyeOff size={15} /> : <UserRound size={15} />}<ChevronDown size={11} />
             </button>
             {profileOpen && <ProfileMenu state={state} close={() => setProfileOpen(false)} />}
@@ -153,17 +177,113 @@ export function Shell() {
           </button>
           <div className="toolbar-popover-wrap">
             <button className={`chrome-button ${menuOpen ? "selected" : ""}`} title="Browser menu"
-              onClick={() => { setMenuOpen((open) => !open); setProfileOpen(false); }}><MoreHorizontal size={18} /></button>
+              onClick={() => { setMenuOpen((open) => !open); setProfileOpen(false); setPasswordMenuOpen(false); }}><MoreHorizontal size={18} /></button>
             {menuOpen && <BrowserMenu state={state} close={() => setMenuOpen(false)} />}
           </div>
         </div>
         {state.find.open && <FindBar state={state} />}
         {state.pendingSitePermission && <SitePermissionBar state={state} />}
+        {state.pendingCredential && <CredentialSaveBar state={state} />}
       </header>
 
       {state.sidebarOpen && <BrowserSidebar state={state} top={chromeHeight} />}
       {state.workOpen && state.workOverlay && <div className="dock-scrim" style={{ top: chromeHeight }} aria-hidden="true" />}
       <div className="page-drop-shadow" style={{ left: state.sidebarOpen ? 248 : 0, top: chromeHeight }} aria-hidden="true" />
+    </div>
+  );
+}
+
+function OnboardingSurface({ state }: { state: BrowserAppState }) {
+  const [searchEngine, setSearchEngine] = useState<SearchEngine | null>(null);
+  const [appearance, setAppearance] = useState<Appearance>(state.settings.appearance);
+  const [sleepAfterMinutes, setSleepAfterMinutes] = useState<0 | 15 | 30 | 60>(state.settings.sleepAfterMinutes);
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!searchEngine) return;
+    void command({ type: "complete-onboarding", searchEngine, appearance, sleepAfterMinutes });
+  };
+  return (
+    <main className={`onboarding-shell theme-${appearance}`}>
+      <form className="onboarding-card" onSubmit={submit}>
+        <header className="onboarding-heading">
+          <span className="onboarding-mark"><Sparkles size={20} /></span>
+          <div><p>Welcome to</p><h1>Locus Browser</h1></div>
+        </header>
+        <p className="onboarding-intro">A calm, private browser with Locus ready when you turn on Work Mode. Your browser data stays separate from the Locus app.</p>
+
+        <fieldset className="onboarding-section">
+          <legend>Choose your search engine</legend>
+          <p>No provider paid for placement. You can change this anytime.</p>
+          <div className="provider-grid" role="radiogroup" aria-label="Search engine">
+            {searchProviders.map((provider) => (
+              <button type="button" role="radio" aria-checked={searchEngine === provider.id} className={searchEngine === provider.id ? "selected" : ""}
+                tabIndex={searchEngine ? (searchEngine === provider.id ? 0 : -1) : (provider.id === searchProviders[0]!.id ? 0 : -1)}
+                key={provider.id} onClick={() => setSearchEngine(provider.id)} onKeyDown={navigateRadioGroup}>
+                <span className="provider-mark">{provider.mark}</span><span><strong>{provider.name}</strong><small>{provider.detail}</small></span>
+                {searchEngine === provider.id ? <Check size={15} /> : null}
+              </button>
+            ))}
+          </div>
+        </fieldset>
+
+        <div className="onboarding-preferences">
+          <fieldset className="onboarding-section compact">
+            <legend>Appearance</legend>
+            <div className="appearance-picker" role="radiogroup" aria-label="Appearance">
+              {(["system", "light", "dark"] as const).map((option) => (
+                <button type="button" role="radio" aria-checked={appearance === option} className={appearance === option ? "selected" : ""}
+                  tabIndex={appearance === option ? 0 : -1} key={option} onClick={() => setAppearance(option)} onKeyDown={navigateRadioGroup}>
+                  {option === "system" ? <Monitor size={14} /> : option === "light" ? <Sun size={14} /> : <Moon size={14} />}
+                  <span>{option[0]!.toUpperCase() + option.slice(1)}</span>
+                </button>
+              ))}
+            </div>
+          </fieldset>
+          <label className="onboarding-section compact sleep-choice">
+            <strong>Sleep background tabs</strong>
+            <select value={sleepAfterMinutes} onChange={(event) => setSleepAfterMinutes(Number(event.target.value) as 0 | 15 | 30 | 60)}>
+              <option value={15}>After 15 minutes</option><option value={30}>After 30 minutes</option><option value={60}>After 1 hour</option><option value={0}>Never</option>
+            </select>
+          </label>
+        </div>
+
+        <footer className="onboarding-footer">
+          <span><ShieldCheck size={14} /> Passwords stay encrypted on this Mac.</span>
+          <button className="onboarding-continue" type="submit" disabled={!searchEngine}>Start browsing <ArrowRight size={15} /></button>
+        </footer>
+      </form>
+    </main>
+  );
+}
+
+function PasswordMenu({ state, close }: { state: BrowserAppState; close: () => void }) {
+  const active = state.tabs.find((tab) => tab.id === state.activeTabId);
+  return (
+    <div className="toolbar-popover password-menu" role="menu">
+      <div className="popover-heading">
+        <span className="profile-avatar"><KeyRound size={15} /></span>
+        <span><strong>Saved logins</strong><small>{active ? safeHostname(active.url) : "Current page"}</small></span>
+      </div>
+      {state.credentialSuggestions.map((credential) => (
+        <button role="menuitem" key={credential.id} onClick={() => { close(); void command({ type: "autofill-credential", credentialId: credential.id }); }}>
+          <UserRound size={15} /><span>{credential.username || "No username"}</span><ArrowRight size={12} />
+        </button>
+      ))}
+      <div className="password-menu-foot">Filled only when you choose an account.</div>
+    </div>
+  );
+}
+
+function CredentialSaveBar({ state }: { state: BrowserAppState }) {
+  const pending = state.pendingCredential!;
+  return (
+    <div className="credential-save-bar" role="status" aria-live="polite">
+      <KeyRound size={15} />
+      <span><strong>{pending.action === "update" ? "Update" : "Save"} password for {safeHostname(pending.origin)}?</strong><small>{pending.username || "No username"} · Password hidden</small></span>
+      <button onClick={() => void command({ type: "dismiss-pending-credential" })}>Not now</button>
+      <button className="primary" disabled={!state.passwordManagerAvailable} onClick={() => void command({ type: "save-pending-credential" })}>
+        {pending.action === "update" ? "Update" : "Save"}
+      </button>
     </div>
   );
 }
@@ -426,6 +546,14 @@ function SettingsPanel({ state }: { state: BrowserAppState }) {
             : null}
         </div>
       ))}
+      <div className="settings-subheading">Passwords</div>
+      {!state.passwordManagerAvailable && <p className="settings-empty">OS-backed password encryption is unavailable on this Mac.</p>}
+      {state.savedCredentials.length ? state.savedCredentials.map((credential) => (
+        <div className="permission-setting credential-setting" key={credential.id}>
+          <span><strong>{credential.username || "No username"}</strong><small>{safeHostname(credential.origin)} · Updated {formatTime(credential.updatedAt)}</small></span>
+          <button title={`Delete saved login for ${safeHostname(credential.origin)}`} onClick={() => deleteCredential(credential.id, credential.origin)}><X size={11} /></button>
+        </div>
+      )) : state.passwordManagerAvailable ? <p className="settings-empty">Saved logins will appear here. Passwords are never shown in browser chrome or Work Mode.</p> : null}
       <div className="settings-subheading">Site permissions</div>
       {state.sitePermissions.length ? state.sitePermissions.map((permission) => (
         <div className="permission-setting" key={`${permission.origin}:${permission.permission}`}>
@@ -466,6 +594,27 @@ function deleteProfile(profileId: string, name: string): void {
   if (window.confirm(`Delete the “${name}” profile and its local browsing data? This cannot be undone.`)) {
     void command({ type: "delete-profile", profileId });
   }
+}
+
+function deleteCredential(credentialId: string, origin: string): void {
+  if (window.confirm(`Delete the saved login for ${safeHostname(origin)}? This cannot be undone.`)) {
+    void command({ type: "delete-credential", credentialId });
+  }
+}
+
+function navigateRadioGroup(event: React.KeyboardEvent<HTMLButtonElement>): void {
+  const keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"];
+  if (!keys.includes(event.key)) return;
+  const buttons = Array.from(event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("button[role='radio']") ?? []);
+  if (!buttons.length) return;
+  event.preventDefault();
+  const current = Math.max(buttons.indexOf(event.currentTarget), 0);
+  const nextIndex = event.key === "Home" ? 0
+    : event.key === "End" ? buttons.length - 1
+    : event.key === "ArrowRight" || event.key === "ArrowDown" ? (current + 1) % buttons.length
+    : (current - 1 + buttons.length) % buttons.length;
+  buttons[nextIndex]?.focus();
+  buttons[nextIndex]?.click();
 }
 
 function safeHostname(origin: string): string {
