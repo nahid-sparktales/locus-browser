@@ -1,0 +1,34 @@
+{
+  "contractVersion": 1,
+  "manifestVersion": 3,
+  "supportedManifestKeys": [
+    "manifest_version", "name", "version", "description", "icons", "action",
+    "background", "content_scripts", "permissions", "host_permissions",
+    "optional_permissions", "optional_host_permissions", "commands",
+    "storage", "content_security_policy", "web_accessible_resources",
+    "minimum_locus_version"
+  ],
+  "apis": {
+    "runtime": "stable",
+    "action": "stable",
+    "tabs": "stable",
+    "scripting": "stable",
+    "contentScripts": "stable",
+    "storage.local": "stable",
+    "commands": "stable",
+    "contextMenus": "stable",
+    "notifications": "stable",
+    "downloads": "stable",
+    "bookmarks": "stable",
+    "history": "stable",
+    "webRequest": "tested-subset",
+    "declarativeNetRequest": "tested-subset",
+    "serviceWorker": "tested-subset"
+  },
+  "permissions": [
+    "activeTab", "scripting", "storage", "contextMenus", "notifications",
+    "downloads", "bookmarks", "history", "webRequest", "declarativeNetRequest"
+  ],
+  "privateProfilesDefault": "disabled",
+  "remoteCode": "forbidden"
+}
