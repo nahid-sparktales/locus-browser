@@ -19,6 +19,11 @@ separate sandboxed `WebContentsView`; the resizable Work dock is a second
 trusted local view. This allows the dock to overlay narrow windows without
 ever placing a webpage above trusted approval controls.
 
+Site camera, microphone, location, notification, and clipboard requests are
+resolved by the main-process broker. Unknown decisions appear only in trusted
+browser chrome; allow/block choices are scoped to the active browser profile,
+and private-window choices are never persisted.
+
 ## Tab ownership
 
 Browser tabs are independent of conversations. `TabAccessRegistry` grants one
@@ -43,3 +48,9 @@ history. Work Mode is unavailable there, and the broker independently rejects
 all private-tab grants. Password ciphertext and agent download quarantine
 remain local. Sync is opt-in and deliberately excludes cookies,
 passwords, workspace files, conversations, memories, credentials, and runs.
+
+Each normal profile has its own persistent Chromium partition and SQLite-scoped
+library records, settings, tab groups, and permission decisions. Sleeping a
+background tab explicitly destroys its `webContents`; selecting the tab creates
+a fresh sandboxed view at the last committed URL. Tabs with audio, media,
+downloads, loading work, or agent access are excluded from sleeping.

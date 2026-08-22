@@ -19,6 +19,10 @@ const previewState: BrowserAppState = {
       muted: false,
       private: false,
       crashed: false,
+      sleeping: false,
+      mediaPlaying: false,
+      mediaAvailable: false,
+      groupId: "locus-projects",
       grants: [],
     },
     {
@@ -33,9 +37,16 @@ const previewState: BrowserAppState = {
       muted: false,
       private: false,
       crashed: false,
+      sleeping: false,
+      mediaPlaying: false,
+      mediaAvailable: false,
+      groupId: "locus-projects",
       grants: [],
     },
   ],
+  groups: [{ id: "locus-projects", name: "Locus projects", color: "lime", collapsed: false, position: 0 }],
+  profiles: [{ id: "default", name: "Personal", partitionName: "persist:locus-profile-default", createdAt: 1_787_408_000 }],
+  currentProfile: { id: "default", name: "Personal", partitionName: "persist:locus-profile-default", createdAt: 1_787_408_000 },
   activeTabId: "welcome",
   sidebarOpen: true,
   sidebarSection: "tabs",
@@ -46,6 +57,8 @@ const previewState: BrowserAppState = {
     { id: "history-1", title: "Locus Platform", url: "https://github.com/nahid-sparktales/locus-platform", visitedAt: 1_787_408_000 },
   ],
   downloads: [],
+  sitePermissions: [],
+  settings: { appearance: "system", searchEngine: "duckduckgo", sleepAfterMinutes: 30, downloadDirectory: "/Users/nahid/Downloads" },
   activePageBookmarked: true,
   find: { open: false, query: "", matches: 0, activeMatchOrdinal: 0 },
   zoomFactor: 1,
@@ -143,6 +156,41 @@ function applyPreviewCommand(command: BrowserCommand): void {
       previewState.workOpen = false;
       previewState.history = [];
       previewState.tabs = previewState.tabs.map((tab) => ({ ...tab, private: true, grants: [] }));
+      break;
+    case "create-tab-group": {
+      const id = `group-${previewState.groups.length + 1}`;
+      previewState.groups.push({ id, name: `Group ${previewState.groups.length + 1}`, color: "blue", collapsed: false, position: previewState.groups.length });
+      previewState.tabs = previewState.tabs.map((tab) => tab.id === command.tabId ? { ...tab, groupId: id } : tab);
+      break;
+    }
+    case "toggle-tab-group":
+      previewState.groups = previewState.groups.map((group) => group.id === command.groupId ? { ...group, collapsed: !group.collapsed } : group);
+      break;
+    case "rename-tab-group":
+      previewState.groups = previewState.groups.map((group) => group.id === command.groupId ? { ...group, name: command.name } : group);
+      break;
+    case "set-tab-group":
+      previewState.tabs = previewState.tabs.map((tab) => {
+        if (tab.id !== command.tabId) return tab;
+        const { groupId: _groupId, ...withoutGroup } = tab;
+        return command.groupId ? { ...withoutGroup, groupId: command.groupId } : withoutGroup;
+      });
+      break;
+    case "sleep-tab":
+      previewState.tabs = previewState.tabs.map((tab) => tab.id === command.tabId ? { ...tab, sleeping: true } : tab);
+      break;
+    case "set-appearance":
+      previewState.settings.appearance = command.appearance;
+      break;
+    case "set-search-engine":
+      previewState.settings.searchEngine = command.searchEngine;
+      previewState.searchEngine = command.searchEngine;
+      break;
+    case "set-sleep-after":
+      previewState.settings.sleepAfterMinutes = command.minutes;
+      break;
+    case "delete-profile":
+      previewState.profiles = previewState.profiles.filter((profile) => profile.id !== command.profileId);
       break;
     default:
       break;

@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bookmark, Bot, ChevronDown,
+  ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bookmark, Bot, Check, ChevronDown,
   CircleAlert, Clock3, Download, EyeOff, FileDown, Globe2, History,
-  LayoutList, LockKeyhole, Minus, MoreHorizontal, PanelLeft, Plus, Printer,
-  RefreshCw, Search, Settings, ShieldCheck, Sparkles, Square, UserRound,
-  UsersRound, X,
+  Layers3, LayoutList, LockKeyhole, Minus, Moon, MoreHorizontal, PanelLeft,
+  Pause, Play, Plus, Printer, RefreshCw, Search, Settings, ShieldCheck,
+  Sparkles, Square, UserRound, UsersRound, Volume2, VolumeX, X,
 } from "lucide-react";
 import type { BrowserCommand } from "../shared/ipc.js";
 import type { BrowserAppState, BrowserTabState, SidebarSection } from "../shared/types.js";
@@ -62,7 +62,11 @@ export function Shell() {
 
   const sharedGrant = active?.grants.find((grant) => grant.sessionId === state.work.sessionId);
   const workTone = state.work.pendingPermission ? "attention" : state.work.busy ? "working" : "idle";
-  const chromeHeight = state.find.open ? 130 : 92;
+  const chromeHeight = 92 + (state.find.open ? 38 : 0) + (state.pendingSitePermission ? 46 : 0);
+  const visibleTabs = state.tabs.filter((tab) => {
+    const group = tab.groupId ? state.groups.find((candidate) => candidate.id === tab.groupId) : undefined;
+    return !group?.collapsed || tab.active;
+  });
   const navigate = (event: React.FormEvent) => {
     event.preventDefault();
     if (address.trim()) void command({ type: "navigate", value: address });
@@ -70,12 +74,15 @@ export function Shell() {
   };
 
   return (
-    <div className={`browser-shell ${state.privateWindow ? "private-window" : ""}`}>
-      <header className={`browser-chrome ${state.find.open ? "find-open" : ""}`}>
+    <div className={`browser-shell theme-${state.settings.appearance} ${state.privateWindow ? "private-window" : ""}`}>
+      <header className={`browser-chrome ${state.find.open ? "find-open" : ""} ${state.pendingSitePermission ? "permission-open" : ""}`} style={{ height: chromeHeight }}>
         <div className="tab-row">
           <div className="traffic-light-space" aria-hidden="true" />
           <div className="tab-strip" role="tablist" aria-label="Browser tabs">
-            {state.tabs.map((tab) => <TabItem key={tab.id} tab={tab} />)}
+            {visibleTabs.map((tab) => {
+              const groupColor = state.groups.find((group) => group.id === tab.groupId)?.color;
+              return <TabItem key={tab.id} tab={tab} {...(groupColor ? { groupColor } : {})} />;
+            })}
             <button className="chrome-button new-tab" title="New tab (⌘T)" onClick={() => void command({ type: "new-tab" })}>
               <Plus size={15} strokeWidth={2.2} />
             </button>
@@ -117,12 +124,22 @@ export function Shell() {
               <ShieldCheck size={14} /><span>{sharedGrant.level === "interact" ? "Locus controls" : "Shared"}</span><X size={12} />
             </button>
           )}
+          {active?.mediaAvailable && (
+            <button className="chrome-button" title={active.mediaPlaying ? "Pause media" : "Resume media"} onClick={() => void command({ type: "toggle-media-playback" })}>
+              {active.mediaPlaying ? <Pause size={15} /> : <Play size={15} />}
+            </button>
+          )}
+          {(active?.audible || active?.muted) && (
+            <button className="chrome-button" title={active.muted ? "Unmute tab" : "Mute tab"} onClick={() => void command({ type: "toggle-tab-mute", tabId: active.id })}>
+              {active.muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+            </button>
+          )}
           <button className="chrome-button download-button" title="Downloads" onClick={() => void command({ type: "set-sidebar-section", section: "downloads" })}>
             <Download size={16} />
             {state.downloads.some((download) => download.state === "progressing") && <span className="download-dot" />}
           </button>
           <div className="toolbar-popover-wrap">
-            <button className={`profile-button ${profileOpen ? "selected" : ""}`} title={state.privateWindow ? "Private profile" : "Personal profile"}
+            <button className={`profile-button ${profileOpen ? "selected" : ""}`} title={state.privateWindow ? `Private ${state.currentProfile.name} profile` : `${state.currentProfile.name} profile`}
               onClick={() => { setProfileOpen((open) => !open); setMenuOpen(false); }}>
               {state.privateWindow ? <EyeOff size={15} /> : <UserRound size={15} />}<ChevronDown size={11} />
             </button>
@@ -141,6 +158,7 @@ export function Shell() {
           </div>
         </div>
         {state.find.open && <FindBar state={state} />}
+        {state.pendingSitePermission && <SitePermissionBar state={state} />}
       </header>
 
       {state.sidebarOpen && <BrowserSidebar state={state} top={chromeHeight} />}
@@ -151,15 +169,51 @@ export function Shell() {
 }
 
 function ProfileMenu({ state, close }: { state: BrowserAppState; close: () => void }) {
+  const createProfile = () => {
+    const name = window.prompt("Name this browser profile", "Work");
+    if (name?.trim()) {
+      close();
+      void command({ type: "create-profile", name: name.trim() });
+    }
+  };
+  const renameCurrent = () => {
+    const name = window.prompt("Rename this browser profile", state.currentProfile.name);
+    if (name?.trim()) void command({ type: "rename-profile", profileId: state.profileId, name: name.trim() });
+  };
   return (
     <div className="toolbar-popover profile-menu" role="menu">
       <div className="popover-heading">
         <span className="profile-avatar">{state.privateWindow ? <EyeOff size={15} /> : <UserRound size={15} />}</span>
-        <span><strong>{state.privateWindow ? "Private browsing" : "Personal"}</strong><small>{state.privateWindow ? "Activity is not saved" : "Local profile"}</small></span>
+        <span><strong>{state.privateWindow ? `Private · ${state.currentProfile.name}` : state.currentProfile.name}</strong><small>{state.privateWindow ? "Activity is not saved" : "Local profile"}</small></span>
       </div>
+      <div className="popover-rule" />
+      {state.profiles.map((profile) => (
+        <button key={profile.id} role="menuitem" className={profile.id === state.profileId ? "current" : ""}
+          onClick={() => { close(); if (profile.id !== state.profileId || state.privateWindow) void command({ type: "open-profile", profileId: profile.id }); }}>
+          <UserRound size={15} /><span>{profile.name}</span>{profile.id === state.profileId && !state.privateWindow ? <Check size={13} /> : null}
+        </button>
+      ))}
+      {!state.privateWindow && <button role="menuitem" onClick={renameCurrent}><Settings size={15} /><span>Rename profile…</span></button>}
+      <button role="menuitem" onClick={createProfile}><Plus size={15} /><span>New profile…</span></button>
+      <div className="popover-rule" />
       <button role="menuitem" onClick={() => { close(); void command({ type: "new-private-window" }); }}>
         <EyeOff size={15} /><span>New private window</span><kbd>⇧⌘N</kbd>
       </button>
+    </div>
+  );
+}
+
+function SitePermissionBar({ state }: { state: BrowserAppState }) {
+  const request = state.pendingSitePermission!;
+  const host = safeHostname(request.origin);
+  const answer = (decision: "allow-once" | "always" | "deny") => void command({ type: "answer-site-permission", requestId: request.requestId, decision });
+  return (
+    <div className="site-permission-bar" role="alert" aria-live="assertive" aria-label="Site permission request">
+      <ShieldCheck size={15} />
+      <span><strong>{host}</strong> wants to use your {request.permission}.</span>
+      <button onClick={() => answer("deny")}>Block</button>
+      <button onClick={() => answer("allow-once")}>Allow once</button>
+      {!state.privateWindow && <button className="primary" onClick={() => answer("always")}>Always allow</button>}
     </div>
   );
 }
@@ -203,10 +257,10 @@ function FindBar({ state }: { state: BrowserAppState }) {
   );
 }
 
-function TabItem({ tab }: { tab: BrowserTabState }) {
+function TabItem({ tab, groupColor }: { tab: BrowserTabState; groupColor?: string }) {
   const dragging = useRef(false);
   return (
-    <div className={`tab ${tab.active ? "active" : ""} ${tab.grants.length ? "agent-access" : ""}`}
+    <div className={`tab ${tab.active ? "active" : ""} ${tab.grants.length ? "agent-access" : ""} ${groupColor ? `group-${groupColor}` : ""}`}
       role="tab" aria-selected={tab.active} tabIndex={tab.active ? 0 : -1} draggable
       onClick={() => { if (!dragging.current) void command({ type: "select-tab", tabId: tab.id }); }}
       onKeyDown={(event) => {
@@ -220,7 +274,7 @@ function TabItem({ tab }: { tab: BrowserTabState }) {
         if (moving) void command({ type: "reorder-tab", tabId: moving, beforeTabId: tab.id });
       }}>
       <span className="tab-icon">
-        {tab.private ? <EyeOff size={13} /> : tab.faviconUrl ? <img src={tab.faviconUrl} alt="" /> : <Globe2 size={13} />}
+        {tab.sleeping ? <Moon size={13} /> : tab.private ? <EyeOff size={13} /> : tab.faviconUrl ? <img src={tab.faviconUrl} alt="" /> : <Globe2 size={13} />}
         {tab.loading && <span className="loading-ring" />}
       </span>
       <span className="tab-title">{tab.title || "New Tab"}</span>
@@ -243,18 +297,14 @@ function BrowserSidebar({ state, top }: { state: BrowserAppState; top: number })
         <SidebarItem section="conversations" active={state.sidebarSection === "conversations"} icon={<Clock3 size={16} />} label="Conversations" />
       </nav>
       <SidebarContent state={state} />
-      <button className="sidebar-settings" disabled title="Settings arrive in the next browser-foundation slice"><Settings size={15} /><span>Settings</span></button>
+      <button className={`sidebar-settings ${state.sidebarSection === "settings" ? "active" : ""}`} onClick={() => void command({ type: "set-sidebar-section", section: "settings" })}><Settings size={15} /><span>Settings</span></button>
     </aside>
   );
 }
 
 function SidebarContent({ state }: { state: BrowserAppState }) {
   if (state.sidebarSection === "tabs") {
-    return <SidebarList title="Open tabs" count={state.tabs.length}>{state.tabs.map((tab) => (
-      <button key={tab.id} className={`sidebar-row ${tab.active ? "active" : ""}`} onClick={() => void command({ type: "select-tab", tabId: tab.id })}>
-        {tab.private ? <EyeOff size={13} /> : <Globe2 size={13} />}<span>{tab.title}</span>{tab.grants.length > 0 && <Sparkles size={11} />}
-      </button>
-    ))}</SidebarList>;
+    return <TabsPanel state={state} />;
   }
   if (state.sidebarSection === "bookmarks") {
     return <SidebarList title="Bookmarks" count={state.bookmarks.length}>{state.bookmarks.length ? state.bookmarks.map((bookmark) => (
@@ -282,11 +332,113 @@ function SidebarContent({ state }: { state: BrowserAppState }) {
       </div>
     )) : <EmptyLibrary icon={<Download size={18} />} text="Your downloads will appear here." />}</SidebarList>;
   }
+  if (state.sidebarSection === "settings") return <SettingsPanel state={state} />;
   const spaces = state.sidebarSection === "spaces";
+  if (spaces) {
+    return <SidebarList title="Profiles" count={state.profiles.length}>{state.profiles.map((profile) => (
+      <button className={`sidebar-row ${profile.id === state.profileId ? "active" : ""}`} key={profile.id}
+        onClick={() => void command({ type: "open-profile", profileId: profile.id })}>
+        <UserRound size={13} /><span>{profile.name}</span>{profile.id === state.profileId && <Check size={12} />}
+      </button>
+    ))}</SidebarList>;
+  }
   return <SidebarList title={spaces ? "Spaces" : "Conversations"} count={0}>
     <EmptyLibrary icon={spaces ? <UsersRound size={18} /> : <Clock3 size={18} />}
       text={spaces ? "Profile spaces arrive with multi-profile support." : "Work conversations remain local to Work Mode."} />
   </SidebarList>;
+}
+
+function TabsPanel({ state }: { state: BrowserAppState }) {
+  const ungrouped = state.tabs.filter((tab) => !tab.groupId);
+  return (
+    <>
+      <div className="sidebar-heading with-button">
+        <span>Open tabs</span><span>{state.tabs.length}</span>
+        {!state.privateWindow && <button title="Group the active tab" onClick={() => void command({ type: "create-tab-group", ...(state.activeTabId ? { tabId: state.activeTabId } : {}) })}><Layers3 size={13} /></button>}
+      </div>
+      <div className="sidebar-list tab-groups">
+        {state.groups.map((group) => {
+          const tabs = state.tabs.filter((tab) => tab.groupId === group.id);
+          return (
+            <section className="tab-group" key={group.id}>
+              <div className="tab-group-heading">
+                <button title={group.collapsed ? "Expand group" : "Collapse group"} onClick={() => void command({ type: "toggle-tab-group", groupId: group.id })}>
+                  <ChevronDown className={group.collapsed ? "collapsed" : ""} size={13} /><i className={`group-dot group-${group.color}`} /><span>{group.name}</span><small>{tabs.length}</small>
+                </button>
+                <button title="Rename group" onClick={() => renameGroup(group.id, group.name)}><Settings size={11} /></button>
+                <button title="Delete group" onClick={() => deleteGroup(group.id, group.name)}><X size={11} /></button>
+              </div>
+              {!group.collapsed && tabs.map((tab) => <SidebarTabRow key={tab.id} state={state} tab={tab} />)}
+            </section>
+          );
+        })}
+        {ungrouped.map((tab) => <SidebarTabRow key={tab.id} state={state} tab={tab} />)}
+      </div>
+    </>
+  );
+}
+
+function SidebarTabRow({ state, tab }: { state: BrowserAppState; tab: BrowserTabState }) {
+  return (
+    <div className={`sidebar-tab-row ${tab.active ? "active" : ""}`}>
+      <button className="sidebar-tab-main" onClick={() => void command({ type: "select-tab", tabId: tab.id })}>
+        {tab.sleeping ? <Moon size={13} /> : tab.private ? <EyeOff size={13} /> : <Globe2 size={13} />}
+        <span>{tab.title}</span>{tab.grants.length > 0 && <Sparkles size={11} />}
+      </button>
+      {!state.privateWindow && (
+        <select aria-label={`Group ${tab.title}`} value={tab.groupId ?? ""} onChange={(event) => void command({ type: "set-tab-group", tabId: tab.id, groupId: event.target.value || null })}>
+          <option value="">No group</option>{state.groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+        </select>
+      )}
+      {!tab.active && !tab.sleeping && <button className="sleep-tab" title="Sleep tab" onClick={() => void command({ type: "sleep-tab", tabId: tab.id })}><Moon size={11} /></button>}
+    </div>
+  );
+}
+
+function SettingsPanel({ state }: { state: BrowserAppState }) {
+  return (
+    <div className="settings-panel">
+      <div className="sidebar-heading"><span>Settings</span></div>
+      <SettingRow label="Appearance" detail="Uses the Locus palette">
+        <select value={state.settings.appearance} onChange={(event) => void command({ type: "set-appearance", appearance: event.target.value as BrowserAppState["settings"]["appearance"] })}>
+          <option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option>
+        </select>
+      </SettingRow>
+      <SettingRow label="Search engine" detail="Used for omnibox searches">
+        <select value={state.settings.searchEngine} onChange={(event) => void command({ type: "set-search-engine", searchEngine: event.target.value as BrowserAppState["settings"]["searchEngine"] })}>
+          <option value="duckduckgo">DuckDuckGo</option><option value="brave">Brave</option><option value="google">Google</option><option value="bing">Bing</option>
+        </select>
+      </SettingRow>
+      <SettingRow label="Sleep background tabs" detail="Never sleeps audio, downloads, or shared tabs">
+        <select value={state.settings.sleepAfterMinutes} onChange={(event) => void command({ type: "set-sleep-after", minutes: Number(event.target.value) as 0 | 15 | 30 | 60 })}>
+          <option value={0}>Never</option><option value={15}>After 15 minutes</option><option value={30}>After 30 minutes</option><option value={60}>After 1 hour</option>
+        </select>
+      </SettingRow>
+      <SettingRow label="Downloads" detail={state.settings.downloadDirectory}>
+        <button onClick={() => void command({ type: "choose-download-directory" })}>Choose folder…</button>
+      </SettingRow>
+      <div className="settings-subheading">Profiles</div>
+      {state.profiles.map((profile) => (
+        <div className="permission-setting" key={profile.id}>
+          <span><strong>{profile.name}</strong><small>{profile.id === state.profileId ? "Current profile" : "Separate cookies and browsing data"}</small></span>
+          {profile.id !== "default" && profile.id !== state.profileId
+            ? <button title={`Delete ${profile.name}`} onClick={() => deleteProfile(profile.id, profile.name)}><X size={11} /></button>
+            : null}
+        </div>
+      ))}
+      <div className="settings-subheading">Site permissions</div>
+      {state.sitePermissions.length ? state.sitePermissions.map((permission) => (
+        <div className="permission-setting" key={`${permission.origin}:${permission.permission}`}>
+          <span><strong>{safeHostname(permission.origin)}</strong><small>{permission.permission} · {permission.decision}</small></span>
+          <button title="Ask again" onClick={() => void command({ type: "reset-site-permission", origin: permission.origin, permission: permission.permission })}><X size={11} /></button>
+        </div>
+      )) : <p className="settings-empty">Sites you allow or block will appear here.</p>}
+    </div>
+  );
+}
+
+function SettingRow({ label, detail, children }: { label: string; detail: string; children: React.ReactNode }) {
+  return <label className="setting-row"><span><strong>{label}</strong><small>{detail}</small></span>{children}</label>;
 }
 
 function SidebarList({ title, count, children }: { title: string; count: number; children: React.ReactNode }) {
@@ -299,6 +451,25 @@ function EmptyLibrary({ icon, text }: { icon: React.ReactNode; text: string }) {
 
 function SidebarItem({ icon, label, section, active }: { icon: React.ReactNode; label: string; section: SidebarSection; active: boolean }) {
   return <button className={active ? "active" : ""} onClick={() => void command({ type: "set-sidebar-section", section })}>{icon}<span>{label}</span></button>;
+}
+
+function renameGroup(groupId: string, currentName: string): void {
+  const name = window.prompt("Rename tab group", currentName);
+  if (name?.trim()) void command({ type: "rename-tab-group", groupId, name: name.trim() });
+}
+
+function deleteGroup(groupId: string, name: string): void {
+  if (window.confirm(`Delete “${name}”? Its tabs will stay open.`)) void command({ type: "delete-tab-group", groupId });
+}
+
+function deleteProfile(profileId: string, name: string): void {
+  if (window.confirm(`Delete the “${name}” profile and its local browsing data? This cannot be undone.`)) {
+    void command({ type: "delete-profile", profileId });
+  }
+}
+
+function safeHostname(origin: string): string {
+  try { return new URL(origin).hostname || origin; } catch { return origin; }
 }
 
 function formatTime(timestamp: number): string {

@@ -5,7 +5,7 @@ import { BrowserController, platformRootFromApp } from "./BrowserController.js";
 import { BrowserCommandSchema, ipcChannels } from "../shared/ipc.js";
 
 app.name = "Locus Browser";
-app.setPath("userData", join(app.getPath("appData"), "Locus Browser"));
+app.setPath("userData", process.env.LOCUS_BROWSER_USER_DATA || join(app.getPath("appData"), "Locus Browser"));
 
 const controllers = new Set<BrowserController>();
 let rendererUrl = "";
@@ -24,14 +24,14 @@ app.whenReady().then(() => {
   preloadPath = join(currentDirectory, "..", "preload", "index.cjs");
   platformRoot = platformRootFromApp();
   installIpc();
-  createWindow(false);
+  createWindow(false, "default");
   installMenu();
 });
 
 app.on("activate", () => {
   const existing = [...controllers][0];
   if (existing) existing.window.show();
-  else createWindow(false);
+  else createWindow(false, "default");
 });
 
 app.on("window-all-closed", () => app.quit());
@@ -53,7 +53,10 @@ function installMenu(): void {
       label: "File",
       submenu: [
         { label: "New Tab", accelerator: "CmdOrCtrl+T", click: () => void focusedController()?.command({ type: "new-tab" }) },
-        { label: "New Private Window", accelerator: "CmdOrCtrl+Shift+N", click: () => createWindow(true) },
+        { label: "New Private Window", accelerator: "CmdOrCtrl+Shift+N", click: () => {
+          const profileId = focusedController()?.state().profileId ?? "default";
+          createWindow(true, profileId);
+        } },
         { type: "separator" },
         { label: "Save Page as PDF…", click: () => void focusedController()?.command({ type: "save-page-pdf" }) },
         { label: "Print…", accelerator: "CmdOrCtrl+P", click: () => void focusedController()?.command({ type: "print-page" }) },
@@ -86,10 +89,21 @@ function installMenu(): void {
   ]));
 }
 
-function createWindow(privateWindow: boolean): BrowserController {
+function createWindow(privateWindow: boolean, profileId: string): BrowserController {
   const controller = new BrowserController(rendererUrl, preloadPath, platformRoot, {
     privateWindow,
-    onNewPrivateWindow: () => createWindow(true),
+    profileId,
+    onNewPrivateWindow: (requestedProfileId) => createWindow(true, requestedProfileId),
+    onOpenProfile: (requestedProfileId) => {
+      const existing = [...controllers].find((candidate) => !candidate.state().privateWindow && candidate.state().profileId === requestedProfileId);
+      if (existing) {
+        existing.window.show();
+        existing.window.focus();
+      } else {
+        createWindow(false, requestedProfileId);
+      }
+    },
+    canDeleteProfile: (requestedProfileId) => ![...controllers].some((candidate) => candidate.state().profileId === requestedProfileId),
   });
   controllers.add(controller);
   controller.window.once("closed", () => controllers.delete(controller));

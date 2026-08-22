@@ -28,7 +28,13 @@ pnpm dev:desktop
 
 The browser has its own data directory and does not read or migrate data from
 Locus. Set `LOCUS_PLATFORM_ROOT` to override the sibling platform checkout used
-for the development agent runtime.
+for the development agent runtime. `LOCUS_BROWSER_USER_DATA` can point smoke
+tests at an isolated support directory without touching a normal profile.
+
+The browser foundation includes persistent profiles and tab groups, explicit
+site-permission prompts, selectable search/theme/download/sleep settings,
+media controls, and protected wake-on-select tab sleeping. Its light and dark
+surfaces use the same semantic palette as native Locus.
 
 For renderer-only UI work, `pnpm --filter @locus/browser-desktop exec vite`
 opens a safe local preview with representative browser state. Production file

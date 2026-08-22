@@ -7,6 +7,7 @@ import {
   WebContentsView,
   app,
   dialog,
+  nativeTheme,
   session,
   shell,
   type Rectangle,
@@ -20,15 +21,21 @@ import { bridgeInvocation, browserBridgeSource } from "@locus/browser-bridge";
 import { ipcChannels } from "../shared/channels.js";
 import type { BrowserCommand } from "../shared/ipc.js";
 import type {
+  Appearance,
   BrowserAppState,
+  BrowserSettingsState,
   BrowserTabState,
   PendingPermission,
+  PendingSitePermission,
+  SearchEngine,
   SidebarSection,
+  TabGroupState,
   WorkMessage,
 } from "../shared/types.js";
 import { AgentRuntime, type AgentEvent } from "./AgentRuntime.js";
-import { BrowserDatabase, type StoredDownload, type StoredTab } from "./BrowserDatabase.js";
+import { BrowserDatabase, type StoredDownload, type StoredTab, type StoredTabGroup } from "./BrowserDatabase.js";
 import { TabAccessRegistry } from "./TabAccessRegistry.js";
+import { canSleepTab, shouldSleepTab } from "./TabSleepingPolicy.js";
 
 const CHROME_HEIGHT = 92;
 const SIDEBAR_WIDTH = 248;
@@ -39,37 +46,59 @@ const WORK_DEFAULT = 420;
 const WORK_MAX = 720;
 const AGENT_DOWNLOAD_CAP = 25 * 1024 * 1024;
 const BRIDGE_WORLD = 99_941;
+const SITE_PERMISSION_HEIGHT = 46;
+const SLEEP_CHECK_INTERVAL = 60_000;
+const GROUP_COLORS = ["lime", "blue", "coral", "violet", "gold"];
+const ALLOWED_SITE_PERMISSIONS = new Set(["camera", "microphone", "media", "geolocation", "notifications", "clipboard-read"]);
 
 interface TabRecord {
   state: BrowserTabState;
-  view: WebContentsView;
+  view: WebContentsView | undefined;
   console: string[];
   network: string[];
   sessionCreatedBy: string | undefined;
   agentDownloadArmedUntil: number;
+  lastActiveAt: number;
 }
 
 interface BrowserPermissionWaiter {
   resolve: (decision: "allow" | "always" | "deny") => void;
 }
 
+interface SitePermissionWaiter {
+  callback: (granted: boolean) => void;
+  timeout: NodeJS.Timeout;
+  contentsId: number;
+  origin: string;
+  permission: string;
+}
+
 export interface BrowserControllerOptions {
   privateWindow?: boolean;
   windowId?: string;
-  onNewPrivateWindow?: () => void;
+  profileId?: string;
+  onNewPrivateWindow?: (profileId: string) => void;
+  onOpenProfile?: (profileId: string) => void;
+  canDeleteProfile?: (profileId: string) => boolean;
 }
 
 export class BrowserController {
   readonly window: BrowserWindow;
   readonly #windowId: string;
-  readonly #profileId = "default";
+  readonly #profileId: string;
+  readonly #partitionName: string;
   readonly #privateWindow: boolean;
-  readonly #onNewPrivateWindow: (() => void) | undefined;
+  readonly #onNewPrivateWindow: ((profileId: string) => void) | undefined;
+  readonly #onOpenProfile: ((profileId: string) => void) | undefined;
+  readonly #canDeleteProfile: ((profileId: string) => boolean) | undefined;
   readonly #database: BrowserDatabase;
   readonly #grants = new TabAccessRegistry();
   readonly #tabs = new Map<string, TabRecord>();
+  readonly #groups = new Map<string, TabGroupState>();
   readonly #runtime: AgentRuntime;
   readonly #permissionWaiters = new Map<string, BrowserPermissionWaiter>();
+  readonly #sitePermissionWaiters = new Map<string, SitePermissionWaiter>();
+  readonly #oneTimeSitePermissions = new Set<string>();
   readonly #activeDownloads = new Map<string, Electron.DownloadItem>();
   readonly #hardenedSessions = new WeakSet<Electron.Session>();
   #sessionId: string = randomUUID();
@@ -77,6 +106,7 @@ export class BrowserController {
   #activeTabId: string | undefined;
   #sidebarOpen = false;
   #sidebarSection: SidebarSection = "tabs";
+  #settings: BrowserSettingsState;
   #workOpen = false;
   #workWidth = WORK_DEFAULT;
   #workOverlay = false;
@@ -96,15 +126,24 @@ export class BrowserController {
     },
   ];
   #pendingPermission: PendingPermission | undefined;
+  #pendingSitePermission: PendingSitePermission | undefined;
   #find = { open: false, query: "", matches: 0, activeMatchOrdinal: 0 };
   #saveTimer: NodeJS.Timeout | undefined;
+  #sleepTimer: NodeJS.Timeout | undefined;
   #disposed = false;
 
   constructor(rendererUrl: string, preloadPath: string, platformRoot: string, options: BrowserControllerOptions = {}) {
     this.#privateWindow = Boolean(options.privateWindow);
-    this.#windowId = options.windowId ?? (this.#privateWindow ? `private-${randomUUID()}` : "primary");
     this.#onNewPrivateWindow = options.onNewPrivateWindow;
+    this.#onOpenProfile = options.onOpenProfile;
+    this.#canDeleteProfile = options.canDeleteProfile;
     this.#database = new BrowserDatabase(join(app.getPath("userData"), "browser.sqlite3"));
+    const requestedProfileId = options.profileId ?? "default";
+    const profile = this.#database.profile(requestedProfileId) ?? this.#database.profile("default")!;
+    this.#profileId = profile.id;
+    this.#partitionName = profile.partitionName;
+    this.#windowId = options.windowId ?? (this.#privateWindow ? `private-${randomUUID()}` : this.#profileId === "default" ? "primary" : `primary-${this.#profileId}`);
+    this.#settings = this.#loadSettings();
     this.#runtime = new AgentRuntime(platformRoot, join(app.getPath("userData"), "agent"));
     const stored = this.#privateWindow ? undefined : this.#database.loadWindow(this.#windowId);
     this.#sidebarOpen = Boolean(stored?.sidebarOpen);
@@ -118,8 +157,8 @@ export class BrowserController {
       minHeight: 560,
       titleBarStyle: "hiddenInset",
       trafficLightPosition: { x: 16, y: 16 },
-      backgroundColor: this.#privateWindow ? "#20201b" : "#f3f1ea",
-      title: this.#privateWindow ? "Private — Locus Browser" : "Locus Browser",
+      backgroundColor: this.#surfaceBackground(),
+      title: this.#privateWindow ? `Private — ${profile.name} — Locus Browser` : `${profile.name} — Locus Browser`,
       show: false,
       webPreferences: trustedRendererPreferences(preloadPath),
     });
@@ -140,6 +179,7 @@ export class BrowserController {
     }
     this.#layout(false);
     if (!this.#privateWindow) void this.#runtime.start();
+    this.#sleepTimer = setInterval(() => this.#sleepEligibleTabs(), SLEEP_CHECK_INTERVAL);
   }
 
   state(): BrowserAppState {
@@ -153,22 +193,28 @@ export class BrowserController {
         active: tab.state.id === this.#activeTabId,
         grants: this.#grants.grantsForTab(tab.state.id),
       })),
+      groups: [...this.#groups.values()].sort((a, b) => a.position - b.position),
+      profiles: this.#database.listProfiles(),
+      currentProfile: this.#database.profile(this.#profileId)!,
       ...(this.#activeTabId ? { activeTabId: this.#activeTabId } : {}),
       sidebarOpen: this.#sidebarOpen,
       sidebarSection: this.#sidebarSection,
-      bookmarks: this.#database.listBookmarks(),
-      history: this.#privateWindow ? [] : this.#database.listHistory(),
-      downloads: this.#database.listDownloads().map((download) => ({
+      bookmarks: this.#privateWindow ? [] : this.#database.listBookmarks(this.#profileId),
+      history: this.#privateWindow ? [] : this.#database.listHistory(this.#profileId),
+      downloads: this.#database.listDownloads(this.#profileId).map((download) => ({
         ...download,
         agentInitiated: Boolean(download.agentInitiated),
       })),
-      activePageBookmarked: Boolean(activeUrl && this.#database.bookmarkForUrl(activeUrl)),
+      sitePermissions: this.#privateWindow ? [] : this.#database.listSitePermissions(this.#profileId),
+      ...(this.#pendingSitePermission ? { pendingSitePermission: this.#pendingSitePermission } : {}),
+      settings: this.#settings,
+      activePageBookmarked: Boolean(!this.#privateWindow && activeUrl && this.#database.bookmarkForUrl(this.#profileId, activeUrl)),
       find: this.#find,
-      zoomFactor: this.#active()?.view.webContents.getZoomFactor() ?? 1,
+      zoomFactor: this.#active()?.view?.webContents.getZoomFactor() ?? 1,
       workOpen: this.#workOpen,
       workWidth: this.#workWidth,
       workOverlay: this.#workOverlay,
-      searchEngine: "duckduckgo",
+      searchEngine: this.#settings.searchEngine,
       work: {
         sessionId: this.#sessionId,
         mode: this.#workMode,
@@ -197,13 +243,30 @@ export class BrowserController {
   async command(command: BrowserCommand): Promise<BrowserAppState> {
     switch (command.type) {
       case "new-tab":
-        this.#createTab(command.url ?? "https://duckduckgo.com/", { active: true, private: this.#privateWindow });
+        this.#createTab(command.url ?? searchHome(this.#settings.searchEngine), { active: true, private: this.#privateWindow });
         break;
       case "new-private-window":
-        this.#onNewPrivateWindow?.();
+        this.#onNewPrivateWindow?.(this.#profileId);
+        break;
+      case "create-profile": {
+        const profile = this.#database.createProfile(command.name);
+        this.#onOpenProfile?.(profile.id);
+        break;
+      }
+      case "open-profile":
+        if (this.#database.profile(command.profileId)) this.#onOpenProfile?.(command.profileId);
+        break;
+      case "rename-profile":
+        this.#database.renameProfile(command.profileId, command.name);
+        if (command.profileId === this.#profileId) {
+          this.window.setTitle(this.#privateWindow ? `Private — ${command.name} — Locus Browser` : `${command.name} — Locus Browser`);
+        }
+        break;
+      case "delete-profile":
+        await this.#deleteProfile(command.profileId);
         break;
       case "select-tab":
-        this.#selectTab(command.tabId);
+        await this.#selectTab(command.tabId);
         break;
       case "close-tab":
         this.#closeTab(command.tabId);
@@ -211,20 +274,44 @@ export class BrowserController {
       case "reorder-tab":
         this.#reorderTab(command.tabId, command.beforeTabId);
         break;
+      case "create-tab-group":
+        this.#createTabGroup(command.tabId);
+        break;
+      case "rename-tab-group": {
+        const group = this.#groups.get(command.groupId);
+        if (group) group.name = command.name;
+        break;
+      }
+      case "toggle-tab-group": {
+        const group = this.#groups.get(command.groupId);
+        if (group) group.collapsed = !group.collapsed;
+        break;
+      }
+      case "set-tab-group": {
+        const tab = this.#tabs.get(command.tabId);
+        if (tab) {
+          if (command.groupId && this.#groups.has(command.groupId)) tab.state.groupId = command.groupId;
+          else delete tab.state.groupId;
+        }
+        break;
+      }
+      case "delete-tab-group":
+        this.#deleteTabGroup(command.groupId);
+        break;
       case "navigate":
         await this.#navigateActive(command.value);
         break;
       case "back":
-        this.#active()?.view.webContents.navigationHistory.goBack();
+        this.#active()?.view?.webContents.navigationHistory.goBack();
         break;
       case "forward":
-        this.#active()?.view.webContents.navigationHistory.goForward();
+        this.#active()?.view?.webContents.navigationHistory.goForward();
         break;
       case "reload":
-        this.#active()?.view.webContents.reload();
+        this.#active()?.view?.webContents.reload();
         break;
       case "stop":
-        this.#active()?.view.webContents.stop();
+        this.#active()?.view?.webContents.stop();
         break;
       case "toggle-sidebar":
         this.#sidebarOpen = !this.#sidebarOpen;
@@ -239,13 +326,13 @@ export class BrowserController {
         this.#toggleBookmark();
         break;
       case "remove-bookmark":
-        this.#database.removeBookmark(command.bookmarkId);
+        this.#database.removeBookmark(this.#profileId, command.bookmarkId);
         break;
       case "open-library-item":
         this.#createTab(command.url, { active: true, private: this.#privateWindow });
         break;
       case "reveal-download": {
-        const download = this.#database.listDownloads().find((entry) => entry.id === command.downloadId);
+        const download = this.#database.listDownloads(this.#profileId).find((entry) => entry.id === command.downloadId);
         if (download?.path) shell.showItemInFolder(download.path);
         break;
       }
@@ -265,10 +352,10 @@ export class BrowserController {
         this.#layout(false);
         break;
       case "zoom-in":
-        this.#setZoom((this.#active()?.view.webContents.getZoomFactor() ?? 1) + 0.1);
+        this.#setZoom((this.#active()?.view?.webContents.getZoomFactor() ?? 1) + 0.1);
         break;
       case "zoom-out":
-        this.#setZoom((this.#active()?.view.webContents.getZoomFactor() ?? 1) - 0.1);
+        this.#setZoom((this.#active()?.view?.webContents.getZoomFactor() ?? 1) - 0.1);
         break;
       case "zoom-reset":
         this.#setZoom(1);
@@ -279,6 +366,53 @@ export class BrowserController {
       case "save-page-pdf":
         await this.#savePagePdf();
         break;
+      case "toggle-tab-mute": {
+        const tab = this.#tabs.get(command.tabId);
+        if (tab?.view && !tab.view.webContents.isDestroyed()) {
+          tab.view.webContents.setAudioMuted(!tab.view.webContents.isAudioMuted());
+          tab.state.muted = tab.view.webContents.isAudioMuted();
+        }
+        break;
+      }
+      case "toggle-media-playback":
+        await this.#toggleMediaPlayback();
+        break;
+      case "sleep-tab":
+        this.#sleepTab(command.tabId);
+        break;
+      case "answer-site-permission":
+        this.#answerSitePermission(command.requestId, command.decision);
+        break;
+      case "reset-site-permission":
+        this.#database.removeSitePermission(this.#profileId, command.origin, command.permission);
+        break;
+      case "set-appearance":
+        this.#settings = { ...this.#settings, appearance: command.appearance };
+        this.#database.setSetting(this.#profileId, "appearance", command.appearance);
+        this.window.setBackgroundColor(this.#surfaceBackground());
+        this.#workView?.setBackgroundColor(this.#surfaceBackground());
+        break;
+      case "set-search-engine":
+        this.#settings = { ...this.#settings, searchEngine: command.searchEngine };
+        this.#database.setSetting(this.#profileId, "searchEngine", command.searchEngine);
+        break;
+      case "set-sleep-after":
+        this.#settings = { ...this.#settings, sleepAfterMinutes: command.minutes };
+        this.#database.setSetting(this.#profileId, "sleepAfterMinutes", command.minutes);
+        this.#sleepEligibleTabs();
+        break;
+      case "choose-download-directory": {
+        const result = await dialog.showOpenDialog(this.window, {
+          title: "Choose Downloads Folder",
+          defaultPath: this.#settings.downloadDirectory,
+          properties: ["openDirectory", "createDirectory"],
+        });
+        if (!result.canceled && result.filePaths[0]) {
+          this.#settings = { ...this.#settings, downloadDirectory: result.filePaths[0] };
+          this.#database.setSetting(this.#profileId, "downloadDirectory", result.filePaths[0]);
+        }
+        break;
+      }
       case "toggle-work":
         if (this.#privateWindow) break;
         this.#workOpen = !this.#workOpen;
@@ -325,13 +459,21 @@ export class BrowserController {
   dispose(): void {
     if (this.#disposed) return;
     clearTimeout(this.#saveTimer);
+    clearInterval(this.#sleepTimer);
     this.#persistNow();
     this.#disposed = true;
     this.#runtime.stop();
     this.#grants.revokeSession(this.#sessionId);
     for (const download of this.#activeDownloads.values()) download.cancel();
     this.#activeDownloads.clear();
-    for (const tab of this.#tabs.values()) tab.view.webContents.close();
+    for (const waiter of this.#sitePermissionWaiters.values()) {
+      clearTimeout(waiter.timeout);
+      waiter.callback(false);
+    }
+    this.#sitePermissionWaiters.clear();
+    for (const tab of this.#tabs.values()) {
+      if (tab.view && !tab.view.webContents.isDestroyed()) tab.view.webContents.close();
+    }
     this.#tabs.clear();
     this.#workView?.webContents.close();
     this.#workView = undefined;
@@ -340,7 +482,7 @@ export class BrowserController {
 
   #createWorkView(rendererUrl: string, preloadPath: string): void {
     const view = new WebContentsView({ webPreferences: trustedRendererPreferences(preloadPath) });
-    view.setBackgroundColor("#f8f6f0");
+    view.setBackgroundColor(this.#surfaceBackground());
     view.webContents.loadURL(surfaceUrl(rendererUrl, "work"));
     this.#workView = view;
     this.window.contentView.addChildView(view);
@@ -349,12 +491,15 @@ export class BrowserController {
 
   #restoreTabs(): void {
     if (this.#privateWindow) {
-      this.#createTab("https://duckduckgo.com/", { active: true, private: true });
+      this.#createTab(searchHome(this.#settings.searchEngine), { active: true, private: true });
       return;
+    }
+    for (const stored of this.#database.loadTabGroups(this.#windowId)) {
+      this.#groups.set(stored.id, { ...stored, collapsed: Boolean(stored.collapsed) });
     }
     const tabs = this.#database.loadTabs(this.#windowId);
     if (tabs.length === 0) {
-      this.#createTab("https://duckduckgo.com/", { active: true });
+      this.#createTab(searchHome(this.#settings.searchEngine), { active: true });
       return;
     }
     for (const stored of tabs) {
@@ -363,39 +508,25 @@ export class BrowserController {
         active: Boolean(stored.active),
         title: stored.title,
         private: Boolean(stored.private),
+        ...(stored.groupId ? { groupId: stored.groupId } : {}),
       });
     }
-    if (!this.#activeTabId) this.#selectTab(tabs[0]!.id);
+    if (!this.#activeTabId) void this.#selectTab(tabs[0]!.id);
   }
 
   #createTab(
     rawUrl: string,
-    options: { id?: string; active?: boolean; title?: string; private?: boolean; sessionId?: string } = {},
+    options: { id?: string; active?: boolean; title?: string; private?: boolean; sessionId?: string; groupId?: string } = {},
   ): TabRecord {
     const id = options.id ?? randomUUID();
     const privateTab = Boolean(options.private);
-    const partition = privateTab
-      ? `locus-private-${this.window.id}`
-      : "persist:locus-profile-default";
-    const view = new WebContentsView({
-      webPreferences: {
-        nodeIntegration: false,
-        sandbox: true,
-        contextIsolation: true,
-        webSecurity: true,
-        allowRunningInsecureContent: false,
-        partition,
-        spellcheck: true,
-      },
-    });
-    this.#hardenSession(view.webContents.session);
-    view.setBackgroundColor("#ffffff");
     const record: TabRecord = {
-      view,
+      view: undefined,
       console: [],
       network: [],
       sessionCreatedBy: options.sessionId,
       agentDownloadArmedUntil: 0,
+      lastActiveAt: Date.now(),
       state: {
         id,
         title: options.title || "New Tab",
@@ -408,24 +539,48 @@ export class BrowserController {
         muted: false,
         private: privateTab,
         crashed: false,
+        sleeping: false,
+        mediaPlaying: false,
+        mediaAvailable: false,
+        ...(options.groupId ? { groupId: options.groupId } : {}),
         grants: [],
       },
     };
     this.#tabs.set(id, record);
+    const view = this.#createTabView(record);
     this.window.contentView.addChildView(view, 0);
     view.setVisible(false);
-    this.#wireTab(record);
     if (options.sessionId) {
       this.#grants.grant(options.sessionId, id, "interact", "agent_created");
     }
-    void view.webContents.loadURL(normalizeNavigation(rawUrl));
-    if (options.active !== false) this.#selectTab(id);
+    void view.webContents.loadURL(normalizeNavigation(rawUrl, this.#settings.searchEngine));
+    if (options.active !== false) void this.#selectTab(id);
     this.#broadcast();
     return record;
   }
 
+  #createTabView(record: TabRecord): WebContentsView {
+    const partition = record.state.private ? `locus-private-${this.window.id}` : this.#partitionName;
+    const view = new WebContentsView({
+      webPreferences: {
+        nodeIntegration: false,
+        sandbox: true,
+        contextIsolation: true,
+        webSecurity: true,
+        allowRunningInsecureContent: false,
+        partition,
+        spellcheck: true,
+      },
+    });
+    record.view = view;
+    this.#hardenSession(view.webContents.session);
+    view.setBackgroundColor("#ffffff");
+    this.#wireTab(record);
+    return view;
+  }
+
   #wireTab(tab: TabRecord): void {
-    const contents = tab.view.webContents;
+    const contents = tab.view!.webContents;
     const update = () => {
       tab.state.url = contents.getURL() || tab.state.url;
       tab.state.title = contents.getTitle() || tab.state.title;
@@ -437,13 +592,13 @@ export class BrowserController {
       this.#broadcast();
       this.#scheduleSave();
     };
-    contents.on("did-start-loading", update);
+    contents.on("did-start-loading", () => { tab.state.mediaAvailable = false; tab.state.mediaPlaying = false; update(); });
     contents.on("did-stop-loading", update);
     contents.on("did-navigate", update);
     contents.on("did-navigate-in-page", update);
     contents.on("page-title-updated", update);
-    contents.on("media-started-playing", update);
-    contents.on("media-paused", update);
+    contents.on("media-started-playing", () => { tab.state.mediaAvailable = true; tab.state.mediaPlaying = true; update(); });
+    contents.on("media-paused", () => { tab.state.mediaAvailable = true; tab.state.mediaPlaying = false; update(); });
     contents.on("page-favicon-updated", (_event, favicons) => {
       const favicon = favicons.find((url) => /^https?:|^data:image\//.test(url));
       if (favicon) tab.state.faviconUrl = favicon;
@@ -460,7 +615,11 @@ export class BrowserController {
       pushBounded(tab.console, `[${info.level ?? "info"}] ${info.message ?? ""}:${info.lineNumber ?? 0}`);
     });
     contents.setWindowOpenHandler((details) => {
-      if (isAllowedPageUrl(details.url)) this.#createTab(details.url, { active: true, private: this.#privateWindow });
+      if (isAllowedPageUrl(details.url)) this.#createTab(details.url, {
+        active: true,
+        private: this.#privateWindow,
+        ...(tab.state.groupId ? { groupId: tab.state.groupId } : {}),
+      });
       return { action: "deny" };
     });
     contents.on("will-navigate", (details) => {
@@ -468,7 +627,7 @@ export class BrowserController {
       if (!isAllowedPageUrl(url)) details.preventDefault();
     });
     contents.on("did-finish-load", () => {
-      if (!this.#privateWindow) this.#database.recordVisit(tab.state.id, contents.getURL(), contents.getTitle());
+      if (!this.#privateWindow) this.#database.recordVisit(this.#profileId, tab.state.id, contents.getURL(), contents.getTitle());
     });
     contents.on("found-in-page", (_event, result) => {
       if (tab.state.id !== this.#activeTabId) return;
@@ -481,9 +640,11 @@ export class BrowserController {
 
   async #enableNetworkCapture(tab: TabRecord): Promise<void> {
     try {
-      if (!tab.view.webContents.debugger.isAttached()) tab.view.webContents.debugger.attach("1.3");
-      await tab.view.webContents.debugger.sendCommand("Network.enable");
-      tab.view.webContents.debugger.on("message", (_event, method, params) => {
+      const contents = tab.view?.webContents;
+      if (!contents || contents.isDestroyed()) return;
+      if (!contents.debugger.isAttached()) contents.debugger.attach("1.3");
+      await contents.debugger.sendCommand("Network.enable");
+      contents.debugger.on("message", (_event, method, params) => {
         if (method === "Network.responseReceived") {
           const response = (params as { response?: { status?: number; url?: string; mimeType?: string } }).response;
           if (response) pushBounded(tab.network, `${response.status ?? 0} ${response.url ?? ""} ${response.mimeType ?? ""}`);
@@ -499,29 +660,35 @@ export class BrowserController {
     if (!tab) return;
     const ids = [...this.#tabs.keys()];
     const index = ids.indexOf(id);
-    this.window.contentView.removeChildView(tab.view);
-    tab.view.webContents.close();
+    if (tab.view && !tab.view.webContents.isDestroyed()) {
+      this.window.contentView.removeChildView(tab.view);
+      tab.view.webContents.close();
+    }
     this.#tabs.delete(id);
     this.#grants.revoke(this.#sessionId, id);
     if (this.#activeTabId === id) {
       this.#activeTabId = undefined;
       const next = ids[index + 1] ?? ids[index - 1];
-      if (next && this.#tabs.has(next)) this.#selectTab(next);
-      else this.#createTab("https://duckduckgo.com/", { active: true, private: this.#privateWindow });
+      if (next && this.#tabs.has(next)) void this.#selectTab(next);
+      else this.#createTab(searchHome(this.#settings.searchEngine), { active: true, private: this.#privateWindow });
     }
     this.#layout(false);
   }
 
-  #selectTab(id: string): void {
+  async #selectTab(id: string): Promise<void> {
     const selected = this.#tabs.get(id);
     if (!selected) return;
-    this.#active()?.view.webContents.stopFindInPage("clearSelection");
+    this.#active()?.view?.webContents.stopFindInPage("clearSelection");
     this.#find = { open: this.#find.open, query: "", matches: 0, activeMatchOrdinal: 0 };
-    for (const tab of this.#tabs.values()) tab.view.setVisible(false);
+    for (const tab of this.#tabs.values()) tab.view?.setVisible(false);
     this.#activeTabId = id;
-    selected.view.setVisible(true);
-    this.window.contentView.removeChildView(selected.view);
-    this.window.contentView.addChildView(selected.view);
+    selected.lastActiveAt = Date.now();
+    await this.#wakeTab(selected);
+    const selectedView = selected.view;
+    if (!selectedView) return;
+    selectedView.setVisible(true);
+    this.window.contentView.removeChildView(selectedView);
+    this.window.contentView.addChildView(selectedView);
     if (this.#workView) {
       this.window.contentView.removeChildView(this.#workView);
       this.window.contentView.addChildView(this.#workView);
@@ -542,20 +709,22 @@ export class BrowserController {
   async #navigateActive(value: string): Promise<void> {
     const tab = this.#active();
     if (!tab) return;
+    await this.#wakeTab(tab);
     tab.state.crashed = false;
-    await tab.view.webContents.loadURL(normalizeNavigation(value));
+    await tab.view!.webContents.loadURL(normalizeNavigation(value, this.#settings.searchEngine));
   }
 
   #toggleBookmark(): void {
     const tab = this.#active();
     if (!tab || !/^https?:\/\//.test(tab.state.url)) return;
-    const existing = this.#database.bookmarkForUrl(tab.state.url);
-    if (existing) this.#database.removeBookmark(existing.id);
-    else this.#database.addBookmark(tab.state.title || tab.state.url, tab.state.url);
+    if (this.#privateWindow) return;
+    const existing = this.#database.bookmarkForUrl(this.#profileId, tab.state.url);
+    if (existing) this.#database.removeBookmark(this.#profileId, existing.id);
+    else this.#database.addBookmark(this.#profileId, tab.state.title || tab.state.url, tab.state.url);
   }
 
   #findInPage(query: string, forward: boolean, findNext: boolean): void {
-    const contents = this.#active()?.view.webContents;
+    const contents = this.#active()?.view?.webContents;
     if (!contents) return;
     this.#find.open = true;
     this.#find.query = query;
@@ -571,19 +740,19 @@ export class BrowserController {
   }
 
   #closeFind(): void {
-    this.#active()?.view.webContents.stopFindInPage("clearSelection");
+    this.#active()?.view?.webContents.stopFindInPage("clearSelection");
     this.#find = { open: false, query: "", matches: 0, activeMatchOrdinal: 0 };
   }
 
   #setZoom(value: number): void {
-    const contents = this.#active()?.view.webContents;
+    const contents = this.#active()?.view?.webContents;
     if (!contents) return;
     const zoom = Math.round(Math.min(Math.max(value, 0.5), 2) * 10) / 10;
     contents.setZoomFactor(zoom);
   }
 
   async #printPage(): Promise<void> {
-    const contents = this.#active()?.view.webContents;
+    const contents = this.#active()?.view?.webContents;
     if (!contents) return;
     await new Promise<void>((resolve, reject) => {
       contents.print({ printBackground: true }, (success, failureReason) => {
@@ -603,7 +772,8 @@ export class BrowserController {
       filters: [{ name: "PDF document", extensions: ["pdf"] }],
     });
     if (result.canceled || !result.filePath) return;
-    const pdf = await tab.view.webContents.printToPDF({ printBackground: true });
+    await this.#wakeTab(tab);
+    const pdf = await tab.view!.webContents.printToPDF({ printBackground: true });
     await writeFile(result.filePath, pdf);
   }
 
@@ -624,7 +794,7 @@ export class BrowserController {
       : availableWidth;
     const chromeHeight = this.#chromeHeight();
     const pageBounds = { x: left, y: chromeHeight, width: pageWidth, height: Math.max(height - chromeHeight, 1) };
-    this.#active()?.view.setBounds(pageBounds);
+    this.#active()?.view?.setBounds(pageBounds);
 
     const openBounds = {
       x: width - targetWork,
@@ -673,7 +843,7 @@ export class BrowserController {
   }
 
   #chromeHeight(): number {
-    return CHROME_HEIGHT + (this.#find.open ? 38 : 0);
+    return CHROME_HEIGHT + (this.#find.open ? 38 : 0) + (this.#pendingSitePermission ? SITE_PERMISSION_HEIGHT : 0);
   }
 
   #broadcast(): void {
@@ -705,27 +875,43 @@ export class BrowserController {
         muted: tab.state.muted,
         pinned: false,
         private: false,
+        ...(tab.state.groupId ? { groupId: tab.state.groupId } : {}),
       }));
+    const storedGroups: StoredTabGroup[] = [...this.#groups.values()].map((group) => ({
+      ...group,
+      windowId: this.#windowId,
+      profileId: this.#profileId,
+    }));
     this.#database.saveWindow({
       id: this.#windowId,
       profileId: this.#profileId,
       sidebarOpen: this.#sidebarOpen,
       workOpen: this.#workOpen,
       workWidth: this.#workWidth,
-    }, storedTabs);
+    }, storedTabs, storedGroups);
   }
 
   #configureProfileSession(): void {
-    this.#hardenSession(session.fromPartition("persist:locus-profile-default"));
+    this.#hardenSession(session.fromPartition(this.#partitionName));
   }
 
   #hardenSession(browserSession: Electron.Session): void {
     if (this.#hardenedSessions.has(browserSession)) return;
     this.#hardenedSessions.add(browserSession);
-    browserSession.setPermissionCheckHandler(() => false);
-    browserSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+    browserSession.setPermissionCheckHandler((contents, permission, requestingOrigin, details) => {
+      if (!contents || !ALLOWED_SITE_PERMISSIONS.has(permission)) return false;
+      const origin = permissionOrigin(requestingOrigin, details);
+      if (!origin || !isSecurePermissionOrigin(origin)) return false;
+      const onceKey = sitePermissionKey(contents.id, origin, permission);
+      if (this.#oneTimeSitePermissions.has(onceKey)) return true;
+      if (this.#privateWindow) return false;
+      return this.#database.sitePermission(this.#profileId, origin, permission) === "allow";
+    });
+    browserSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+      this.#requestSitePermission(contents, permission, callback, details);
+    });
     browserSession.on("will-download", (_event, item, contents) => {
-      const tab = [...this.#tabs.values()].find((candidate) => candidate.view.webContents.id === contents.id);
+      const tab = [...this.#tabs.values()].find((candidate) => candidate.view?.webContents.id === contents.id);
       const agentInitiated = Boolean(tab && tab.agentDownloadArmedUntil > Date.now());
       const id = randomUUID();
       if (agentInitiated) {
@@ -733,11 +919,13 @@ export class BrowserController {
         const directory = join(app.getPath("userData"), "Agent Downloads");
         mkdirSync(directory, { recursive: true });
         item.setSavePath(join(directory, `${randomUUID()}-${safeName}`));
+      } else {
+        item.setSavePath(join(this.#settings.downloadDirectory, item.getFilename()));
       }
       this.#activeDownloads.set(id, item);
       const save = (state: StoredDownload["state"], finished = false) => {
         if (this.#disposed) return;
-        this.#database.saveDownload({
+        this.#database.saveDownload(this.#profileId, {
           id,
           ...(tab ? { tabId: tab.state.id } : {}),
           filename: item.getFilename(),
@@ -762,6 +950,204 @@ export class BrowserController {
         save(state, true);
       });
     });
+  }
+
+  #loadSettings(): BrowserSettingsState {
+    const appearance = this.#database.setting(this.#profileId, "appearance");
+    const searchEngine = this.#database.setting(this.#profileId, "searchEngine");
+    const sleepAfterMinutes = this.#database.setting(this.#profileId, "sleepAfterMinutes");
+    const downloadDirectory = this.#database.setting(this.#profileId, "downloadDirectory");
+    return {
+      appearance: isAppearance(appearance) ? appearance : "system",
+      searchEngine: isSearchEngine(searchEngine) ? searchEngine : "duckduckgo",
+      sleepAfterMinutes: isSleepInterval(sleepAfterMinutes) ? sleepAfterMinutes : 30,
+      downloadDirectory: typeof downloadDirectory === "string" && downloadDirectory ? downloadDirectory : app.getPath("downloads"),
+    };
+  }
+
+  #surfaceBackground(): string {
+    const dark = this.#privateWindow || this.#settings.appearance === "dark"
+      || (this.#settings.appearance === "system" && nativeTheme.shouldUseDarkColors);
+    return dark ? "#1b1b17" : "#f8f6f0";
+  }
+
+  #createTabGroup(tabId?: string): void {
+    if (this.#privateWindow) return;
+    const id = randomUUID();
+    const position = this.#groups.size;
+    this.#groups.set(id, {
+      id,
+      name: `Group ${position + 1}`,
+      color: GROUP_COLORS[position % GROUP_COLORS.length]!,
+      collapsed: false,
+      position,
+    });
+    const tab = this.#tabs.get(tabId ?? this.#activeTabId ?? "");
+    if (tab) tab.state.groupId = id;
+  }
+
+  async #deleteProfile(profileId: string): Promise<void> {
+    if (profileId === "default" || profileId === this.#profileId) return;
+    const profile = this.#database.profile(profileId);
+    if (!profile) return;
+    if (this.#canDeleteProfile && !this.#canDeleteProfile(profileId)) {
+      await dialog.showMessageBox(this.window, {
+        type: "info",
+        message: `Close every ${profile.name} window first.`,
+        detail: "A browser profile cannot be removed while one of its normal or private windows is open.",
+      });
+      return;
+    }
+    const profileSession = session.fromPartition(profile.partitionName);
+    await Promise.all([profileSession.clearStorageData(), profileSession.clearCache()]);
+    this.#database.deleteProfile(profileId);
+  }
+
+  #deleteTabGroup(groupId: string): void {
+    if (!this.#groups.delete(groupId)) return;
+    for (const tab of this.#tabs.values()) {
+      if (tab.state.groupId === groupId) delete tab.state.groupId;
+    }
+  }
+
+  async #toggleMediaPlayback(): Promise<void> {
+    const tab = this.#active();
+    if (!tab) return;
+    await this.#wakeTab(tab);
+    const pause = tab.state.mediaPlaying;
+    await tab.view!.webContents.executeJavaScript(`
+      (() => {
+        const media = Array.from(document.querySelectorAll("video, audio"));
+        for (const item of media) {
+          if (${pause}) item.pause();
+          else void item.play().catch(() => undefined);
+        }
+        return media.length;
+      })()
+    `, true).catch(() => undefined);
+  }
+
+  #requestSitePermission(
+    contents: Electron.WebContents,
+    permission: string,
+    callback: (granted: boolean) => void,
+    details: unknown,
+  ): void {
+    if (!ALLOWED_SITE_PERMISSIONS.has(permission) || contents.isDestroyed()) {
+      callback(false);
+      return;
+    }
+    const tab = [...this.#tabs.values()].find((candidate) => candidate.view?.webContents.id === contents.id);
+    const origin = permissionOrigin(contents.getURL(), details);
+    if (!tab || !origin || !isSecurePermissionOrigin(origin) || !isAllowedPageUrl(tab.state.url)) {
+      callback(false);
+      return;
+    }
+    const onceKey = sitePermissionKey(contents.id, origin, permission);
+    if (this.#oneTimeSitePermissions.has(onceKey)) {
+      callback(true);
+      return;
+    }
+    const stored = this.#privateWindow ? undefined : this.#database.sitePermission(this.#profileId, origin, permission);
+    if (stored) {
+      callback(stored === "allow");
+      return;
+    }
+    if (this.#pendingSitePermission) {
+      callback(false);
+      return;
+    }
+    const requestId = randomUUID();
+    const timeout = setTimeout(() => this.#finishSitePermission(requestId, false), 60_000);
+    this.#sitePermissionWaiters.set(requestId, { callback, timeout, contentsId: contents.id, origin, permission });
+    this.#pendingSitePermission = { requestId, tabId: tab.state.id, origin, permission: displayPermission(permission, details) };
+    this.#layout(true);
+    this.#broadcast();
+  }
+
+  #answerSitePermission(requestId: string, decision: "allow-once" | "always" | "deny"): void {
+    const waiter = this.#sitePermissionWaiters.get(requestId);
+    if (!waiter) return;
+    if (decision === "allow-once") {
+      this.#oneTimeSitePermissions.add(sitePermissionKey(waiter.contentsId, waiter.origin, waiter.permission));
+    } else if (!this.#privateWindow) {
+      this.#database.setSitePermission(this.#profileId, waiter.origin, waiter.permission, decision === "always" ? "allow" : "deny");
+    }
+    this.#finishSitePermission(requestId, decision !== "deny");
+  }
+
+  #finishSitePermission(requestId: string, granted: boolean): void {
+    const waiter = this.#sitePermissionWaiters.get(requestId);
+    if (!waiter) return;
+    clearTimeout(waiter.timeout);
+    this.#sitePermissionWaiters.delete(requestId);
+    if (this.#pendingSitePermission?.requestId === requestId) this.#pendingSitePermission = undefined;
+    waiter.callback(granted);
+    this.#layout(true);
+    this.#broadcast();
+  }
+
+  #sleepEligibleTabs(): void {
+    const minutes = this.#settings.sleepAfterMinutes;
+    const downloadingTabIds = new Set(this.#database.listDownloads(this.#profileId)
+      .flatMap((download) => download.state === "progressing" && download.tabId ? [download.tabId] : []));
+    const now = Date.now();
+    for (const tab of this.#tabs.values()) {
+      if (shouldSleepTab(this.#sleepCandidate(tab, downloadingTabIds.has(tab.state.id)), now, minutes)) this.#discardTab(tab);
+    }
+  }
+
+  #sleepTab(tabId: string): void {
+    const tab = this.#tabs.get(tabId);
+    if (!tab || !tab.view) return;
+    const downloading = this.#database.listDownloads(this.#profileId).some((download) => download.tabId === tabId && download.state === "progressing");
+    if (!canSleepTab(this.#sleepCandidate(tab, downloading))) return;
+    this.#discardTab(tab);
+  }
+
+  #sleepCandidate(tab: TabRecord, downloading: boolean) {
+    return {
+      active: tab.state.id === this.#activeTabId,
+      sleeping: tab.state.sleeping,
+      loading: tab.state.loading,
+      audible: tab.state.audible,
+      mediaPlaying: tab.state.mediaPlaying,
+      granted: this.#grants.grantsForTab(tab.state.id).length > 0,
+      downloading,
+      lastActiveAt: tab.lastActiveAt,
+    };
+  }
+
+  #discardTab(tab: TabRecord): void {
+    if (!tab.view) return;
+    if (!tab.view.webContents.isDestroyed()) {
+      this.window.contentView.removeChildView(tab.view);
+      tab.view.webContents.close();
+    }
+    tab.view = undefined;
+    tab.state.sleeping = true;
+    tab.state.loading = false;
+    tab.state.audible = false;
+    tab.state.mediaPlaying = false;
+    tab.state.mediaAvailable = false;
+    tab.state.canGoBack = false;
+    tab.state.canGoForward = false;
+    this.#scheduleSave();
+    this.#broadcast();
+  }
+
+  async #wakeTab(tab: TabRecord): Promise<void> {
+    if (tab.view && !tab.view.webContents.isDestroyed()) return;
+    const url = safeRestoreUrl(tab.state.url);
+    const muted = tab.state.muted;
+    tab.state.sleeping = false;
+    tab.state.loading = true;
+    tab.state.crashed = false;
+    const view = this.#createTabView(tab);
+    view.webContents.setAudioMuted(muted);
+    this.window.contentView.addChildView(view, 0);
+    view.setVisible(false);
+    await view.webContents.loadURL(url).catch(() => undefined);
   }
 
   #bindRuntime(): void {
@@ -868,7 +1254,8 @@ export class BrowserController {
     const needsInteract = ["browser_navigate", "browser_input", "browser_resize", "browser_javascript"].includes(request.tool);
     const tab = this.#tabForAgent(request.session_id, stringArg(args, "tab_id"), needsInteract);
     if (TabAccessRegistry.isProtectedUrl(tab.state.url, tab.state.private)) throw new Error("This page cannot be shared with Locus.");
-    const contents = tab.view.webContents;
+    await this.#wakeTab(tab);
+    const contents = tab.view!.webContents;
 
     switch (request.tool) {
       case "browser_navigate": {
@@ -877,7 +1264,7 @@ export class BrowserController {
         if (action === "back") contents.navigationHistory.goBack();
         else if (action === "forward") contents.navigationHistory.goForward();
         else if (action === "reload") contents.reload();
-        else await contents.loadURL(normalizeNavigation(action));
+        else await contents.loadURL(normalizeNavigation(action, this.#settings.searchEngine));
         return { text: `Opened ${contents.getTitle() || contents.getURL()}. Call browser_read_page to inspect it.` };
       }
       case "browser_read_page": {
@@ -992,14 +1379,16 @@ export class BrowserController {
   }
 
   async #bridge(tab: TabRecord, invocation: string): Promise<unknown> {
-    return await tab.view.webContents.executeJavaScriptInIsolatedWorld(BRIDGE_WORLD, [
+    await this.#wakeTab(tab);
+    return await tab.view!.webContents.executeJavaScriptInIsolatedWorld(BRIDGE_WORLD, [
       { code: `${browserBridgeSource}\n${invocation}` },
     ]);
   }
 
   async #browserInput(tab: TabRecord, args: Record<string, unknown>): Promise<Record<string, unknown>> {
     const action = (stringArg(args, "action") || "click").toLowerCase();
-    const contents = tab.view.webContents;
+    await this.#wakeTab(tab);
+    const contents = tab.view!.webContents;
     if (!contents.debugger.isAttached()) contents.debugger.attach("1.3");
     tab.agentDownloadArmedUntil = Date.now() + 5_000;
     if (action === "set_value") {
@@ -1029,8 +1418,8 @@ export class BrowserController {
       return { text: `Pressed ${key}.` };
     }
     if (action === "scroll") {
-      const x = numberArg(args, "x") ?? tab.view.getBounds().width / 2;
-      const y = numberArg(args, "y") ?? tab.view.getBounds().height / 2;
+      const x = numberArg(args, "x") ?? tab.view!.getBounds().width / 2;
+      const y = numberArg(args, "y") ?? tab.view!.getBounds().height / 2;
       await contents.debugger.sendCommand("Input.dispatchMouseEvent", {
         type: "mouseWheel", x, y,
         deltaX: numberArg(args, "delta_x") ?? 0,
@@ -1091,11 +1480,68 @@ function surfaceUrl(rendererUrl: string, surface: "shell" | "work"): string {
   return url.toString();
 }
 
-function normalizeNavigation(value: string): string {
+export function normalizeNavigation(value: string, searchEngine: SearchEngine = "duckduckgo"): string {
   const trimmed = value.trim();
   if (/^https?:\/\//i.test(trimmed) || trimmed === "about:blank") return trimmed;
   if (/^[\w.-]+\.[a-z]{2,}(?:[/:?#]|$)/i.test(trimmed) && !trimmed.includes(" ")) return `https://${trimmed}`;
-  return `https://duckduckgo.com/?q=${encodeURIComponent(trimmed)}`;
+  return searchUrl(searchEngine, trimmed);
+}
+
+function searchHome(searchEngine: SearchEngine): string {
+  switch (searchEngine) {
+    case "brave": return "https://search.brave.com/";
+    case "google": return "https://www.google.com/";
+    case "bing": return "https://www.bing.com/";
+    case "duckduckgo": return "https://duckduckgo.com/";
+  }
+}
+
+function searchUrl(searchEngine: SearchEngine, query: string): string {
+  const encoded = encodeURIComponent(query);
+  switch (searchEngine) {
+    case "brave": return `https://search.brave.com/search?q=${encoded}`;
+    case "google": return `https://www.google.com/search?q=${encoded}`;
+    case "bing": return `https://www.bing.com/search?q=${encoded}`;
+    case "duckduckgo": return `https://duckduckgo.com/?q=${encoded}`;
+  }
+}
+
+function isAppearance(value: unknown): value is Appearance {
+  return value === "system" || value === "light" || value === "dark";
+}
+
+function isSearchEngine(value: unknown): value is SearchEngine {
+  return value === "duckduckgo" || value === "brave" || value === "google" || value === "bing";
+}
+
+function isSleepInterval(value: unknown): value is BrowserSettingsState["sleepAfterMinutes"] {
+  return value === 0 || value === 15 || value === 30 || value === 60;
+}
+
+function permissionOrigin(primary: string | null | undefined, details: unknown): string {
+  const info = details as { requestingUrl?: string; securityOrigin?: string } | undefined;
+  const value = info?.requestingUrl || info?.securityOrigin || primary || "";
+  try { return new URL(value).origin; } catch { return ""; }
+}
+
+function isSecurePermissionOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    return url.protocol === "https:" || (url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1"));
+  } catch {
+    return false;
+  }
+}
+
+function displayPermission(permission: string, details: unknown): string {
+  const mediaTypes = (details as { mediaTypes?: string[] } | undefined)?.mediaTypes;
+  if (permission === "media" && mediaTypes?.length) return mediaTypes.join(" and ");
+  if (permission === "clipboard-read") return "clipboard";
+  return permission;
+}
+
+function sitePermissionKey(contentsId: number, origin: string, permission: string): string {
+  return `${contentsId}:${origin}:${permission}`;
 }
 
 function safeRestoreUrl(url: string): string {

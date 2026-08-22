@@ -34,24 +34,24 @@ describe("BrowserDatabase", () => {
   it("stores browser library records and tombstones removed bookmarks", () => {
     const database = new BrowserDatabase(join(mkdtempSync(join(tmpdir(), "locus-library-")), "browser.sqlite"));
 
-    database.recordVisit("tab-1", "https://example.com/docs", "Example Docs");
-    expect(database.listHistory()).toMatchObject([
+    database.recordVisit("default", "tab-1", "https://example.com/docs", "Example Docs");
+    expect(database.listHistory("default")).toMatchObject([
       { title: "Example Docs", url: "https://example.com/docs" },
     ]);
 
-    const bookmarkId = database.addBookmark("Example", "https://example.com");
-    expect(database.bookmarkForUrl("https://example.com")?.id).toBe(bookmarkId);
-    expect(database.listBookmarks()).toHaveLength(1);
-    database.removeBookmark(bookmarkId);
-    expect(database.listBookmarks()).toEqual([]);
-    expect(database.bookmarkForUrl("https://example.com")).toBeUndefined();
+    const bookmarkId = database.addBookmark("default", "Example", "https://example.com");
+    expect(database.bookmarkForUrl("default", "https://example.com")?.id).toBe(bookmarkId);
+    expect(database.listBookmarks("default")).toHaveLength(1);
+    database.removeBookmark("default", bookmarkId);
+    expect(database.listBookmarks("default")).toEqual([]);
+    expect(database.bookmarkForUrl("default", "https://example.com")).toBeUndefined();
 
     database.close();
   });
 
   it("updates download progress without replacing its identity", () => {
     const database = new BrowserDatabase(join(mkdtempSync(join(tmpdir(), "locus-download-")), "browser.sqlite"));
-    database.saveDownload({
+    database.saveDownload("default", {
       id: "download-1",
       tabId: "tab-1",
       filename: "report.pdf",
@@ -63,7 +63,7 @@ describe("BrowserDatabase", () => {
       agentInitiated: false,
       startedAt: 123,
     });
-    database.saveDownload({
+    database.saveDownload("default", {
       id: "download-1",
       tabId: "tab-1",
       filename: "report.pdf",
@@ -77,13 +77,47 @@ describe("BrowserDatabase", () => {
       finishedAt: 124,
     });
 
-    expect(database.listDownloads()).toMatchObject([{
+    expect(database.listDownloads("default")).toMatchObject([{
       id: "download-1",
       filename: "report.pdf",
       state: "completed",
       receivedBytes: 1_024,
       finishedAt: 124,
     }]);
+    database.close();
+  });
+
+  it("isolates profile libraries and persists profile settings and permissions", () => {
+    const database = new BrowserDatabase(join(mkdtempSync(join(tmpdir(), "locus-profiles-")), "browser.sqlite"));
+    const work = database.createProfile("Work");
+    database.recordVisit(work.id, "work-tab", "https://work.example", "Work");
+    database.addBookmark(work.id, "Work", "https://work.example");
+    database.setSetting(work.id, "searchEngine", "brave");
+    database.setSitePermission(work.id, "https://meet.example", "media", "allow");
+
+    expect(database.listHistory("default")).toEqual([]);
+    expect(database.listBookmarks("default")).toEqual([]);
+    expect(database.listHistory(work.id)).toHaveLength(1);
+    expect(database.listBookmarks(work.id)).toHaveLength(1);
+    expect(database.setting(work.id, "searchEngine")).toBe("brave");
+    expect(database.sitePermission(work.id, "https://meet.example", "media")).toBe("allow");
+    database.deleteProfile(work.id);
+    expect(database.profile(work.id)).toBeUndefined();
+    expect(database.listHistory(work.id)).toEqual([]);
+    database.close();
+  });
+
+  it("round-trips tab groups with their tab membership", () => {
+    const database = new BrowserDatabase(join(mkdtempSync(join(tmpdir(), "locus-groups-")), "browser.sqlite"));
+    database.saveWindow({ id: "group-window", profileId: "default", sidebarOpen: true, workOpen: false, workWidth: 420 }, [{
+      id: "group-tab", windowId: "group-window", profileId: "default", position: 0,
+      url: "https://example.com", title: "Example", active: true, muted: false, pinned: false, private: false, groupId: "group-1",
+    }], [{
+      id: "group-1", windowId: "group-window", profileId: "default", name: "Research", color: "blue", collapsed: true, position: 0,
+    }]);
+
+    expect(database.loadTabGroups("group-window")).toMatchObject([{ id: "group-1", name: "Research", collapsed: 1 }]);
+    expect(database.loadTabs("group-window")[0]?.groupId).toBe("group-1");
     database.close();
   });
 });

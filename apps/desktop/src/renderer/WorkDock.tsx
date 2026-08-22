@@ -71,7 +71,7 @@ export function WorkDock() {
   const stopResize = () => { resizing.current = null; };
 
   return (
-    <div className="work-dock">
+    <div className={`work-dock theme-${state.settings.appearance}`}>
       <div className="dock-resize-handle" onPointerDown={startResize} onPointerMove={resize} onPointerUp={stopResize} onPointerCancel={stopResize} />
       <header className="dock-header">
         <div className="dock-title"><span className="locus-mark"><Sparkles size={14} /></span><strong>Work</strong></div>

@@ -1,7 +1,10 @@
 import type { TabAccessGrant } from "@locus/protocol";
 
 export type WorkMode = "ask" | "work" | "plan" | "build";
-export type SidebarSection = "tabs" | "bookmarks" | "history" | "downloads" | "spaces" | "conversations";
+export type SidebarSection = "tabs" | "bookmarks" | "history" | "downloads" | "spaces" | "conversations" | "settings";
+export type SearchEngine = "duckduckgo" | "brave" | "google" | "bing";
+export type Appearance = "system" | "light" | "dark";
+export type SitePermissionDecision = "allow" | "deny";
 export type WorkPanel =
   | "chat"
   | "overview"
@@ -27,7 +30,47 @@ export interface BrowserTabState {
   muted: boolean;
   private: boolean;
   crashed: boolean;
+  sleeping: boolean;
+  mediaPlaying: boolean;
+  mediaAvailable: boolean;
+  groupId?: string;
   grants: TabAccessGrant[];
+}
+
+export interface BrowserProfileState {
+  id: string;
+  name: string;
+  partitionName: string;
+  createdAt: number;
+}
+
+export interface TabGroupState {
+  id: string;
+  name: string;
+  color: string;
+  collapsed: boolean;
+  position: number;
+}
+
+export interface SitePermissionState {
+  origin: string;
+  permission: string;
+  decision: SitePermissionDecision;
+  updatedAt: number;
+}
+
+export interface PendingSitePermission {
+  requestId: string;
+  tabId: string;
+  origin: string;
+  permission: string;
+}
+
+export interface BrowserSettingsState {
+  appearance: Appearance;
+  searchEngine: SearchEngine;
+  sleepAfterMinutes: 0 | 15 | 30 | 60;
+  downloadDirectory: string;
 }
 
 export interface BookmarkState {
@@ -95,18 +138,24 @@ export interface BrowserAppState {
   profileId: string;
   privateWindow: boolean;
   tabs: BrowserTabState[];
+  groups: TabGroupState[];
+  profiles: BrowserProfileState[];
+  currentProfile: BrowserProfileState;
   activeTabId?: string;
   sidebarOpen: boolean;
   sidebarSection: SidebarSection;
   bookmarks: BookmarkState[];
   history: HistoryEntryState[];
   downloads: DownloadState[];
+  sitePermissions: SitePermissionState[];
+  pendingSitePermission?: PendingSitePermission;
+  settings: BrowserSettingsState;
   activePageBookmarked: boolean;
   find: FindState;
   zoomFactor: number;
   workOpen: boolean;
   workWidth: number;
   workOverlay: boolean;
-  searchEngine: "duckduckgo";
+  searchEngine: SearchEngine;
   work: WorkState;
 }

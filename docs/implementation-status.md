@@ -10,11 +10,19 @@ of truth.
 - Permanent tab strip, navigation controls, omnibox, functional browser
   library sidebar, profile/download controls, and a top-right Work control.
 - Sandboxed `WebContentsView` tabs, explicit destruction, popup-to-tab routing,
-  strict renderer isolation, denied page permissions, certificate rejection,
+  strict renderer isolation, brokered site permissions, certificate rejection,
   profile partitions, restoration, history records, and WAL SQLite storage.
 - Editable bookmarks, browsable history, a persisted download manager with
   cancel/reveal actions, ephemeral private windows, page find/zoom, native
   printing, and PDF export.
+- Create/open/rename/delete profile management with separate Chromium
+  partitions and profile-scoped history, bookmarks, downloads, settings, and
+  permission decisions. Search provider, appearance, downloads folder, and
+  sleeping policy are user-selectable.
+- Persisted tab groups with collapse/reorder membership, media pause/resume and
+  mute controls, and real background-tab sleeping. Sleeping destroys the tab
+  renderer and restores it on selection while protecting active audio,
+  downloads, agent grants, loading tabs, and active media.
 - The same semantic light/dark palette as native Locus: warm paper surfaces,
   ink typography, lime signal, olive actions, and semantic status colors,
   including Reduced Motion and Reduced Transparency alternatives.
@@ -36,9 +44,8 @@ of truth.
 
 ## Required before canary
 
-- Finish standard browser product surfaces: tab groups/sleeping, site
-  permission prompts, media controls, and complete settings/profile
-  management.
+- Add the first-run onboarding ceremony, including an explicit unsponsored
+  search-provider choice, accessibility preferences, and import opt-in.
 - Connect the credential vault to user-driven save/autofill UI and add passkey
   account ceremony. The current sync service starts at authenticated device
   tokens; the production passkey registration/authentication edge is not yet
