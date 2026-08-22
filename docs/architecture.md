@@ -38,6 +38,8 @@ manifest. The original Swift app remains a separate native consumer.
 
 `Locus Browser` uses a distinct macOS support directory and database. There is
 no migration from Locus. Normal browser state is stored in WAL-mode SQLite;
-private tabs are not persisted. Password ciphertext and agent download
-quarantine remain local. Sync is opt-in and deliberately excludes cookies,
+private windows use an ephemeral Chromium partition and do not persist tabs or
+history. Work Mode is unavailable there, and the broker independently rejects
+all private-tab grants. Password ciphertext and agent download quarantine
+remain local. Sync is opt-in and deliberately excludes cookies,
 passwords, workspace files, conversations, memories, credentials, and runs.

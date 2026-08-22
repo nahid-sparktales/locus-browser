@@ -1,14 +1,9 @@
 import { z } from "zod";
-
-export const ipcChannels = {
-  getState: "browser:get-state",
-  command: "browser:command",
-  state: "browser:state",
-  focusAddress: "browser:focus-address",
-} as const;
+export { ipcChannels } from "./channels.js";
 
 export const BrowserCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("new-tab"), url: z.string().optional() }),
+  z.object({ type: z.literal("new-private-window") }),
   z.object({ type: z.literal("select-tab"), tabId: z.string().min(1) }),
   z.object({ type: z.literal("close-tab"), tabId: z.string().min(1) }),
   z.object({ type: z.literal("reorder-tab"), tabId: z.string().min(1), beforeTabId: z.string().min(1) }),
@@ -18,6 +13,20 @@ export const BrowserCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("reload") }),
   z.object({ type: z.literal("stop") }),
   z.object({ type: z.literal("toggle-sidebar") }),
+  z.object({ type: z.literal("set-sidebar-section"), section: z.enum(["tabs", "bookmarks", "history", "downloads", "spaces", "conversations"]) }),
+  z.object({ type: z.literal("toggle-bookmark") }),
+  z.object({ type: z.literal("remove-bookmark"), bookmarkId: z.string().min(1) }),
+  z.object({ type: z.literal("open-library-item"), url: z.string().min(1) }),
+  z.object({ type: z.literal("reveal-download"), downloadId: z.string().min(1) }),
+  z.object({ type: z.literal("cancel-download"), downloadId: z.string().min(1) }),
+  z.object({ type: z.literal("toggle-find") }),
+  z.object({ type: z.literal("find-in-page"), query: z.string().max(10_000), forward: z.boolean().optional(), findNext: z.boolean().optional() }),
+  z.object({ type: z.literal("close-find") }),
+  z.object({ type: z.literal("zoom-in") }),
+  z.object({ type: z.literal("zoom-out") }),
+  z.object({ type: z.literal("zoom-reset") }),
+  z.object({ type: z.literal("print-page") }),
+  z.object({ type: z.literal("save-page-pdf") }),
   z.object({ type: z.literal("toggle-work") }),
   z.object({ type: z.literal("set-work-width"), width: z.number().finite() }),
   z.object({ type: z.literal("set-reduced-motion"), enabled: z.boolean() }),

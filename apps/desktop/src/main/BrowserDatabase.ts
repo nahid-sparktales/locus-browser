@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
@@ -33,6 +34,35 @@ export interface StoredCredential {
   origin: string;
   username: string;
   encryptedPassword: Uint8Array;
+}
+
+export interface StoredBookmark {
+  id: string;
+  title: string;
+  url: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface StoredHistoryEntry {
+  id: string;
+  title: string;
+  url: string;
+  visitedAt: number;
+}
+
+export interface StoredDownload {
+  id: string;
+  tabId?: string;
+  filename: string;
+  url: string;
+  path: string;
+  state: "progressing" | "completed" | "cancelled" | "interrupted";
+  receivedBytes: number;
+  totalBytes: number;
+  agentInitiated: boolean;
+  startedAt: number;
+  finishedAt?: number;
 }
 
 export class BrowserDatabase {
@@ -138,6 +168,77 @@ export class BrowserDatabase {
     `).run(tabId, url, title);
   }
 
+  listHistory(limit = 250): StoredHistoryEntry[] {
+    return this.#database.prepare(`
+      SELECT id, title, url, visited_at AS visitedAt
+      FROM history_visits ORDER BY visited_at DESC LIMIT ?
+    `).all(Math.max(1, Math.min(limit, 2_000))) as unknown as StoredHistoryEntry[];
+  }
+
+  listBookmarks(): StoredBookmark[] {
+    return this.#database.prepare(`
+      SELECT id, title, url, created_at AS createdAt, updated_at AS updatedAt
+      FROM bookmarks WHERE url IS NOT NULL AND tombstoned_at IS NULL
+      ORDER BY position ASC, updated_at DESC
+    `).all() as unknown as StoredBookmark[];
+  }
+
+  bookmarkForUrl(url: string): StoredBookmark | undefined {
+    return this.#database.prepare(`
+      SELECT id, title, url, created_at AS createdAt, updated_at AS updatedAt
+      FROM bookmarks WHERE url = ? AND tombstoned_at IS NULL LIMIT 1
+    `).get(url) as unknown as StoredBookmark | undefined;
+  }
+
+  addBookmark(title: string, url: string): string {
+    const id = randomDatabaseId();
+    const position = Date.now().toString().padStart(20, "0");
+    this.#database.prepare(`
+      INSERT INTO bookmarks(id, position, title, url, created_at, updated_at)
+      VALUES (?, ?, ?, ?, unixepoch(), unixepoch())
+    `).run(id, position, title || url, url);
+    return id;
+  }
+
+  removeBookmark(id: string): void {
+    this.#database.prepare("UPDATE bookmarks SET tombstoned_at = unixepoch(), updated_at = unixepoch() WHERE id = ?").run(id);
+  }
+
+  saveDownload(download: StoredDownload): void {
+    this.#database.prepare(`
+      INSERT INTO downloads(
+        id, tab_id, filename, url, path, state, received_bytes, total_bytes,
+        agent_initiated, started_at, finished_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        filename=excluded.filename, path=excluded.path, state=excluded.state,
+        received_bytes=excluded.received_bytes, total_bytes=excluded.total_bytes,
+        finished_at=excluded.finished_at
+    `).run(
+      download.id,
+      download.tabId ?? null,
+      download.filename,
+      download.url,
+      download.path,
+      download.state,
+      download.receivedBytes,
+      download.totalBytes,
+      Number(download.agentInitiated),
+      download.startedAt,
+      download.finishedAt ?? null,
+    );
+  }
+
+  listDownloads(limit = 100): StoredDownload[] {
+    return this.#database.prepare(`
+      SELECT id, tab_id AS tabId, filename, url, path, state,
+             received_bytes AS receivedBytes, total_bytes AS totalBytes,
+             agent_initiated AS agentInitiated, started_at AS startedAt,
+             finished_at AS finishedAt
+      FROM downloads ORDER BY started_at DESC LIMIT ?
+    `).all(Math.max(1, Math.min(limit, 1_000))) as unknown as StoredDownload[];
+  }
+
   saveCredential(credential: StoredCredential): void {
     this.#database.prepare(`
       INSERT INTO browser_credentials(id, origin, username, encrypted_password, updated_at)
@@ -205,15 +306,19 @@ export class BrowserDatabase {
         position TEXT NOT NULL,
         title TEXT NOT NULL,
         url TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
         updated_at INTEGER NOT NULL,
         tombstoned_at INTEGER
       );
       CREATE TABLE IF NOT EXISTS downloads (
         id TEXT PRIMARY KEY,
         tab_id TEXT,
+        filename TEXT NOT NULL DEFAULT '',
         url TEXT NOT NULL,
         path TEXT NOT NULL,
         state TEXT NOT NULL,
+        received_bytes INTEGER NOT NULL DEFAULT 0,
+        total_bytes INTEGER NOT NULL DEFAULT 0,
         agent_initiated INTEGER NOT NULL DEFAULT 0,
         started_at INTEGER NOT NULL,
         finished_at INTEGER
@@ -254,5 +359,20 @@ export class BrowserDatabase {
       VALUES ('default', 'Personal', 'persist:locus-profile-default');
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, unixepoch());
     `);
+    this.#ensureColumn("bookmarks", "created_at", "INTEGER NOT NULL DEFAULT 0");
+    this.#ensureColumn("downloads", "filename", "TEXT NOT NULL DEFAULT ''");
+    this.#ensureColumn("downloads", "received_bytes", "INTEGER NOT NULL DEFAULT 0");
+    this.#ensureColumn("downloads", "total_bytes", "INTEGER NOT NULL DEFAULT 0");
   }
+
+  #ensureColumn(table: string, column: string, definition: string): void {
+    const columns = this.#database.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{ name: string }>;
+    if (!columns.some((entry) => entry.name === column)) {
+      this.#database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
+  }
+}
+
+function randomDatabaseId(): string {
+  return randomUUID();
 }

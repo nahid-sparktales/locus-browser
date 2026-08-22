@@ -1,11 +1,12 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { BrowserAppState } from "../shared/types.js";
-import { BrowserCommandSchema, ipcChannels, type BrowserCommand } from "../shared/ipc.js";
+import { ipcChannels } from "../shared/channels.js";
+import type { BrowserCommand } from "../shared/ipc.js";
 
 const api = {
   getState: (): Promise<BrowserAppState> => ipcRenderer.invoke(ipcChannels.getState),
   command: (command: BrowserCommand): Promise<BrowserAppState> =>
-    ipcRenderer.invoke(ipcChannels.command, BrowserCommandSchema.parse(command)),
+    ipcRenderer.invoke(ipcChannels.command, command),
   subscribe: (listener: (state: BrowserAppState) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, state: BrowserAppState) => listener(state);
     ipcRenderer.on(ipcChannels.state, handler);

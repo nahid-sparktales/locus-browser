@@ -30,6 +30,11 @@ The browser has its own data directory and does not read or migrate data from
 Locus. Set `LOCUS_PLATFORM_ROOT` to override the sibling platform checkout used
 for the development agent runtime.
 
+For renderer-only UI work, `pnpm --filter @locus/browser-desktop exec vite`
+opens a safe local preview with representative browser state. Production file
+builds never install that preview bridge; they require the sandboxed Electron
+preload and main-process schema validation.
+
 ## Verify
 
 ```bash

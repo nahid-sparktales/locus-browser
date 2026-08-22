@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   BrowserWindow,
   WebContentsView,
   app,
-  ipcMain,
+  dialog,
   session,
   shell,
-  type IpcMainInvokeEvent,
   type Rectangle,
 } from "electron";
 import {
@@ -16,15 +17,17 @@ import {
   type BrowserActionResult,
 } from "@locus/protocol";
 import { bridgeInvocation, browserBridgeSource } from "@locus/browser-bridge";
-import { BrowserCommandSchema, ipcChannels, type BrowserCommand } from "../shared/ipc.js";
+import { ipcChannels } from "../shared/channels.js";
+import type { BrowserCommand } from "../shared/ipc.js";
 import type {
   BrowserAppState,
   BrowserTabState,
   PendingPermission,
+  SidebarSection,
   WorkMessage,
 } from "../shared/types.js";
 import { AgentRuntime, type AgentEvent } from "./AgentRuntime.js";
-import { BrowserDatabase, type StoredTab } from "./BrowserDatabase.js";
+import { BrowserDatabase, type StoredDownload, type StoredTab } from "./BrowserDatabase.js";
 import { TabAccessRegistry } from "./TabAccessRegistry.js";
 
 const CHROME_HEIGHT = 92;
@@ -50,20 +53,30 @@ interface BrowserPermissionWaiter {
   resolve: (decision: "allow" | "always" | "deny") => void;
 }
 
+export interface BrowserControllerOptions {
+  privateWindow?: boolean;
+  windowId?: string;
+  onNewPrivateWindow?: () => void;
+}
+
 export class BrowserController {
   readonly window: BrowserWindow;
-  readonly #windowId = "primary";
+  readonly #windowId: string;
   readonly #profileId = "default";
+  readonly #privateWindow: boolean;
+  readonly #onNewPrivateWindow: (() => void) | undefined;
   readonly #database: BrowserDatabase;
   readonly #grants = new TabAccessRegistry();
   readonly #tabs = new Map<string, TabRecord>();
   readonly #runtime: AgentRuntime;
   readonly #permissionWaiters = new Map<string, BrowserPermissionWaiter>();
+  readonly #activeDownloads = new Map<string, Electron.DownloadItem>();
   readonly #hardenedSessions = new WeakSet<Electron.Session>();
   #sessionId: string = randomUUID();
   #workView: WebContentsView | undefined;
   #activeTabId: string | undefined;
   #sidebarOpen = false;
+  #sidebarSection: SidebarSection = "tabs";
   #workOpen = false;
   #workWidth = WORK_DEFAULT;
   #workOverlay = false;
@@ -83,12 +96,17 @@ export class BrowserController {
     },
   ];
   #pendingPermission: PendingPermission | undefined;
+  #find = { open: false, query: "", matches: 0, activeMatchOrdinal: 0 };
   #saveTimer: NodeJS.Timeout | undefined;
+  #disposed = false;
 
-  constructor(rendererUrl: string, preloadPath: string, platformRoot: string) {
+  constructor(rendererUrl: string, preloadPath: string, platformRoot: string, options: BrowserControllerOptions = {}) {
+    this.#privateWindow = Boolean(options.privateWindow);
+    this.#windowId = options.windowId ?? (this.#privateWindow ? `private-${randomUUID()}` : "primary");
+    this.#onNewPrivateWindow = options.onNewPrivateWindow;
     this.#database = new BrowserDatabase(join(app.getPath("userData"), "browser.sqlite3"));
     this.#runtime = new AgentRuntime(platformRoot, join(app.getPath("userData"), "agent"));
-    const stored = this.#database.loadWindow(this.#windowId);
+    const stored = this.#privateWindow ? undefined : this.#database.loadWindow(this.#windowId);
     this.#sidebarOpen = Boolean(stored?.sidebarOpen);
     this.#workOpen = Boolean(stored?.workOpen);
     this.#workWidth = clamp(stored?.workWidth ?? WORK_DEFAULT, WORK_MIN, WORK_MAX);
@@ -100,7 +118,8 @@ export class BrowserController {
       minHeight: 560,
       titleBarStyle: "hiddenInset",
       trafficLightPosition: { x: 16, y: 16 },
-      backgroundColor: "#f6f6f4",
+      backgroundColor: this.#privateWindow ? "#20201b" : "#f3f1ea",
+      title: this.#privateWindow ? "Private — Locus Browser" : "Locus Browser",
       show: false,
       webPreferences: trustedRendererPreferences(preloadPath),
     });
@@ -112,17 +131,23 @@ export class BrowserController {
 
     this.#configureProfileSession();
     this.#restoreTabs();
-    this.#createWorkView(rendererUrl, preloadPath);
-    this.#bindRuntime();
-    this.#installIpc();
+    if (this.#privateWindow) {
+      this.#runtimeState = "offline";
+      this.#runtimeMessage = "Work Mode is unavailable in private windows.";
+    } else {
+      this.#createWorkView(rendererUrl, preloadPath);
+      this.#bindRuntime();
+    }
     this.#layout(false);
-    void this.#runtime.start();
+    if (!this.#privateWindow) void this.#runtime.start();
   }
 
   state(): BrowserAppState {
+    const activeUrl = this.#active()?.state.url ?? "";
     return {
       windowId: this.#windowId,
       profileId: this.#profileId,
+      privateWindow: this.#privateWindow,
       tabs: [...this.#tabs.values()].map((tab) => ({
         ...tab.state,
         active: tab.state.id === this.#activeTabId,
@@ -130,6 +155,16 @@ export class BrowserController {
       })),
       ...(this.#activeTabId ? { activeTabId: this.#activeTabId } : {}),
       sidebarOpen: this.#sidebarOpen,
+      sidebarSection: this.#sidebarSection,
+      bookmarks: this.#database.listBookmarks(),
+      history: this.#privateWindow ? [] : this.#database.listHistory(),
+      downloads: this.#database.listDownloads().map((download) => ({
+        ...download,
+        agentInitiated: Boolean(download.agentInitiated),
+      })),
+      activePageBookmarked: Boolean(activeUrl && this.#database.bookmarkForUrl(activeUrl)),
+      find: this.#find,
+      zoomFactor: this.#active()?.view.webContents.getZoomFactor() ?? 1,
       workOpen: this.#workOpen,
       workWidth: this.#workWidth,
       workOverlay: this.#workOverlay,
@@ -155,10 +190,17 @@ export class BrowserController {
     void this.command({ type: "toggle-work" });
   }
 
+  ownsSender(senderId: number): boolean {
+    return this.window.webContents.id === senderId || this.#workView?.webContents.id === senderId;
+  }
+
   async command(command: BrowserCommand): Promise<BrowserAppState> {
     switch (command.type) {
       case "new-tab":
-        this.#createTab(command.url ?? "https://duckduckgo.com/", { active: true });
+        this.#createTab(command.url ?? "https://duckduckgo.com/", { active: true, private: this.#privateWindow });
+        break;
+      case "new-private-window":
+        this.#onNewPrivateWindow?.();
         break;
       case "select-tab":
         this.#selectTab(command.tabId);
@@ -188,7 +230,57 @@ export class BrowserController {
         this.#sidebarOpen = !this.#sidebarOpen;
         this.#layout(true);
         break;
+      case "set-sidebar-section":
+        this.#sidebarSection = command.section;
+        this.#sidebarOpen = true;
+        this.#layout(true);
+        break;
+      case "toggle-bookmark":
+        this.#toggleBookmark();
+        break;
+      case "remove-bookmark":
+        this.#database.removeBookmark(command.bookmarkId);
+        break;
+      case "open-library-item":
+        this.#createTab(command.url, { active: true, private: this.#privateWindow });
+        break;
+      case "reveal-download": {
+        const download = this.#database.listDownloads().find((entry) => entry.id === command.downloadId);
+        if (download?.path) shell.showItemInFolder(download.path);
+        break;
+      }
+      case "cancel-download":
+        this.#activeDownloads.get(command.downloadId)?.cancel();
+        break;
+      case "toggle-find":
+        this.#find.open = !this.#find.open;
+        if (!this.#find.open) this.#closeFind();
+        this.#layout(false);
+        break;
+      case "find-in-page":
+        this.#findInPage(command.query, command.forward ?? true, command.findNext ?? false);
+        break;
+      case "close-find":
+        this.#closeFind();
+        this.#layout(false);
+        break;
+      case "zoom-in":
+        this.#setZoom((this.#active()?.view.webContents.getZoomFactor() ?? 1) + 0.1);
+        break;
+      case "zoom-out":
+        this.#setZoom((this.#active()?.view.webContents.getZoomFactor() ?? 1) - 0.1);
+        break;
+      case "zoom-reset":
+        this.#setZoom(1);
+        break;
+      case "print-page":
+        await this.#printPage();
+        break;
+      case "save-page-pdf":
+        await this.#savePagePdf();
+        break;
       case "toggle-work":
+        if (this.#privateWindow) break;
         this.#workOpen = !this.#workOpen;
         this.#layout(true);
         break;
@@ -231,41 +323,24 @@ export class BrowserController {
   }
 
   dispose(): void {
+    if (this.#disposed) return;
     clearTimeout(this.#saveTimer);
     this.#persistNow();
+    this.#disposed = true;
     this.#runtime.stop();
     this.#grants.revokeSession(this.#sessionId);
+    for (const download of this.#activeDownloads.values()) download.cancel();
+    this.#activeDownloads.clear();
     for (const tab of this.#tabs.values()) tab.view.webContents.close();
     this.#tabs.clear();
     this.#workView?.webContents.close();
     this.#workView = undefined;
     this.#database.close();
-    ipcMain.removeHandler(ipcChannels.getState);
-    ipcMain.removeHandler(ipcChannels.command);
-  }
-
-  #installIpc(): void {
-    ipcMain.handle(ipcChannels.getState, (event) => {
-      this.#assertTrustedSender(event);
-      return this.state();
-    });
-    ipcMain.handle(ipcChannels.command, async (event, raw) => {
-      this.#assertTrustedSender(event);
-      return await this.command(BrowserCommandSchema.parse(raw));
-    });
-  }
-
-  #assertTrustedSender(event: IpcMainInvokeEvent): void {
-    const allowed = new Set([
-      this.window.webContents.id,
-      this.#workView?.webContents.id,
-    ]);
-    if (!allowed.has(event.sender.id)) throw new Error("Untrusted IPC sender");
   }
 
   #createWorkView(rendererUrl: string, preloadPath: string): void {
     const view = new WebContentsView({ webPreferences: trustedRendererPreferences(preloadPath) });
-    view.setBackgroundColor("#f6f6f4");
+    view.setBackgroundColor("#f8f6f0");
     view.webContents.loadURL(surfaceUrl(rendererUrl, "work"));
     this.#workView = view;
     this.window.contentView.addChildView(view);
@@ -273,6 +348,10 @@ export class BrowserController {
   }
 
   #restoreTabs(): void {
+    if (this.#privateWindow) {
+      this.#createTab("https://duckduckgo.com/", { active: true, private: true });
+      return;
+    }
     const tabs = this.#database.loadTabs(this.#windowId);
     if (tabs.length === 0) {
       this.#createTab("https://duckduckgo.com/", { active: true });
@@ -381,7 +460,7 @@ export class BrowserController {
       pushBounded(tab.console, `[${info.level ?? "info"}] ${info.message ?? ""}:${info.lineNumber ?? 0}`);
     });
     contents.setWindowOpenHandler((details) => {
-      if (isAllowedPageUrl(details.url)) this.#createTab(details.url, { active: true });
+      if (isAllowedPageUrl(details.url)) this.#createTab(details.url, { active: true, private: this.#privateWindow });
       return { action: "deny" };
     });
     contents.on("will-navigate", (details) => {
@@ -389,7 +468,13 @@ export class BrowserController {
       if (!isAllowedPageUrl(url)) details.preventDefault();
     });
     contents.on("did-finish-load", () => {
-      this.#database.recordVisit(tab.state.id, contents.getURL(), contents.getTitle());
+      if (!this.#privateWindow) this.#database.recordVisit(tab.state.id, contents.getURL(), contents.getTitle());
+    });
+    contents.on("found-in-page", (_event, result) => {
+      if (tab.state.id !== this.#activeTabId) return;
+      this.#find.matches = result.matches;
+      this.#find.activeMatchOrdinal = result.activeMatchOrdinal;
+      this.#broadcast();
     });
     void this.#enableNetworkCapture(tab);
   }
@@ -422,7 +507,7 @@ export class BrowserController {
       this.#activeTabId = undefined;
       const next = ids[index + 1] ?? ids[index - 1];
       if (next && this.#tabs.has(next)) this.#selectTab(next);
-      else this.#createTab("https://duckduckgo.com/", { active: true });
+      else this.#createTab("https://duckduckgo.com/", { active: true, private: this.#privateWindow });
     }
     this.#layout(false);
   }
@@ -430,6 +515,8 @@ export class BrowserController {
   #selectTab(id: string): void {
     const selected = this.#tabs.get(id);
     if (!selected) return;
+    this.#active()?.view.webContents.stopFindInPage("clearSelection");
+    this.#find = { open: this.#find.open, query: "", matches: 0, activeMatchOrdinal: 0 };
     for (const tab of this.#tabs.values()) tab.view.setVisible(false);
     this.#activeTabId = id;
     selected.view.setVisible(true);
@@ -459,6 +546,67 @@ export class BrowserController {
     await tab.view.webContents.loadURL(normalizeNavigation(value));
   }
 
+  #toggleBookmark(): void {
+    const tab = this.#active();
+    if (!tab || !/^https?:\/\//.test(tab.state.url)) return;
+    const existing = this.#database.bookmarkForUrl(tab.state.url);
+    if (existing) this.#database.removeBookmark(existing.id);
+    else this.#database.addBookmark(tab.state.title || tab.state.url, tab.state.url);
+  }
+
+  #findInPage(query: string, forward: boolean, findNext: boolean): void {
+    const contents = this.#active()?.view.webContents;
+    if (!contents) return;
+    this.#find.open = true;
+    this.#find.query = query;
+    if (!query) {
+      contents.stopFindInPage("clearSelection");
+      this.#find.matches = 0;
+      this.#find.activeMatchOrdinal = 0;
+      this.#layout(false);
+      return;
+    }
+    contents.findInPage(query, { forward, findNext });
+    this.#layout(false);
+  }
+
+  #closeFind(): void {
+    this.#active()?.view.webContents.stopFindInPage("clearSelection");
+    this.#find = { open: false, query: "", matches: 0, activeMatchOrdinal: 0 };
+  }
+
+  #setZoom(value: number): void {
+    const contents = this.#active()?.view.webContents;
+    if (!contents) return;
+    const zoom = Math.round(Math.min(Math.max(value, 0.5), 2) * 10) / 10;
+    contents.setZoomFactor(zoom);
+  }
+
+  async #printPage(): Promise<void> {
+    const contents = this.#active()?.view.webContents;
+    if (!contents) return;
+    await new Promise<void>((resolve, reject) => {
+      contents.print({ printBackground: true }, (success, failureReason) => {
+        if (success) resolve();
+        else reject(new Error(failureReason || "Printing was cancelled."));
+      });
+    }).catch(() => undefined);
+  }
+
+  async #savePagePdf(): Promise<void> {
+    const tab = this.#active();
+    if (!tab) return;
+    const safeTitle = (tab.state.title || "page").replace(/[^a-zA-Z0-9 ._-]/g, "").trim().slice(0, 90) || "page";
+    const result = await dialog.showSaveDialog(this.window, {
+      title: "Save Page as PDF",
+      defaultPath: join(app.getPath("downloads"), `${safeTitle}.pdf`),
+      filters: [{ name: "PDF document", extensions: ["pdf"] }],
+    });
+    if (result.canceled || !result.filePath) return;
+    const pdf = await tab.view.webContents.printToPDF({ printBackground: true });
+    await writeFile(result.filePath, pdf);
+  }
+
   #active(): TabRecord | undefined {
     return this.#activeTabId ? this.#tabs.get(this.#activeTabId) : undefined;
   }
@@ -474,14 +622,15 @@ export class BrowserController {
     const pageWidth = this.#workOpen && !this.#workOverlay
       ? Math.max(availableWidth - targetWork, MIN_PAGE_EXPANDED)
       : availableWidth;
-    const pageBounds = { x: left, y: CHROME_HEIGHT, width: pageWidth, height: Math.max(height - CHROME_HEIGHT, 1) };
+    const chromeHeight = this.#chromeHeight();
+    const pageBounds = { x: left, y: chromeHeight, width: pageWidth, height: Math.max(height - chromeHeight, 1) };
     this.#active()?.view.setBounds(pageBounds);
 
     const openBounds = {
       x: width - targetWork,
-      y: CHROME_HEIGHT,
+      y: chromeHeight,
       width: targetWork,
-      height: Math.max(height - CHROME_HEIGHT, 1),
+      height: Math.max(height - chromeHeight, 1),
     };
     const closedBounds = { ...openBounds, x: width };
     const work = this.#workView;
@@ -523,7 +672,12 @@ export class BrowserController {
     return Math.max(WORK_MIN, Math.min(WORK_MAX, width * 0.6, width - MIN_PAGE_EXPANDED));
   }
 
+  #chromeHeight(): number {
+    return CHROME_HEIGHT + (this.#find.open ? 38 : 0);
+  }
+
   #broadcast(): void {
+    if (this.#disposed) return;
     const state = this.state();
     if (!this.window.isDestroyed()) this.window.webContents.send(ipcChannels.state, state);
     const workContents = this.#workView?.webContents;
@@ -531,12 +685,13 @@ export class BrowserController {
   }
 
   #scheduleSave(): void {
+    if (this.#disposed) return;
     clearTimeout(this.#saveTimer);
     this.#saveTimer = setTimeout(() => this.#persistNow(), 150);
   }
 
   #persistNow(): void {
-    if (!this.#database) return;
+    if (!this.#database || this.#privateWindow) return;
     const storedTabs: StoredTab[] = [...this.#tabs.values()]
       .filter((tab) => !tab.state.private)
       .map((tab, position) => ({
@@ -572,13 +727,40 @@ export class BrowserController {
     browserSession.on("will-download", (_event, item, contents) => {
       const tab = [...this.#tabs.values()].find((candidate) => candidate.view.webContents.id === contents.id);
       const agentInitiated = Boolean(tab && tab.agentDownloadArmedUntil > Date.now());
+      const id = randomUUID();
       if (agentInitiated) {
         const safeName = item.getFilename().replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 160) || "download";
-        item.setSavePath(join(app.getPath("userData"), "Agent Downloads", `${randomUUID()}-${safeName}`));
-        item.on("updated", () => {
-          if (item.getReceivedBytes() > AGENT_DOWNLOAD_CAP) item.cancel();
-        });
+        const directory = join(app.getPath("userData"), "Agent Downloads");
+        mkdirSync(directory, { recursive: true });
+        item.setSavePath(join(directory, `${randomUUID()}-${safeName}`));
       }
+      this.#activeDownloads.set(id, item);
+      const save = (state: StoredDownload["state"], finished = false) => {
+        if (this.#disposed) return;
+        this.#database.saveDownload({
+          id,
+          ...(tab ? { tabId: tab.state.id } : {}),
+          filename: item.getFilename(),
+          url: item.getURL(),
+          path: item.getSavePath(),
+          state,
+          receivedBytes: item.getReceivedBytes(),
+          totalBytes: item.getTotalBytes(),
+          agentInitiated,
+          startedAt: Math.floor(Date.now() / 1_000),
+          ...(finished ? { finishedAt: Math.floor(Date.now() / 1_000) } : {}),
+        });
+        this.#broadcast();
+      };
+      save("progressing");
+      item.on("updated", (_downloadEvent, state) => {
+        if (agentInitiated && item.getReceivedBytes() > AGENT_DOWNLOAD_CAP) item.cancel();
+        save(state === "interrupted" ? "interrupted" : "progressing");
+      });
+      item.once("done", (_downloadEvent, state) => {
+        this.#activeDownloads.delete(id);
+        save(state, true);
+      });
     });
   }
 

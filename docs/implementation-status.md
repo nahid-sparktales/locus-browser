@@ -7,11 +7,17 @@ of truth.
 ## Implemented in this baseline
 
 - Electron/React/TypeScript application that builds and launches on macOS.
-- Permanent tab strip, navigation controls, omnibox, sidebar, profile/download
-  affordances, and a top-right Work control.
+- Permanent tab strip, navigation controls, omnibox, functional browser
+  library sidebar, profile/download controls, and a top-right Work control.
 - Sandboxed `WebContentsView` tabs, explicit destruction, popup-to-tab routing,
   strict renderer isolation, denied page permissions, certificate rejection,
   profile partitions, restoration, history records, and WAL SQLite storage.
+- Editable bookmarks, browsable history, a persisted download manager with
+  cancel/reveal actions, ephemeral private windows, page find/zoom, native
+  printing, and PDF export.
+- The same semantic light/dark palette as native Locus: warm paper surfaces,
+  ink typography, lime signal, olive actions, and semantic status colors,
+  including Reduced Motion and Reduced Transparency alternatives.
 - Right Work dock with split/overlay layout, 360–720 px bounds, 60%/520 px
   expansion limits, interruptible 340 ms resize, Reduced Motion handling,
   pinned composer, modes, surfaces, progress, and approvals.
@@ -30,10 +36,9 @@ of truth.
 
 ## Required before canary
 
-- Finish standard browser product surfaces: editable bookmarks/history,
-  download manager/reveal flow, private windows, tab groups/sleeping, site
-  permission prompts, print/PDF, find/zoom, media controls, and complete
-  settings/profile management.
+- Finish standard browser product surfaces: tab groups/sleeping, site
+  permission prompts, media controls, and complete settings/profile
+  management.
 - Connect the credential vault to user-driven save/autofill UI and add passkey
   account ceremony. The current sync service starts at authenticated device
   tokens; the production passkey registration/authentication edge is not yet
