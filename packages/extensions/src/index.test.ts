@@ -3,6 +3,8 @@ import { strToU8, zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import {
   extensionContentScriptMatches,
+  ExtensionGalleryCatalogSchema,
+  extensionGalleryDownloadPath,
   locusxContractVersion,
   locusxGalleryMessage,
   locusxPublisherMessage,
@@ -31,6 +33,28 @@ describe("Locus extension contract", () => {
     });
     expect(extensionContentScriptMatches(next)).toEqual(["https://example.com/*", "https://docs.example/*"]);
     expect(permissionExpansion(previous, next)).toEqual(["tabs", "https://docs.example/*"]);
+  });
+
+  it("validates deterministic gallery download paths", () => {
+    const id = "dev.locus.notes";
+    const version = "1.2.0";
+    expect(extensionGalleryDownloadPath(id, version)).toBe("/v1/extensions/dev.locus.notes/1.2.0/download");
+    expect(ExtensionGalleryCatalogSchema.safeParse({
+      catalogVersion: 1,
+      packageContractVersion: 2,
+      extensions: [{
+        id,
+        name: "Notes",
+        version,
+        publisherFingerprint: "a".repeat(64),
+        galleryFingerprint: "b".repeat(64),
+        packageSha256: "c".repeat(64),
+        packageSize: 100,
+        permissions: ["storage"],
+        hostPermissions: ["https://example.com/*"],
+        downloadPath: extensionGalleryDownloadPath(id, version),
+      }],
+    }).success).toBe(true);
   });
 
   it("rejects remote or escaping content-script resources", () => {

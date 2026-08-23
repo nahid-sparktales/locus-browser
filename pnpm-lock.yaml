@@ -107,6 +107,25 @@ importers:
         specifier: 0.7.8
         version: 0.7.8
 
+  services/gallery:
+    dependencies:
+      '@locus/extensions':
+        specifier: workspace:*
+        version: link:../../packages/extensions
+      fastify:
+        specifier: 5.12.1
+        version: 5.12.1
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      fflate:
+        specifier: 0.8.2
+        version: 0.8.2
+      tsx:
+        specifier: 4.20.6
+        version: 4.20.6
+
   services/sync:
     dependencies:
       '@simplewebauthn/server':

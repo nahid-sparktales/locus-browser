@@ -69,4 +69,6 @@ publisher identity, and publisher signature to the gallery review.
 The repository contains only the public fingerprint of the current canary
 gallery key. Test packages use ephemeral keys. A production key ceremony,
 rotation policy, publisher enrollment process, malware review pipeline, and
-gallery rollout service remain launch requirements.
+production gallery deployment remain launch requirements. The implemented
+read-only catalog/delivery service is documented in
+[`extension-gallery.md`](extension-gallery.md).

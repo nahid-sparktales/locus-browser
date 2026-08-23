@@ -3,6 +3,7 @@ import { strFromU8, unzipSync } from "fflate";
 import { z } from "zod";
 
 export const locusxContractVersion = 2;
+export const extensionGalleryCatalogVersion = 1;
 
 export const trustedGalleryKeys = [{
   id: "locus-canary-2026-08",
@@ -79,7 +80,38 @@ const SignaturesSchema = z.object({
   }).strict(),
 }).strict();
 
+export const ExtensionGalleryEntrySchema = z.object({
+  id: z.string().regex(/^[a-z0-9](?:[a-z0-9.-]{1,126}[a-z0-9])?$/),
+  name: z.string().trim().min(1).max(80),
+  version: z.string().regex(/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/),
+  description: z.string().max(500).optional(),
+  publisherFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  galleryFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  packageSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  packageSize: z.number().int().positive().max(50 * 1024 * 1024),
+  permissions: z.array(z.string()).max(200),
+  hostPermissions: z.array(z.string()).max(400),
+  downloadPath: z.string().startsWith("/").max(1_024),
+}).strict();
+
+export const ExtensionGalleryCatalogSchema = z.object({
+  catalogVersion: z.literal(extensionGalleryCatalogVersion),
+  packageContractVersion: z.literal(locusxContractVersion),
+  extensions: z.array(ExtensionGalleryEntrySchema).max(500),
+}).strict().superRefine((catalog, context) => {
+  const ids = new Set<string>();
+  for (const extension of catalog.extensions) {
+    if (ids.has(extension.id)) context.addIssue({ code: "custom", message: `Duplicate gallery extension ID: ${extension.id}` });
+    ids.add(extension.id);
+    if (extension.downloadPath !== extensionGalleryDownloadPath(extension.id, extension.version)) {
+      context.addIssue({ code: "custom", message: `Unexpected download path for ${extension.id}` });
+    }
+  }
+});
+
 export type LocusExtensionManifest = z.infer<typeof ManifestSchema>;
+export type ExtensionGalleryEntry = z.infer<typeof ExtensionGalleryEntrySchema>;
+export type ExtensionGalleryCatalog = z.infer<typeof ExtensionGalleryCatalogSchema>;
 
 export interface VerifiedLocusExtension {
   id: string;
@@ -190,6 +222,25 @@ export function locusxPublisherMessage(extensionId: string, manifestBytes: Uint8
 
 export function locusxGalleryMessage(publisherMessage: Uint8Array, publisherFingerprint: string, publisherSignature: Uint8Array): Uint8Array {
   return Buffer.from(`${sha256(publisherMessage)}:${publisherFingerprint}:${sha256(publisherSignature)}`, "utf8");
+}
+
+export function extensionGalleryDownloadPath(extensionId: string, version: string): string {
+  return `/v1/extensions/${encodeURIComponent(extensionId)}/${encodeURIComponent(version)}/download`;
+}
+
+export function compareExtensionVersions(left: string, right: string): number {
+  const [leftRelease, leftPrerelease] = left.split("+", 1)[0]!.split("-", 2);
+  const [rightRelease, rightPrerelease] = right.split("+", 1)[0]!.split("-", 2);
+  const leftParts = leftRelease!.split(".").map(Number);
+  const rightParts = rightRelease!.split(".").map(Number);
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    if (difference) return Math.sign(difference);
+  }
+  if (leftPrerelease === rightPrerelease) return 0;
+  if (leftPrerelease === undefined) return 1;
+  if (rightPrerelease === undefined) return -1;
+  return leftPrerelease.localeCompare(rightPrerelease, undefined, { numeric: true });
 }
 
 export function permissionExpansion(previous: LocusExtensionManifest, next: LocusExtensionManifest): string[] {

@@ -75,6 +75,34 @@ const previewState: BrowserAppState = {
     supportedApiCount: 5,
     trustedGalleryKeyCount: 1,
     message: previewExtensions ? "Developer Mode is on. Unpacked extensions can inspect granted sites." : "Developer Mode is off. Unpacked extensions are not loaded.",
+    gallery: {
+      status: "ready",
+      message: "2 verified extensions available.",
+      serviceUrl: "https://gallery.locusbrowser.test",
+      refreshedAt: 1_787_408_000,
+      entries: [{
+        id: "dev.locus.reading-notes",
+        name: "Reading Notes",
+        version: "1.2.0",
+        description: "Save selected passages to your local reading notes.",
+        permissions: ["storage"],
+        hostPermissions: ["https://*.example.com/*"],
+        verifiedPublisher: "4f0d27ac918e",
+        packageSize: 18_432,
+        action: previewExtensions ? "update" : "install",
+        ...(previewExtensions ? { installedVersion: "1.1.0" } : {}),
+      }, {
+        id: "dev.locus.focus-palette",
+        name: "Focus Palette",
+        version: "1.0.0",
+        description: "Give reading pages a calm Locus-inspired palette.",
+        permissions: ["storage"],
+        hostPermissions: ["https://example.com/*"],
+        verifiedPublisher: "a10c34b911d2",
+        packageSize: 12_288,
+        action: "install",
+      }],
+    },
     installs: previewExtensions ? [{
       id: "dev.locus.reading-notes",
       name: "Reading Notes",
@@ -427,6 +455,30 @@ function applyPreviewCommand(command: BrowserCommand): void {
         verifiedPublisher: "4f0d27ac918e", galleryKeyName: "Locus Canary Gallery", rollbackVersion: "1.0.0", updatedAt: Math.floor(Date.now() / 1_000),
       }];
       break;
+    case "refresh-extension-gallery":
+      if (previewState.extensions.gallery) {
+        previewState.extensions.gallery.status = "ready";
+        previewState.extensions.gallery.message = `${previewState.extensions.gallery.entries.length} verified extensions available.`;
+        previewState.extensions.gallery.refreshedAt = Math.floor(Date.now() / 1_000);
+      }
+      break;
+    case "install-gallery-extension": {
+      const entry = previewState.extensions.gallery?.entries.find((extension) => extension.id === command.extensionId);
+      if (entry) {
+        previewState.extensions.installs = [
+          ...previewState.extensions.installs.filter((extension) => extension.id !== entry.id),
+          {
+            id: entry.id, name: entry.name, version: entry.version, ...(entry.description ? { description: entry.description } : {}),
+            enabled: true, loaded: true, source: "gallery", installPath: `/managed/${entry.id}/${entry.version}`,
+            permissions: entry.permissions, hostPermissions: entry.hostPermissions, verifiedPublisher: entry.verifiedPublisher,
+            galleryKeyName: "Locus Canary Gallery", updatedAt: Math.floor(Date.now() / 1_000),
+          },
+        ];
+        entry.action = "installed";
+        entry.installedVersion = entry.version;
+      }
+      break;
+    }
     case "set-extension-enabled":
       previewState.extensions.installs = previewState.extensions.installs.map((extension) => extension.id === command.extensionId ? { ...extension, enabled: command.enabled, loaded: command.enabled } : extension);
       break;

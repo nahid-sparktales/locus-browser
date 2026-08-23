@@ -19,6 +19,7 @@ canary work that remains; it does not claim stable-release parity yet.
   work dock, tab broker, and agent runtime connection.
 - `packages/extensions` — curated Manifest V3 capability and signed `.locusx` package checks.
 - `packages/sync-crypto` — client-side encrypted sync records and device keys.
+- `services/gallery` — fail-closed curated extension catalog and immutable package delivery.
 - `services/sync` — opaque-record PostgreSQL sync service.
 
 Shared agent and browser-wire contracts come from the sibling
@@ -91,6 +92,22 @@ engine-backed permission allowlist is deliberately narrow: `activeTab`,
 `scripting`, `storage`, `tabs`, and `webRequest`; broader gallery APIs remain
 future compatibility work. The versioned package contract is documented in
 [`docs/locusx-format.md`](docs/locusx-format.md).
+
+The curated gallery is now a main-process-only catalog and download path. The
+desktop validates its bounded versioned catalog, keeps downloads on the configured
+gallery origin, streams them into private temporary storage, checks the advertised
+size and SHA-256, and then runs the independent `.locusx` verification and native
+permission review. In development, run the read-only service and point the app at
+it with `LOCUS_EXTENSION_GALLERY_URL`:
+
+```bash
+docker compose -f compose.gallery.yaml up --build
+LOCUS_EXTENSION_GALLERY_URL=http://127.0.0.1:8790 pnpm dev:desktop
+```
+
+Place canary-signed packages in the ignored `gallery-packages` directory before
+starting the service. See [`docs/extension-gallery.md`](docs/extension-gallery.md)
+for the service contract and remaining production controls.
 
 Optional Locus encrypted sync now provides passkey accounts and client-side
 encrypted bookmarks, history, tab groups, ordinary web tabs, selected settings,

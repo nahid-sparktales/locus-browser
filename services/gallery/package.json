@@ -1,0 +1,26 @@
+{
+  "name": "@locus/extension-gallery-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "prebuild": "pnpm --filter @locus/extensions build",
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "pretypecheck": "pnpm --filter @locus/extensions build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "pretest": "pnpm --filter @locus/extensions build",
+    "test": "vitest run src"
+  },
+  "dependencies": {
+    "@locus/extensions": "workspace:*",
+    "fastify": "5.12.1",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "fflate": "0.8.2",
+    "tsx": "4.20.6"
+  }
+}

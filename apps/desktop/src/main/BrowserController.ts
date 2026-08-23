@@ -21,9 +21,11 @@ import {
 } from "@locus/protocol";
 import { bridgeInvocation, browserBridgeSource } from "@locus/browser-bridge";
 import {
+  compareExtensionVersions,
   extensionContentScriptMatches,
   trustedGalleryFingerprints,
   trustedGalleryKeys,
+  type ExtensionGalleryEntry,
 } from "@locus/extensions";
 import { z } from "zod";
 import { ipcChannels } from "../shared/channels.js";
@@ -33,6 +35,8 @@ import type {
   BrowserAppState,
   BrowserSettingsState,
   BrowserTabState,
+  ExtensionGalleryState,
+  ExtensionManagerState,
   PendingPermission,
   PendingSitePermission,
   SearchEngine,
@@ -55,6 +59,7 @@ import { CredentialVault } from "./CredentialVault.js";
 import { credentialAutofillInvocation, credentialObserverSource, parseCredentialCandidate, type PageCredentialCandidate } from "./CredentialPageBridge.js";
 import { electronCredentialCipher } from "./ElectronCredentialCipher.js";
 import { ExtensionManager, type ExtensionPermissionReview } from "./ExtensionManager.js";
+import { ExtensionGalleryClient } from "./ExtensionGalleryClient.js";
 import { GalleryExtensionStore } from "./GalleryExtensionStore.js";
 import { TabAccessRegistry } from "./TabAccessRegistry.js";
 import { canSleepTab, shouldSleepTab } from "./TabSleepingPolicy.js";
@@ -90,6 +95,7 @@ const BRIDGE_WORLD = 99_941;
 const SITE_PERMISSION_HEIGHT = 46;
 const CREDENTIAL_PROMPT_HEIGHT = 46;
 const SLEEP_CHECK_INTERVAL = 60_000;
+const GALLERY_REFRESH_INTERVAL = 6 * 60 * 60_000;
 const GROUP_COLORS = ["lime", "blue", "coral", "violet", "gold"];
 const ALLOWED_SITE_PERMISSIONS = new Set(["camera", "microphone", "media", "geolocation", "notifications", "clipboard-read"]);
 const AgentSessionsSchema = z.object({
@@ -250,6 +256,7 @@ export class BrowserController {
   readonly #credentials: CredentialVault;
   readonly #workModelProviders: WorkModelProviderStore;
   readonly #extensions: ExtensionManager | undefined;
+  #extensionGallery: ExtensionGalleryClient | undefined;
   readonly #grants = new TabAccessRegistry();
   readonly #tabs = new Map<string, TabRecord>();
   readonly #groups = new Map<string, TabGroupState>();
@@ -303,6 +310,11 @@ export class BrowserController {
   #find = { open: false, query: "", matches: 0, activeMatchOrdinal: 0 };
   #saveTimer: NodeJS.Timeout | undefined;
   #sleepTimer: NodeJS.Timeout | undefined;
+  #extensionGalleryRefreshTimer: NodeJS.Timeout | undefined;
+  #extensionGalleryStatus: ExtensionGalleryState["status"] = "disabled";
+  #extensionGalleryMessage = "The curated extension gallery is unavailable.";
+  #extensionGalleryEntries: ExtensionGalleryEntry[] = [];
+  #extensionGalleryRefreshedAt: number | undefined;
   #disposed = false;
 
   constructor(rendererUrl: string, preloadPath: string, platformRoot: string, options: BrowserControllerOptions = {}) {
@@ -370,6 +382,25 @@ export class BrowserController {
         trustedGalleryFingerprints,
       ),
     );
+    if (!this.#privateWindow) {
+      const galleryUrl = process.env.LOCUS_EXTENSION_GALLERY_URL
+        || (app.isPackaged ? "" : "http://127.0.0.1:8790");
+      if (galleryUrl) {
+        try {
+          this.#extensionGallery = new ExtensionGalleryClient(
+            galleryUrl,
+            join(app.getPath("userData"), "Extension Gallery Downloads", this.#profileId),
+          );
+          this.#extensionGalleryStatus = "loading";
+          this.#extensionGalleryMessage = "Checking the curated gallery…";
+        } catch (error) {
+          this.#extensionGalleryStatus = "error";
+          this.#extensionGalleryMessage = extensionGalleryError(error);
+        }
+      } else {
+        this.#extensionGalleryMessage = "The curated gallery will be enabled when the production service is configured.";
+      }
+    }
     if (this.#privateWindow) {
       this.#restoreTabs();
       this.#runtimeState = "offline";
@@ -378,6 +409,10 @@ export class BrowserController {
       this.#createWorkView(rendererUrl, preloadPath);
       this.#bindRuntime();
       void this.#initializeExtensionsAndRestoreTabs();
+      if (this.#extensionGallery) {
+        void this.#refreshExtensionGallery();
+        this.#extensionGalleryRefreshTimer = setInterval(() => void this.#refreshExtensionGallery(), GALLERY_REFRESH_INTERVAL);
+      }
     }
     this.#layout(false);
     if (!this.#privateWindow) void this.#runtime.start();
@@ -420,14 +455,7 @@ export class BrowserController {
       credentialSuggestions,
       savedCredentials: this.#credentials.list(),
       passwordManagerAvailable: this.#credentials.available(),
-      extensions: this.#extensions?.state() ?? {
-        developerMode: false,
-        loading: false,
-        installs: [],
-        supportedApiCount: 0,
-        trustedGalleryKeyCount: 0,
-        message: "Extensions are disabled in Private Windows.",
-      },
+      extensions: this.#extensionState(),
       sync: this.#sync?.state() ?? { status: "disconnected", pendingRecords: 0, devices: [] },
       remoteTabs: this.#sync?.remoteTabs() ?? [],
       onboardingRequired: !this.#privateWindow && !this.#settings.onboardingComplete,
@@ -659,6 +687,12 @@ export class BrowserController {
       case "install-signed-extension":
         await this.#installSignedExtension();
         break;
+      case "refresh-extension-gallery":
+        await this.#refreshExtensionGallery();
+        break;
+      case "install-gallery-extension":
+        await this.#installGalleryExtension(command.extensionId);
+        break;
       case "set-extension-enabled":
         await this.#setExtensionEnabled(command.extensionId, command.enabled);
         break;
@@ -858,6 +892,7 @@ export class BrowserController {
     if (this.#disposed) return;
     clearTimeout(this.#saveTimer);
     clearInterval(this.#sleepTimer);
+    clearInterval(this.#extensionGalleryRefreshTimer);
     clearInterval(this.#chatGPTPollTimer);
     clearTimeout(this.#runtimeRecoveryTimer);
     this.#persistNow();
@@ -1284,6 +1319,57 @@ export class BrowserController {
       + (this.#pendingCredential ? CREDENTIAL_PROMPT_HEIGHT : 0);
   }
 
+  #extensionState(): ExtensionManagerState {
+    const manager = this.#extensions?.state() ?? {
+      developerMode: false,
+      loading: false,
+      installs: [],
+      supportedApiCount: 0,
+      trustedGalleryKeyCount: 0,
+      message: "Extensions are disabled in Private Windows.",
+    };
+    if (this.#privateWindow) {
+      return {
+        ...manager,
+        gallery: {
+          status: "disabled",
+          message: "The extension gallery is disabled in Private Windows.",
+          entries: [],
+        },
+      };
+    }
+    const entries = this.#extensionGalleryEntries.map((entry) => {
+      const installed = manager.installs.find((extension) => extension.id === entry.id);
+      const action = !installed
+        ? "install" as const
+        : compareExtensionVersions(entry.version, installed.version) > 0
+          ? "update" as const
+          : "installed" as const;
+      return {
+        id: entry.id,
+        name: entry.name,
+        version: entry.version,
+        ...(entry.description ? { description: entry.description } : {}),
+        permissions: entry.permissions,
+        hostPermissions: entry.hostPermissions,
+        verifiedPublisher: entry.publisherFingerprint.slice(0, 12),
+        packageSize: entry.packageSize,
+        action,
+        ...(installed ? { installedVersion: installed.version } : {}),
+      };
+    });
+    return {
+      ...manager,
+      gallery: {
+        status: this.#extensionGalleryStatus,
+        message: this.#extensionGalleryMessage,
+        ...(this.#extensionGallery ? { serviceUrl: this.#extensionGallery.serviceUrl } : {}),
+        ...(this.#extensionGalleryRefreshedAt ? { refreshedAt: this.#extensionGalleryRefreshedAt } : {}),
+        entries,
+      },
+    };
+  }
+
   #broadcast(): void {
     if (this.#disposed) return;
     const state = this.state();
@@ -1417,6 +1503,52 @@ export class BrowserController {
     const action = existing ? "Verify and Update" : "Verify and Install";
     if (!await this.#confirmExtensionPermissions(review, action)) return;
     await this.#extensions.installGallery(review);
+  }
+
+  async #refreshExtensionGallery(): Promise<void> {
+    if (!this.#extensionGallery || this.#privateWindow) return;
+    this.#extensionGalleryStatus = "loading";
+    this.#extensionGalleryMessage = this.#extensionGalleryEntries.length
+      ? "Refreshing the curated gallery…"
+      : "Checking the curated gallery…";
+    this.#broadcast();
+    try {
+      const catalog = await this.#extensionGallery.refresh();
+      this.#extensionGalleryEntries = catalog.extensions;
+      this.#extensionGalleryStatus = "ready";
+      this.#extensionGalleryRefreshedAt = Math.floor(Date.now() / 1_000);
+      this.#extensionGalleryMessage = catalog.extensions.length
+        ? `${catalog.extensions.length} verified extension${catalog.extensions.length === 1 ? "" : "s"} available.`
+        : "No curated extensions are published yet.";
+    } catch (error) {
+      this.#extensionGalleryStatus = "error";
+      this.#extensionGalleryMessage = extensionGalleryError(error);
+    }
+    this.#broadcast();
+  }
+
+  async #installGalleryExtension(extensionId: string): Promise<void> {
+    if (!this.#extensions || !this.#extensionGallery) throw new Error("The curated extension gallery is unavailable");
+    const downloaded = await this.#extensionGallery.download(extensionId);
+    try {
+      const review = await this.#extensions.inspectGallery(downloaded.path);
+      if (!("id" in review.inspection)) throw new Error("Expected a signed gallery package");
+      if (
+        review.inspection.id !== downloaded.entry.id
+        || review.inspection.manifest.version !== downloaded.entry.version
+        || review.inspection.fingerprint !== downloaded.entry.packageSha256
+        || review.inspection.publisherFingerprint !== downloaded.entry.publisherFingerprint
+        || review.inspection.galleryFingerprint !== downloaded.entry.galleryFingerprint
+      ) {
+        throw new Error("Downloaded extension does not match the curated gallery catalog");
+      }
+      const existing = this.#extensions.state().installs.find((extension) => extension.id === extensionId);
+      const action = existing ? "Verify and Update" : "Verify and Install";
+      if (!await this.#confirmExtensionPermissions(review, action)) return;
+      await this.#extensions.installGallery(review);
+    } finally {
+      await downloaded.dispose();
+    }
   }
 
   async #setExtensionEnabled(id: string, enabled: boolean): Promise<void> {
@@ -3128,6 +3260,11 @@ function interpolateRect(from: Rectangle, to: Rectangle, amount: number): Rectan
 function pushBounded(values: string[], value: string): void {
   values.push(value.slice(0, 4_000));
   if (values.length > 250) values.splice(0, values.length - 250);
+}
+
+function extensionGalleryError(error: unknown): string {
+  const message = error instanceof Error ? error.message : "The curated extension gallery could not be reached";
+  return message.slice(0, 500);
 }
 
 function delay(milliseconds: number): Promise<void> {

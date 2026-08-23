@@ -1,5 +1,6 @@
 import {
   capabilityRegistry,
+  compareExtensionVersions,
   extensionContentScriptMatches,
   permissionExpansion,
   trustedGalleryKeys,
@@ -388,19 +389,4 @@ function storedManifest(install: StoredExtensionInstall): LocusExtensionManifest
 
 function extensionError(error: unknown): string {
   return (error instanceof Error ? error.message : "Extension could not be loaded").slice(0, 1_000);
-}
-
-function compareExtensionVersions(left: string, right: string): number {
-  const [leftRelease, leftPrerelease] = left.split("+", 1)[0]!.split("-", 2);
-  const [rightRelease, rightPrerelease] = right.split("+", 1)[0]!.split("-", 2);
-  const leftParts = leftRelease!.split(".").map(Number);
-  const rightParts = rightRelease!.split(".").map(Number);
-  for (let index = 0; index < 3; index += 1) {
-    const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
-    if (difference) return Math.sign(difference);
-  }
-  if (leftPrerelease === rightPrerelease) return 0;
-  if (leftPrerelease === undefined) return 1;
-  if (rightPrerelease === undefined) return -1;
-  return leftPrerelease.localeCompare(rightPrerelease, undefined, { numeric: true });
 }

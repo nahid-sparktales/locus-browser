@@ -9,6 +9,8 @@ const SHELL_ONLY_COMMANDS = new Set<BrowserCommand["type"]>([
   "set-extension-developer-mode",
   "install-unpacked-extension",
   "install-signed-extension",
+  "refresh-extension-gallery",
+  "install-gallery-extension",
   "set-extension-enabled",
   "rollback-extension",
   "remove-extension",

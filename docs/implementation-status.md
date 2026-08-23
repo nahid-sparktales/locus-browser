@@ -74,6 +74,14 @@ schedule, and orchestration surface from native Locus.
   persisted package history, native permission review, restart restoration,
   and safe removal. The visible trust identity is tied to a canary gallery key
   that must be replaced before beta.
+- Versioned curated-gallery catalog contract and read-only Fastify service that
+  fails closed on invalid/untrusted packages, selects the latest semantic
+  version per stable ID, supports ETag catalog refreshes, and serves immutable
+  packages with SHA-256 metadata. The Electron broker provides bounded HTTPS/
+  loopback-only catalog fetching, same-origin redirect-free package downloads,
+  streaming size/hash checks, private staging cleanup, update discovery, native
+  review, and Locus-themed install/update controls. The renderer never fetches
+  gallery content directly.
 - Profile-scoped unpacked-extension Developer Mode with a native risk warning,
   native API/host permission review, bounded real-path inventory, symlink and
   remote-code rejection, fingerprinted review-to-load consistency, Electron
@@ -119,9 +127,10 @@ schedule, and orchestration surface from native Locus.
   production-scale key-rotation migrations, fuzzing, and an external sync
   cryptography review.
 - Replace the canary gallery key with an offline production key ceremony and
-  network gallery/update service; add action/commands/context-menu and other
-  planned MV3 shims, then ship per-API native compatibility fixtures, malware
-  review, publisher onboarding, key rotation, and update rollout policy.
+  deploy the gallery behind production object storage/CDN controls; add
+  action/commands/context-menu and other planned MV3 shims, then ship per-API
+  native compatibility fixtures, malware review, publisher onboarding, key
+  rotation, staged update rollout, revocation, and emergency takedown policy.
 - Team orchestration, schedules, checkpoints, and a dedicated `AGENTS.md`
   panel remain outside the intentionally focused initial browser canary scope.
 - Bundle the Python runtime, implement signed component/app updates, add Forge

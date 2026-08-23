@@ -92,6 +92,18 @@ main process resolves the real path, bounds and scans the directory, and never
 deletes the developer's source folder. Enabled extensions are restored before
 saved webpages open, while new permissions block startup until user review.
 
+The catalog service is intentionally less trusted than the package verifier.
+It starts only when every `.locusx` file in its configured read-only directory
+passes the trusted-gallery contract, publishes the newest semantic version for
+each stable ID, and serves immutable hash-addressed responses. The desktop
+accepts only the versioned bounded catalog schema over HTTPS (or loopback HTTP),
+rejects redirects and cross-origin package paths, and streams each package into
+private temporary storage while enforcing the catalog byte count and SHA-256.
+The temporary file is then passed through the normal `.locusx` verification,
+native permission review, managed extraction, and update/rollback lifecycle.
+Neither catalog metadata nor the server's transport trust can authorize an
+extension by itself.
+
 Only gallery extension ID/version/enabled/source metadata participates in
 encrypted sync. Developer installs and filesystem paths are excluded at the
 database snapshot boundary. The current registry exposes only the

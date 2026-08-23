@@ -95,6 +95,28 @@ export interface ExtensionManagerState {
   supportedApiCount: number;
   trustedGalleryKeyCount: number;
   message: string;
+  gallery?: ExtensionGalleryState;
+}
+
+export interface ExtensionGalleryEntryState {
+  id: string;
+  name: string;
+  version: string;
+  description?: string;
+  permissions: string[];
+  hostPermissions: string[];
+  verifiedPublisher: string;
+  packageSize: number;
+  action: "install" | "update" | "installed";
+  installedVersion?: string;
+}
+
+export interface ExtensionGalleryState {
+  status: "disabled" | "loading" | "ready" | "error";
+  message: string;
+  serviceUrl?: string;
+  refreshedAt?: number;
+  entries: ExtensionGalleryEntryState[];
 }
 
 export interface CredentialSuggestionState {

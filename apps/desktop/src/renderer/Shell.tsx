@@ -605,6 +605,11 @@ function ExtensionSettings({ state }: { state: BrowserAppState }) {
     }
   };
   const manager = state.extensions;
+  const gallery = manager.gallery ?? {
+    status: "disabled" as const,
+    message: "The curated extension gallery is unavailable.",
+    entries: [],
+  };
   return (
     <section className="extension-settings" aria-labelledby="extension-settings-title">
       <div className="settings-subheading" id="extension-settings-title">Extensions</div>
@@ -612,9 +617,34 @@ function ExtensionSettings({ state }: { state: BrowserAppState }) {
         <div className="extension-private-note"><EyeOff size={14} /><span><strong>Off in Private Windows</strong><small>Extensions cannot inspect or change private pages.</small></span></div>
       ) : (
         <>
+          <div className="extension-gallery-heading">
+            <span><span className="extension-icon verified"><ShieldCheck size={15} /></span><span><strong>Curated gallery</strong><small>Every download is independently verified before installation.</small></span></span>
+            <button
+              type="button"
+              disabled={Boolean(busy) || gallery.status === "loading"}
+              onClick={() => void run("refresh-gallery", { type: "refresh-extension-gallery" })}
+            ><RefreshCw size={11} />Refresh</button>
+          </div>
+          <p className={`extension-gallery-status ${gallery.status === "error" ? "error" : ""}`} role={gallery.status === "error" ? "alert" : undefined}>{gallery.message}</p>
+          {gallery.entries.length ? (
+            <div className="extension-gallery-list">
+              {gallery.entries.map((extension) => (
+                <article className="extension-gallery-item" key={extension.id}>
+                  <header><span><strong>{extension.name}</strong><small>{extension.version} · {formatBytes(extension.packageSize)}</small></span><button
+                    type="button"
+                    disabled={Boolean(busy) || gallery.status !== "ready" || extension.action === "installed"}
+                    onClick={() => void run(`gallery-${extension.id}`, { type: "install-gallery-extension", extensionId: extension.id })}
+                  >{extension.action === "update" ? `Update from ${extension.installedVersion}` : extension.action === "installed" ? "Installed" : "Install"}</button></header>
+                  {extension.description ? <p>{extension.description}</p> : null}
+                  <div className="extension-verification"><ShieldCheck size={11} /><span>Publisher {extension.verifiedPublisher}</span></div>
+                  <div className="extension-access"><span>APIs · {extension.permissions.length || "None"}</span><span>Sites · {extension.hostPermissions.length || "None"}</span></div>
+                </article>
+              ))}
+            </div>
+          ) : null}
           <div className="extension-gallery-card">
-            <span className="extension-icon verified"><ShieldCheck size={15} /></span>
-            <span><strong>Signed Locus packages</strong><small>Publisher and gallery signatures are checked before anything is installed.</small></span>
+            <span className="extension-icon"><FolderPlus size={15} /></span>
+            <span><strong>Signed package file</strong><small>Install a trusted `.locusx` file you already downloaded.</small></span>
             <button
               type="button"
               disabled={Boolean(busy) || manager.loading || manager.trustedGalleryKeyCount === 0}

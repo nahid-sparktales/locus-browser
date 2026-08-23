@@ -42,6 +42,8 @@ describe("extension management commands", () => {
     { type: "set-extension-developer-mode", enabled: true },
     { type: "install-unpacked-extension" },
     { type: "install-signed-extension" },
+    { type: "refresh-extension-gallery" },
+    { type: "install-gallery-extension", extensionId: "extension-1" },
     { type: "set-extension-enabled", extensionId: "extension-1", enabled: false },
     { type: "rollback-extension", extensionId: "extension-1" },
     { type: "remove-extension", extensionId: "extension-1" },
