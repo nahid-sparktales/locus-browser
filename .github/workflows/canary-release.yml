@@ -59,6 +59,9 @@ jobs:
       - name: Install locked dependencies
         working-directory: locus-browser
         run: pnpm install --frozen-lockfile
+      - name: Build pinned platform contracts
+        working-directory: locus-platform
+        run: pnpm install --frozen-lockfile && pnpm build
       - name: Verify source
         working-directory: locus-browser
         run: pnpm canary:check && pnpm typecheck && pnpm test && pnpm build && pnpm --filter @locus/browser-desktop compat:extensions && pnpm --filter @locus/browser-desktop acceptance:ui && pnpm audit --prod --audit-level high

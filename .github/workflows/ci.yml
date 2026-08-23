@@ -31,6 +31,9 @@ jobs:
       - name: Install locked dependencies
         working-directory: locus-browser
         run: pnpm install --frozen-lockfile
+      - name: Build shared platform contracts
+        working-directory: locus-platform
+        run: pnpm install --frozen-lockfile && pnpm build
       - name: Verify canary source gate
         working-directory: locus-browser
         run: pnpm canary:check
