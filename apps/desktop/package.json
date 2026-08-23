@@ -8,10 +8,10 @@
   "license": "Apache-2.0",
   "main": "dist/main/index.js",
   "scripts": {
-    "prebuild": "pnpm --filter @locus/extensions build",
+    "prebuild": "pnpm --filter @locus/extensions --filter @locus/sync-crypto build",
     "build": "pnpm build:main && vite build",
     "build:main": "tsup src/main/index.ts --format esm --platform node --out-dir dist/main --external electron --external node:sqlite && tsup src/preload/index.ts --format cjs --platform node --out-dir dist/preload --external electron",
-    "predev": "pnpm --filter @locus/extensions build",
+    "predev": "pnpm --filter @locus/extensions --filter @locus/sync-crypto build",
     "dev": "pnpm build:preload && concurrently -k -n renderer,main,preload,app 'vite --host 127.0.0.1' 'tsup src/main/index.ts --format esm --platform node --out-dir dist/main --external electron --external node:sqlite --watch' 'tsup src/preload/index.ts --format cjs --platform node --out-dir dist/preload --external electron --watch' 'wait-on http://127.0.0.1:5173 dist/main/index.js dist/preload/index.cjs && cross-env LOCUS_RENDERER_URL=http://127.0.0.1:5173 electron .'",
     "build:preload": "tsup src/preload/index.ts --format cjs --platform node --out-dir dist/preload --external electron",
     "compat:extensions": "electron scripts/extension-compatibility-smoke.cjs",
@@ -20,9 +20,9 @@
     "prepare:release-config": "node ../../scripts/write-release-config.mjs",
     "package:dir": "pnpm build && pnpm prepare:runtime && pnpm prepare:release-config && electron-builder --config electron-builder.yml --mac dir --arm64",
     "dist:canary": "pnpm build && pnpm prepare:runtime && node ../../scripts/write-release-config.mjs --require-production && electron-builder --config electron-builder.yml --mac dmg zip --arm64 --publish never",
-    "pretest": "pnpm --filter @locus/extensions build",
+    "pretest": "pnpm --filter @locus/extensions --filter @locus/sync-crypto build",
     "test": "vitest run src",
-    "pretypecheck": "pnpm --filter @locus/extensions build",
+    "pretypecheck": "pnpm --filter @locus/extensions --filter @locus/sync-crypto build",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

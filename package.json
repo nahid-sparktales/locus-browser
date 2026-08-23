@@ -13,6 +13,8 @@
     "release:manifest": "node scripts/create-release-manifest.mjs",
     "release:publish": "node scripts/publish-release.mjs",
     "release:sbom": "node scripts/create-sbom.mjs",
+    "pretest": "pnpm --filter './packages/**' build",
+    "pretypecheck": "pnpm --filter './packages/**' build",
     "test": "pnpm -r --if-present test",
     "typecheck": "pnpm -r --if-present typecheck"
   },
