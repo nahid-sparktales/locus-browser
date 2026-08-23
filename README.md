@@ -9,9 +9,10 @@ creates.
 
 ![Locus Browser showing Google beside the Solo Work model picker](docs/images/locus-browser.png)
 
-This checkout is the executable engine proof and product foundation. See
-[`docs/implementation-status.md`](docs/implementation-status.md) for the exact
-canary work that remains; it does not claim stable-release parity yet.
+This checkout is the source-complete Apple Silicon macOS canary candidate. See
+[`docs/implementation-status.md`](docs/implementation-status.md) for its exact
+scope and the external signing, service, and review gates required before
+inviting canary users. It does not claim stable-release parity yet.
 
 ## Repository layout
 
@@ -93,21 +94,25 @@ engine-backed permission allowlist is deliberately narrow: `activeTab`,
 future compatibility work. The versioned package contract is documented in
 [`docs/locusx-format.md`](docs/locusx-format.md).
 
-The curated gallery is now a main-process-only catalog and download path. The
-desktop validates its bounded versioned catalog, keeps downloads on the configured
-gallery origin, streams them into private temporary storage, checks the advertised
-size and SHA-256, and then runs the independent `.locusx` verification and native
-permission review. In development, run the read-only service and point the app at
-it with `LOCUS_EXTENSION_GALLERY_URL`:
+The curated gallery is a main-process-only catalog and download path. Catalogs
+and revocations are signed offline, staged rollouts are deterministic, revoked
+installs are unloaded, and the last verified security notice remains enforceable
+offline. The desktop keeps downloads on the configured origin, streams them into
+private temporary storage, checks size and SHA-256, and then independently runs
+the `.locusx` verification and native permission review. In development, run the
+read-only service and point the app at it with `LOCUS_EXTENSION_GALLERY_URL`:
 
 ```bash
 docker compose -f compose.gallery.yaml up --build
-LOCUS_EXTENSION_GALLERY_URL=http://127.0.0.1:8790 pnpm dev:desktop
+LOCUS_EXTENSION_GALLERY_URL=http://127.0.0.1:8790 \
+LOCUS_GALLERY_TRUST_DEVELOPMENT_DOCUMENTS=1 pnpm dev:desktop
 ```
 
 Place canary-signed packages in the ignored `gallery-packages` directory before
-starting the service. See [`docs/extension-gallery.md`](docs/extension-gallery.md)
-for the service contract and remaining production controls.
+starting the service. Production starts only from signed metadata that exactly
+matches that immutable package directory. See
+[`docs/extension-gallery.md`](docs/extension-gallery.md) for publication and
+revocation procedures.
 
 Optional Locus encrypted sync now provides passkey accounts and client-side
 encrypted bookmarks, history, tab groups, ordinary web tabs, selected settings,
@@ -116,6 +121,9 @@ system. Connected devices can approve a new Mac without exposing the account
 key to the service, revoke other devices, and rotate the recovery key across
 the entire encrypted replica in one versioned operation. A newly generated or
 rotated recovery key is shown once in a native dialog.
+Small ciphertext stays in PostgreSQL and larger opaque envelopes move to
+S3-compatible storage; staged writes and post-commit cleanup preserve conflict,
+rotation, and account-deletion behavior across both stores.
 Passwords, cookies, downloads, workspaces, conversations, memory, provider
 credentials, and run records remain local. For local development, start the
 sync stack and point the desktop UI at it with `VITE_LOCUS_SYNC_URL`:
@@ -139,10 +147,26 @@ in this repository.
 ## Verify
 
 ```bash
+pnpm canary:check
 pnpm typecheck
 pnpm test
 pnpm build
+pnpm --filter @locus/browser-desktop compat:extensions
+pnpm --filter @locus/browser-desktop acceptance:ui
+pnpm audit --prod --audit-level high
+pnpm release:sbom
 ```
 
+## Canary release
+
+The protected `canary-vX.Y.Z-canary.N` tag workflow builds the embedded Python
+runtime, seals the controlled gallery and sync HTTPS origins into the signed
+application, produces Apple Silicon DMG/ZIP artifacts, notarizes and staples
+them, checks Gatekeeper, generates a CycloneDX SBOM, signs a hash manifest, and
+publishes an immutable GitHub prerelease. The operator checklist and rollback
+procedure are in [`docs/canary-runbook.md`](docs/canary-runbook.md).
+
 The first release target is signed/notarized Apple Silicon macOS 14+. The
-application is not a Mac App Store target.
+application is not a Mac App Store target. Team orchestration and unproven
+Chrome-style extension APIs remain post-canary so this release can stay focused
+on normal browsing and a reliable solo agent.

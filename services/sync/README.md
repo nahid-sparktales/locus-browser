@@ -9,9 +9,17 @@ docker compose -f compose.sync.yaml up --build
 
 The checked-in bootstrap token is for local development fixtures only. Account
 creation and sign-in use hosted WebAuthn passkey ceremonies and expiring,
-one-use claims. Production must use managed secrets, TLS, a private database
-network, an object-store retention policy, and backups. Records are capped at
-2 MB and the batch body at 3 MB.
+one-use claims. Production must use managed secrets, TLS, private database and
+object-store networks, retention policy, and backups. Records are capped at 2 MB
+and the batch body at 3 MB. Ciphertext at or above 256 KB is stored in the
+configured S3-compatible backend; smaller ciphertext remains inline in
+PostgreSQL.
+
+Configure object storage with `LOCUS_SYNC_S3_BUCKET`, `AWS_REGION`, and the
+standard AWS credential variables. `LOCUS_SYNC_S3_ENDPOINT` and
+`LOCUS_SYNC_S3_FORCE_PATH_STYLE` support a private compatible service such as
+MinIO. New objects are staged before database commits, rejected objects are
+cleaned on rollback, and superseded objects are deleted only after commit.
 
 Configure the passkey relying party explicitly in production:
 

@@ -1,4 +1,5 @@
 import { Pool, type PoolClient } from "pg";
+import { OpaqueRecordStorage, type OpaqueBlobStore, type StoredOpaquePayload } from "./opaqueRecordStorage.js";
 import type {
   AccountKeyWrap,
   AuthenticatedDevice,
@@ -14,9 +15,11 @@ import type {
 
 export class PostgresSyncRepository implements SyncRepository {
   readonly #pool: Pool;
+  readonly #recordStorage: OpaqueRecordStorage;
 
-  constructor(connectionString: string) {
+  constructor(connectionString: string, blobStore?: OpaqueBlobStore) {
     this.#pool = new Pool({ connectionString, max: 12, idleTimeoutMillis: 30_000, statement_timeout: 10_000 });
+    this.#recordStorage = new OpaqueRecordStorage(blobStore);
   }
 
   async bootstrap(tokenHash: string, device: AuthenticatedDevice): Promise<void> {
@@ -41,6 +44,12 @@ export class PostgresSyncRepository implements SyncRepository {
   }
 
   async push(device: AuthenticatedDevice, keyVersion: number, records: OpaqueSyncRecord[]): Promise<{ cursor: number; accepted: number }> {
+    if (records.some((record) => record.accountId !== device.accountId || record.deviceId !== device.deviceId)) {
+      throw new Error("Record ownership mismatch");
+    }
+    const staged = await this.#recordStorage.stageBatch(records);
+    const discardOnFailure = staged.map((payload) => payload.objectKey);
+    const discardAfterCommit: Array<string | null> = [];
     const client = await this.#pool.connect();
     try {
       await client.query("BEGIN");
@@ -48,16 +57,20 @@ export class PostgresSyncRepository implements SyncRepository {
       if (account.rows[0]?.key_version !== keyVersion) throw new Error("Sync account key version changed");
       let cursor = 0;
       let accepted = 0;
-      for (const record of records) {
-        if (record.accountId !== device.accountId || record.deviceId !== device.deviceId) throw new Error("Record ownership mismatch");
+      for (const [index, record] of records.entries()) {
+        const payload = staged[index]!;
+        const previous = await client.query<{ object_key: string | null }>(`
+          SELECT object_key FROM sync_records WHERE account_id=$1 AND collection=$2 AND record_id=$3
+        `, [record.accountId, record.collection, record.recordId]);
         const result = await client.query<{ cursor: string }>(`
-          INSERT INTO sync_records(account_id, collection, record_id, device_id, clock, nonce, ciphertext, size, tombstone, version)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+          INSERT INTO sync_records(account_id, collection, record_id, device_id, clock, nonce, ciphertext, object_key, size, tombstone, version)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
           ON CONFLICT (account_id, collection, record_id) DO UPDATE SET
             device_id = EXCLUDED.device_id,
             clock = EXCLUDED.clock,
             nonce = EXCLUDED.nonce,
             ciphertext = EXCLUDED.ciphertext,
+            object_key = EXCLUDED.object_key,
             size = EXCLUDED.size,
             tombstone = EXCLUDED.tombstone,
             version = EXCLUDED.version,
@@ -65,15 +78,24 @@ export class PostgresSyncRepository implements SyncRepository {
             updated_at = now()
           WHERE sync_records.clock < EXCLUDED.clock
           RETURNING cursor
-        `, [record.accountId, record.collection, record.recordId, record.deviceId, record.clock, record.nonce, record.ciphertext, record.size, record.tombstone, record.version]);
+        `, [record.accountId, record.collection, record.recordId, record.deviceId, record.clock, record.nonce,
+          payload.ciphertext, payload.objectKey, record.size, record.tombstone, record.version]);
         cursor = Math.max(cursor, Number(result.rows[0]?.cursor ?? 0));
-        if (result.rowCount) accepted += 1;
+        if (result.rowCount) {
+          accepted += 1;
+          const previousKey = previous.rows[0]?.object_key;
+          if (previousKey && previousKey !== payload.objectKey) discardAfterCommit.push(previousKey);
+        } else if (payload.objectKey) {
+          discardAfterCommit.push(payload.objectKey);
+        }
       }
       if (!cursor) cursor = await currentCursor(client);
       await client.query("COMMIT");
+      await this.#recordStorage.discard(discardAfterCommit).catch(() => undefined);
       return { cursor, accepted };
     } catch (error) {
       await client.query("ROLLBACK");
+      await this.#recordStorage.discard(discardOnFailure).catch(() => undefined);
       throw error;
     } finally {
       client.release();
@@ -81,28 +103,43 @@ export class PostgresSyncRepository implements SyncRepository {
   }
 
   async pull(accountId: string, cursor: number, limit: number) {
-    const result = await this.#pool.query<{
+    const client = await this.#pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query<{
       account_id: string; device_id: string; collection: OpaqueSyncRecord["collection"];
-      record_id: string; clock: string; nonce: string; ciphertext: string; tombstone: boolean; size: number; cursor: string; version: 1;
+      record_id: string; clock: string; nonce: string; ciphertext: string | null; object_key: string | null;
+      tombstone: boolean; size: number; cursor: string; version: 1;
     }>(`
-      SELECT account_id, device_id, collection, record_id, clock, nonce, ciphertext, tombstone, size, cursor, version
-      FROM sync_records WHERE account_id = $1 AND cursor > $2 ORDER BY cursor ASC LIMIT $3
+      SELECT account_id, device_id, collection, record_id, clock, nonce, ciphertext, object_key, tombstone, size, cursor, version
+      FROM sync_records WHERE account_id = $1 AND cursor > $2 ORDER BY cursor ASC LIMIT $3 FOR SHARE
     `, [accountId, cursor, limit + 1]);
-    const hasMore = result.rows.length > limit;
-    const records = result.rows.slice(0, limit).map((row) => ({
-      accountId: row.account_id,
-      version: row.version,
-      deviceId: row.device_id,
-      collection: row.collection,
-      recordId: row.record_id,
-      clock: row.clock,
-      nonce: row.nonce,
-      ciphertext: row.ciphertext,
-      tombstone: row.tombstone,
-      size: row.size,
-      cursor: Number(row.cursor),
-    }));
-    return { records, cursor: records.at(-1)?.cursor ?? cursor, hasMore };
+      const hasMore = result.rows.length > limit;
+      const records = await Promise.all(result.rows.slice(0, limit).map(async (row) => {
+        const ciphertext = await this.#recordStorage.hydrate(storedPayload(row));
+        if (Buffer.byteLength(ciphertext, "base64url") !== row.size) throw new Error("Opaque sync object size mismatch");
+        return {
+          accountId: row.account_id,
+          version: row.version,
+          deviceId: row.device_id,
+          collection: row.collection,
+          recordId: row.record_id,
+          clock: row.clock,
+          nonce: row.nonce,
+          ciphertext,
+          tombstone: row.tombstone,
+          size: row.size,
+          cursor: Number(row.cursor),
+        };
+      }));
+      await client.query("COMMIT");
+      return { records, cursor: records.at(-1)?.cursor ?? cursor, hasMore };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async createEnrollment(enrollment: Enrollment): Promise<void> {
@@ -426,6 +463,8 @@ export class PostgresSyncRepository implements SyncRepository {
   }
 
   async rotateAccountKey(device: AuthenticatedDevice, expectedVersion: number, version: number, wraps: AccountKeyWrap[], records: OpaqueSyncRecord[]): Promise<{ cursor: number }> {
+    if (records.some((record) => record.accountId !== device.accountId || record.deviceId !== device.deviceId)) throw new Error("Record ownership mismatch");
+    const staged = await this.#recordStorage.stageBatch(records);
     const client = await this.#pool.connect();
     try {
       await client.query("BEGIN");
@@ -433,9 +472,8 @@ export class PostgresSyncRepository implements SyncRepository {
       if (account.rows[0]?.key_version !== expectedVersion || version !== expectedVersion + 1) throw new Error("Sync account key version changed");
       const devices = await activeDeviceIds(client, device.accountId);
       assertCompleteWrapSet(devices, wraps);
-      if (records.some((record) => record.accountId !== device.accountId || record.deviceId !== device.deviceId)) throw new Error("Record ownership mismatch");
-      const existing = await client.query<{ collection: string; record_id: string }>(
-        "SELECT collection, record_id FROM sync_records WHERE account_id=$1 FOR UPDATE",
+      const existing = await client.query<{ collection: string; record_id: string; object_key: string | null }>(
+        "SELECT collection, record_id, object_key FROM sync_records WHERE account_id=$1 FOR UPDATE",
         [device.accountId],
       );
       const existingKeys = new Set(existing.rows.map((record) => `${record.collection}:${record.record_id}`));
@@ -445,12 +483,13 @@ export class PostgresSyncRepository implements SyncRepository {
       }
       await client.query("DELETE FROM sync_records WHERE account_id=$1", [device.accountId]);
       let cursor = 0;
-      for (const record of records) {
+      for (const [index, record] of records.entries()) {
+        const payload = staged[index]!;
         const inserted = await client.query<{ cursor: string }>(`
-          INSERT INTO sync_records(account_id, collection, record_id, device_id, clock, nonce, ciphertext, size, tombstone, version)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING cursor
+          INSERT INTO sync_records(account_id, collection, record_id, device_id, clock, nonce, ciphertext, object_key, size, tombstone, version)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING cursor
         `, [record.accountId, record.collection, record.recordId, record.deviceId, record.clock,
-          record.nonce, record.ciphertext, record.size, record.tombstone, record.version]);
+          record.nonce, payload.ciphertext, payload.objectKey, record.size, record.tombstone, record.version]);
         cursor = Math.max(cursor, Number(inserted.rows[0]?.cursor ?? 0));
       }
       for (const wrap of wraps) await client.query(`
@@ -459,9 +498,11 @@ export class PostgresSyncRepository implements SyncRepository {
       `, [wrap.wrappedAccountKey, version, device.accountId, wrap.deviceId]);
       await client.query("UPDATE accounts SET key_version=$1 WHERE id=$2", [version, device.accountId]);
       await client.query("COMMIT");
+      await this.#recordStorage.discard(existing.rows.map((row) => row.object_key)).catch(() => undefined);
       return { cursor };
     } catch (error) {
       await client.query("ROLLBACK");
+      await this.#recordStorage.discard(staged.map((payload) => payload.objectKey)).catch(() => undefined);
       throw error;
     } finally {
       client.release();
@@ -473,17 +514,44 @@ export class PostgresSyncRepository implements SyncRepository {
   }
 
   async deleteCloudData(accountId: string): Promise<void> {
-    await this.#pool.query("DELETE FROM sync_records WHERE account_id=$1", [accountId]);
+    const objectKeys = await this.#deleteRecordsWithAccountLock(accountId, false);
+    await this.#recordStorage.discard(objectKeys).catch(() => undefined);
   }
 
   async deleteAccount(accountId: string): Promise<void> {
-    await this.#pool.query("UPDATE accounts SET deleted_at=now() WHERE id=$1", [accountId]);
-    await this.#pool.query("DELETE FROM accounts WHERE id=$1", [accountId]);
+    const objectKeys = await this.#deleteRecordsWithAccountLock(accountId, true);
+    await this.#recordStorage.discard(objectKeys).catch(() => undefined);
   }
 
   async close(): Promise<void> {
     await this.#pool.end();
   }
+
+  async #deleteRecordsWithAccountLock(accountId: string, deleteAccount: boolean): Promise<Array<string | null>> {
+    const client = await this.#pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT id FROM accounts WHERE id=$1 FOR UPDATE", [accountId]);
+      const existing = await client.query<{ object_key: string | null }>("SELECT object_key FROM sync_records WHERE account_id=$1", [accountId]);
+      if (deleteAccount) {
+        await client.query("UPDATE accounts SET deleted_at=now() WHERE id=$1", [accountId]);
+        await client.query("DELETE FROM accounts WHERE id=$1", [accountId]);
+      } else {
+        await client.query("DELETE FROM sync_records WHERE account_id=$1", [accountId]);
+      }
+      await client.query("COMMIT");
+      return existing.rows.map((row) => row.object_key);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+}
+
+function storedPayload(row: { ciphertext: string | null; object_key: string | null }): StoredOpaquePayload {
+  return { ciphertext: row.ciphertext, objectKey: row.object_key };
 }
 
 async function currentCursor(client: PoolClient): Promise<number> {

@@ -1,0 +1,62 @@
+name: Browser CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: locus-browser
+      - uses: actions/checkout@v4
+        with:
+          repository: nahid-sparktales/locus-platform
+          path: locus-platform
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: locus-browser/pnpm-lock.yaml
+      - name: Install locked dependencies
+        working-directory: locus-browser
+        run: pnpm install --frozen-lockfile
+      - name: Verify canary source gate
+        working-directory: locus-browser
+        run: pnpm canary:check
+      - name: Typecheck
+        working-directory: locus-browser
+        run: pnpm typecheck
+      - name: Test
+        working-directory: locus-browser
+        run: pnpm test
+      - name: Build
+        working-directory: locus-browser
+        run: pnpm build
+      - name: Verify native extension contract
+        working-directory: locus-browser
+        run: pnpm --filter @locus/browser-desktop compat:extensions
+      - name: Verify accessibility and responsiveness
+        working-directory: locus-browser
+        run: pnpm --filter @locus/browser-desktop acceptance:ui
+      - name: Audit production dependencies
+        working-directory: locus-browser
+        run: pnpm audit --prod --audit-level high
+      - name: Generate software bill of materials
+        working-directory: locus-browser
+        run: pnpm release:sbom
+      - uses: actions/upload-artifact@v4
+        with:
+          name: locus-browser-sbom
+          path: locus-browser/release/sbom.cdx.json
+          if-no-files-found: error

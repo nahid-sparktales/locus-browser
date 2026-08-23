@@ -1,5 +1,5 @@
 import { createHash, generateKeyPairSync, sign, type KeyObject } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,6 +11,7 @@ import {
 import { strToU8, zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import { createExtensionGalleryApp } from "./app.js";
+import { loadGalleryPublication, signGalleryPublication } from "./publication.js";
 import { DirectoryExtensionGallery } from "./repository.js";
 
 describe("extension gallery service", () => {
@@ -22,15 +23,25 @@ describe("extension gallery service", () => {
     writePackage(join(root, "notes-1.0.0.locusx"), "1.0.0", galleryKeys, publisherKeys);
     const latestBytes = writePackage(join(root, "notes-1.2.0.locusx"), "1.2.0", galleryKeys, publisherKeys);
     const repository = await DirectoryExtensionGallery.open(root, new Set([galleryFingerprint]));
-    const app = createExtensionGalleryApp(repository);
+    const publication = signGalleryPublication(repository.catalog(), {
+      version: 1,
+      generatedAt: 1_787_408_000,
+      revocations: [],
+    }, galleryKeys.privateKey.export({ format: "pem", type: "pkcs8" }).toString());
+    const app = createExtensionGalleryApp(repository, publication, { production: true });
 
     const catalog = await app.inject({ method: "GET", url: "/v1/extensions" });
     expect(catalog.statusCode).toBe(200);
     expect(catalog.headers["cache-control"]).toContain("max-age=300");
+    expect(catalog.headers["strict-transport-security"]).toContain("max-age=31536000");
     expect(catalog.json()).toMatchObject({
-      catalogVersion: 1,
-      packageContractVersion: 2,
-      extensions: [{ id: "dev.locus.reading-notes", version: "1.2.0", packageSize: latestBytes.byteLength }],
+      documentVersion: 1,
+      kind: "catalog",
+      payload: {
+        catalogVersion: 1,
+        packageContractVersion: 2,
+        extensions: [{ id: "dev.locus.reading-notes", version: "1.2.0", packageSize: latestBytes.byteLength }],
+      },
     });
     const notModified = await app.inject({
       method: "GET",
@@ -39,11 +50,13 @@ describe("extension gallery service", () => {
     });
     expect(notModified.statusCode).toBe(304);
 
-    const downloadPath = catalog.json().extensions[0].downloadPath as string;
+    const revocations = await app.inject({ method: "GET", url: "/v1/revocations" });
+    expect(revocations.json()).toMatchObject({ kind: "revocations", payload: { revocations: [] } });
+    const downloadPath = catalog.json().payload.extensions[0].downloadPath as string;
     const download = await app.inject({ method: "GET", url: downloadPath });
     expect(download.statusCode).toBe(200);
     expect(download.headers["content-type"]).toContain("application/vnd.locus.extension+zip");
-    expect(createHash("sha256").update(download.rawPayload).digest("hex")).toBe(catalog.json().extensions[0].packageSha256);
+    expect(createHash("sha256").update(download.rawPayload).digest("hex")).toBe(catalog.json().payload.extensions[0].packageSha256);
     expect((await app.inject({ method: "GET", url: "/v1/extensions/dev.locus.reading-notes/9.0.0/download" })).statusCode).toBe(404);
     await app.close();
   });
@@ -54,6 +67,46 @@ describe("extension gallery service", () => {
     const publisherKeys = generateKeyPairSync("ed25519");
     writePackage(join(root, "notes.locusx"), "1.0.0", galleryKeys, publisherKeys);
     await expect(DirectoryExtensionGallery.open(root, new Set())).rejects.toThrow("Gallery signing key is not trusted");
+  });
+
+  it("rate limits abusive clients", async () => {
+    const root = mkdtempSync(join(tmpdir(), "locus-gallery-rate-"));
+    const galleryKeys = generateKeyPairSync("ed25519");
+    const fingerprint = publicKeyFingerprint(publicPem(galleryKeys.publicKey));
+    const repository = await DirectoryExtensionGallery.open(root, new Set([fingerprint]));
+    const publication = signGalleryPublication(repository.catalog(), {
+      version: 1, generatedAt: 1_787_408_000, revocations: [],
+    }, galleryKeys.privateKey.export({ format: "pem", type: "pkcs8" }).toString());
+    const app = createExtensionGalleryApp(repository, publication, { requestsPerMinute: 1 });
+    expect((await app.inject({ method: "GET", url: "/health" })).statusCode).toBe(200);
+    const limited = await app.inject({ method: "GET", url: "/health" });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.headers["retry-after"]).toBe("60");
+    await app.close();
+  });
+
+  it("loads only signed metadata that exactly matches the verified package directory", async () => {
+    const root = mkdtempSync(join(tmpdir(), "locus-gallery-publication-"));
+    const packages = join(root, "packages");
+    const metadata = join(root, "metadata");
+    mkdirSync(packages);
+    mkdirSync(metadata);
+    const galleryKeys = generateKeyPairSync("ed25519");
+    const publisherKeys = generateKeyPairSync("ed25519");
+    const fingerprint = publicKeyFingerprint(publicPem(galleryKeys.publicKey));
+    writePackage(join(packages, "notes.locusx"), "1.0.0", galleryKeys, publisherKeys);
+    const repository = await DirectoryExtensionGallery.open(packages, new Set([fingerprint]));
+    const publication = signGalleryPublication(repository.catalog(), {
+      version: 1, generatedAt: 1_787_408_000, revocations: [],
+    }, galleryKeys.privateKey.export({ format: "pem", type: "pkcs8" }).toString());
+    writeFileSync(join(metadata, "catalog.json"), JSON.stringify(publication.catalog));
+    writeFileSync(join(metadata, "revocations.json"), JSON.stringify(publication.revocations));
+    await expect(loadGalleryPublication(metadata, repository.catalog(), new Set([fingerprint]))).resolves.toMatchObject({
+      catalog: { kind: "catalog" }, revocations: { kind: "revocations" },
+    });
+    publication.catalog.payload.extensions[0]!.name = "Tampered";
+    writeFileSync(join(metadata, "catalog.json"), JSON.stringify(publication.catalog));
+    await expect(loadGalleryPublication(metadata, repository.catalog(), new Set([fingerprint]))).rejects.toThrow("Invalid signed gallery catalog");
   });
 });
 

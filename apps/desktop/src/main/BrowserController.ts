@@ -13,6 +13,7 @@ import {
   session,
   shell,
   type Rectangle,
+  type WebContents,
 } from "electron";
 import {
   BrowserActionRequestSchema,
@@ -82,6 +83,8 @@ import {
 } from "./WorkModelProviders.js";
 import { interruptRunningWorkTerminal, updateWorkPlan, updateWorkTerminal } from "./WorkSurfaceEvents.js";
 import { listWorkspaceFiles, readWorkspaceFile } from "./WorkWorkspaceBrowser.js";
+import { trustedSurfaceRecovery } from "./TrustedSurfaceRecovery.js";
+import { loadReleaseConfiguration } from "./ReleaseConfiguration.js";
 
 const CHROME_HEIGHT = 92;
 const SIDEBAR_WIDTH = 248;
@@ -262,6 +265,7 @@ export class BrowserController {
   readonly #groups = new Map<string, TabGroupState>();
   readonly #runtime: AgentRuntime;
   readonly #sync: SyncAccountManager | undefined;
+  readonly #configuredSyncServiceUrl: string | undefined;
   readonly #permissionWaiters = new Map<string, BrowserPermissionWaiter>();
   readonly #sitePermissionWaiters = new Map<string, SitePermissionWaiter>();
   readonly #oneTimeSitePermissions = new Set<string>();
@@ -315,6 +319,7 @@ export class BrowserController {
   #extensionGalleryMessage = "The curated extension gallery is unavailable.";
   #extensionGalleryEntries: ExtensionGalleryEntry[] = [];
   #extensionGalleryRefreshedAt: number | undefined;
+  #trustedSurfaceCrashes: number[] = [];
   #disposed = false;
 
   constructor(rendererUrl: string, preloadPath: string, platformRoot: string, options: BrowserControllerOptions = {}) {
@@ -355,12 +360,19 @@ export class BrowserController {
       show: false,
       webPreferences: trustedRendererPreferences(preloadPath),
     });
-    this.window.loadURL(surfaceUrl(rendererUrl, "shell"));
+    const shellUrl = surfaceUrl(rendererUrl, "shell");
+    this.#bindTrustedSurfaceRecovery(this.window.webContents, shellUrl, "browser chrome");
+    this.window.loadURL(shellUrl);
     this.window.once("ready-to-show", () => this.window.show());
     this.window.on("resize", () => this.#layout(false));
     this.window.on("close", () => this.#persistNow());
     this.window.on("closed", () => this.dispose());
 
+    const releaseConfiguration = loadReleaseConfiguration({
+      packaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+    });
+    this.#configuredSyncServiceUrl = releaseConfiguration.syncUrl;
     this.#sync = this.#privateWindow ? undefined : new SyncAccountManager({
       database: this.#database,
       cipher: electronCredentialCipher,
@@ -383,13 +395,18 @@ export class BrowserController {
       ),
     );
     if (!this.#privateWindow) {
-      const galleryUrl = process.env.LOCUS_EXTENSION_GALLERY_URL
-        || (app.isPackaged ? "" : "http://127.0.0.1:8790");
+      const galleryUrl = releaseConfiguration.galleryUrl;
       if (galleryUrl) {
         try {
+          const galleryDocumentKeys = new Set<string>(trustedGalleryFingerprints);
+          const developmentFingerprint = !app.isPackaged ? process.env.LOCUS_GALLERY_DEVELOPMENT_FINGERPRINT : undefined;
+          if (developmentFingerprint?.match(/^[a-f0-9]{64}$/)) galleryDocumentKeys.add(developmentFingerprint);
           this.#extensionGallery = new ExtensionGalleryClient(
             galleryUrl,
             join(app.getPath("userData"), "Extension Gallery Downloads", this.#profileId),
+            this.#profileId,
+            galleryDocumentKeys,
+            !app.isPackaged && process.env.LOCUS_GALLERY_TRUST_DEVELOPMENT_DOCUMENTS === "1",
           );
           this.#extensionGalleryStatus = "loading";
           this.#extensionGalleryMessage = "Checking the curated gallery…";
@@ -410,7 +427,6 @@ export class BrowserController {
       this.#bindRuntime();
       void this.#initializeExtensionsAndRestoreTabs();
       if (this.#extensionGallery) {
-        void this.#refreshExtensionGallery();
         this.#extensionGalleryRefreshTimer = setInterval(() => void this.#refreshExtensionGallery(), GALLERY_REFRESH_INTERVAL);
       }
     }
@@ -457,6 +473,7 @@ export class BrowserController {
       passwordManagerAvailable: this.#credentials.available(),
       extensions: this.#extensionState(),
       sync: this.#sync?.state() ?? { status: "disconnected", pendingRecords: 0, devices: [] },
+      ...(this.#configuredSyncServiceUrl ? { configuredSyncServiceUrl: this.#configuredSyncServiceUrl } : {}),
       remoteTabs: this.#sync?.remoteTabs() ?? [],
       onboardingRequired: !this.#privateWindow && !this.#settings.onboardingComplete,
       settings: this.#settings,
@@ -738,13 +755,13 @@ export class BrowserController {
         this.#credentials.delete(command.credentialId, true);
         break;
       case "begin-sync-registration":
-        this.#sync?.beginRegistration(command.displayName, command.serviceUrl);
+        this.#sync?.beginRegistration(command.displayName, this.#authorizedSyncService(command.serviceUrl));
         break;
       case "begin-sync-sign-in":
-        this.#sync?.beginSignIn(command.recoveryKey, command.serviceUrl);
+        this.#sync?.beginSignIn(command.recoveryKey, this.#authorizedSyncService(command.serviceUrl));
         break;
       case "begin-sync-device-enrollment":
-        await this.#sync?.beginDeviceEnrollment(command.serviceUrl);
+        await this.#sync?.beginDeviceEnrollment(this.#authorizedSyncService(command.serviceUrl));
         break;
       case "check-sync-device-enrollment":
         this.#sync?.checkDeviceEnrollment();
@@ -888,6 +905,14 @@ export class BrowserController {
     return this.state();
   }
 
+  #authorizedSyncService(raw: string): string {
+    const requested = new URL(raw).origin;
+    if (app.isPackaged && (!this.#configuredSyncServiceUrl || requested !== this.#configuredSyncServiceUrl)) {
+      throw new Error("Encrypted sync is available only through the service sealed into this Locus Browser release");
+    }
+    return requested;
+  }
+
   dispose(): void {
     if (this.#disposed) return;
     clearTimeout(this.#saveTimer);
@@ -920,10 +945,27 @@ export class BrowserController {
   #createWorkView(rendererUrl: string, preloadPath: string): void {
     const view = new WebContentsView({ webPreferences: trustedRendererPreferences(preloadPath) });
     view.setBackgroundColor(this.#surfaceBackground());
-    view.webContents.loadURL(surfaceUrl(rendererUrl, "work"));
+    const workUrl = surfaceUrl(rendererUrl, "work");
+    this.#bindTrustedSurfaceRecovery(view.webContents, workUrl, "Work Mode");
+    view.webContents.loadURL(workUrl);
     this.#workView = view;
     this.window.contentView.addChildView(view);
     view.setVisible(this.#workOpen);
+  }
+
+  #bindTrustedSurfaceRecovery(contents: WebContents, url: string, label: string): void {
+    contents.on("render-process-gone", (_event, details) => {
+      if (this.#disposed || details.reason === "clean-exit" || contents.isDestroyed()) return;
+      const decision = trustedSurfaceRecovery(this.#trustedSurfaceCrashes, Date.now());
+      this.#trustedSurfaceCrashes = decision.crashes;
+      if (!decision.recover) {
+        dialog.showErrorBox(`${label} stopped repeatedly`, "Locus Browser kept your saved browser and work state. Quit and reopen the app to continue safely.");
+        return;
+      }
+      setTimeout(() => {
+        if (!this.#disposed && !contents.isDestroyed()) void contents.loadURL(url);
+      }, decision.delayMs);
+    });
   }
 
   #restoreTabs(): void {
@@ -1449,6 +1491,7 @@ export class BrowserController {
 
   async #initializeExtensionsAndRestoreTabs(): Promise<void> {
     try {
+      if (this.#extensionGallery) await this.#refreshExtensionGallery();
       await this.#extensions?.initialize();
     } finally {
       if (this.#disposed) return;
@@ -1514,15 +1557,21 @@ export class BrowserController {
     this.#broadcast();
     try {
       const catalog = await this.#extensionGallery.refresh();
+      const disabled = this.#extensions?.enforceRevocations(this.#extensionGallery.revocations()) ?? 0;
       this.#extensionGalleryEntries = catalog.extensions;
       this.#extensionGalleryStatus = "ready";
       this.#extensionGalleryRefreshedAt = Math.floor(Date.now() / 1_000);
-      this.#extensionGalleryMessage = catalog.extensions.length
+      this.#extensionGalleryMessage = disabled
+        ? `${disabled} installed extension${disabled === 1 ? " was" : "s were"} disabled by a signed security notice.`
+        : catalog.extensions.length
         ? `${catalog.extensions.length} verified extension${catalog.extensions.length === 1 ? "" : "s"} available.`
         : "No curated extensions are published yet.";
     } catch (error) {
+      const disabled = this.#extensions?.disableGalleryUntilSecurityVerified() ?? 0;
       this.#extensionGalleryStatus = "error";
-      this.#extensionGalleryMessage = extensionGalleryError(error);
+      this.#extensionGalleryMessage = disabled
+        ? `${disabled} gallery extension${disabled === 1 ? " was" : "s were"} disabled until signed security notices can be verified.`
+        : extensionGalleryError(error);
     }
     this.#broadcast();
   }
@@ -3272,7 +3321,9 @@ function delay(milliseconds: number): Promise<void> {
 }
 
 export function platformRootFromApp(): string {
-  return process.env.LOCUS_PLATFORM_ROOT || join(app.getAppPath(), "..", "..", "..", "locus-platform");
+  if (process.env.LOCUS_PLATFORM_ROOT) return process.env.LOCUS_PLATFORM_ROOT;
+  if (app.isPackaged) return join(process.resourcesPath, "AgentRuntime");
+  return join(app.getAppPath(), "..", "..", "..", "locus-platform");
 }
 
 export function revealAgentDownloads(): void {

@@ -2,9 +2,16 @@ import { randomBytes } from "node:crypto";
 import { createSyncApp, hashToken } from "./app.js";
 import { MemorySyncRepository } from "./memoryRepository.js";
 import { PostgresSyncRepository } from "./postgresRepository.js";
+import { S3OpaqueBlobStore } from "./s3OpaqueBlobStore.js";
 
+const blobStore = process.env.LOCUS_SYNC_S3_BUCKET ? new S3OpaqueBlobStore({
+  bucket: process.env.LOCUS_SYNC_S3_BUCKET,
+  ...(process.env.LOCUS_SYNC_S3_ENDPOINT ? { endpoint: process.env.LOCUS_SYNC_S3_ENDPOINT } : {}),
+  ...(process.env.AWS_REGION ? { region: process.env.AWS_REGION } : {}),
+  ...(process.env.LOCUS_SYNC_S3_FORCE_PATH_STYLE ? { forcePathStyle: process.env.LOCUS_SYNC_S3_FORCE_PATH_STYLE === "true" } : {}),
+}) : undefined;
 const repository = process.env.DATABASE_URL
-  ? new PostgresSyncRepository(process.env.DATABASE_URL)
+  ? new PostgresSyncRepository(process.env.DATABASE_URL, blobStore)
   : new MemorySyncRepository();
 const bootstrapToken = process.env.LOCUS_SYNC_BOOTSTRAP_TOKEN || randomBytes(32).toString("base64url");
 const bootstrapDevice = {

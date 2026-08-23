@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Locus Canary Compatibility",
+  "version": "1.0.0",
+  "description": "Exercises the exact extension capabilities admitted by the canary contract.",
+  "permissions": ["activeTab", "scripting", "storage", "tabs", "webRequest"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "content_scripts": [
+    {
+      "matches": ["http://127.0.0.1/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

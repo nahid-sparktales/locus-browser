@@ -1,0 +1,31 @@
+services:
+  gallery:
+    image: ${LOCUS_GALLERY_IMAGE:?Use an immutable gallery image digest}
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8790"
+      LOCUS_GALLERY_MODE: production
+      LOCUS_GALLERY_PACKAGES: /packages
+      LOCUS_GALLERY_METADATA: /metadata
+    volumes:
+      - ${LOCUS_GALLERY_PACKAGES:?Mount reviewed immutable packages}:/packages:ro
+      - ${LOCUS_GALLERY_METADATA:?Mount signed catalog and revocations}:/metadata:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    expose: ["8790"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8790/health').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "1.0"

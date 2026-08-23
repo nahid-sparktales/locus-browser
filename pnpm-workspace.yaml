@@ -4,4 +4,6 @@ packages:
   - services/*
 allowBuilds:
   electron: true
+  electron-winstaller: set this to true or false
   esbuild: true
+  libxmljs2: set this to true or false

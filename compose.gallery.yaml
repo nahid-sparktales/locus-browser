@@ -6,6 +6,7 @@ services:
     environment:
       PORT: "8790"
       HOST: 0.0.0.0
+      LOCUS_GALLERY_MODE: development
       LOCUS_GALLERY_PACKAGES: /packages
     ports:
       - "127.0.0.1:8790:8790"

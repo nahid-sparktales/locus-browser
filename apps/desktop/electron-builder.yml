@@ -1,0 +1,64 @@
+appId: com.sparktales.locus.browser
+productName: Locus Browser
+copyright: Copyright © 2026 SparkTales
+artifactName: Locus-Browser-${version}-${arch}.${ext}
+
+directories:
+  output: ../../release
+  buildResources: assets
+
+files:
+  - dist/**
+  - assets/**
+  - package.json
+
+extraResources:
+  - from: build/AgentRuntime
+    to: AgentRuntime
+    filter:
+      - "**/*"
+  - from: dist/release-config.json
+    to: release-config.json
+  - from: build/app-update.yml
+    to: app-update.yml
+
+asar: true
+compression: maximum
+electronLanguages:
+  - en
+afterPack: ../../scripts/sign-agent-runtime.mjs
+
+mac:
+  target:
+    - target: dmg
+      arch: [arm64]
+    - target: zip
+      arch: [arm64]
+  icon: assets/icon.icns
+  category: public.app-category.productivity
+  minimumSystemVersion: 14.0.0
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
+  signIgnore:
+    - ".*/Contents/Resources/AgentRuntime/.*"
+  extendInfo:
+    NSCameraUsageDescription: Locus Browser uses the camera only for sites you explicitly allow.
+    NSMicrophoneUsageDescription: Locus Browser uses the microphone only for sites you explicitly allow.
+
+dmg:
+  sign: false
+  title: Locus Browser ${version}
+
+protocols:
+  - name: Locus Browser secure callback
+    schemes:
+      - locus-browser
+
+publish:
+  provider: github
+  owner: nahid-sparktales
+  repo: locus-browser
+  channel: canary
+  releaseType: prerelease

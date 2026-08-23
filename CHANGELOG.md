@@ -1,0 +1,16 @@
+# Changelog
+
+## 0.1.0-canary.1 — unreleased
+
+Initial Apple Silicon macOS canary candidate:
+
+- secure browser foundation with Locus-themed normal and private browsing;
+- focused Solo Work dock and the native-Locus model/provider choices;
+- explicit agent tab grants and protected browser automation;
+- signed, revocable curated extensions with a tested MV3 subset;
+- optional end-to-end encrypted multi-device browser sync;
+- signed/notarized packaging, canary updates, rollback snapshots, SBOM, signed
+  artifact manifest, and automated security/accessibility/performance gates.
+
+See `docs/implementation-status.md` for scope and `docs/canary-runbook.md` for
+the controlled release procedure.

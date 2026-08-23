@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "generatedAt": 1787408000,
+  "revocations": [
+    {
+      "id": "example-security-incident",
+      "extensionId": "dev.locus.example",
+      "version": "1.0.0",
+      "reason": "security",
+      "effectiveAt": 1787408000
+    }
+  ]
+}

@@ -26,10 +26,12 @@ CREATE TABLE IF NOT EXISTS sync_records (
   device_id text NOT NULL,
   clock text NOT NULL,
   nonce text NOT NULL,
-  ciphertext text NOT NULL,
+  ciphertext text,
+  object_key text,
   size integer NOT NULL CHECK (size <= 2097152),
   tombstone boolean NOT NULL DEFAULT false,
   version smallint NOT NULL DEFAULT 1 CHECK (version = 1),
+  CONSTRAINT sync_records_payload_location CHECK ((ciphertext IS NOT NULL AND object_key IS NULL) OR (ciphertext IS NULL AND object_key IS NOT NULL)),
   cursor bigint NOT NULL DEFAULT nextval('sync_cursor'),
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (account_id, collection, record_id)
@@ -100,3 +102,12 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_seen_at timestamptz NOT NULL D
 ALTER TABLE device_enrollments ALTER COLUMN account_id DROP NOT NULL;
 ALTER TABLE device_enrollments ADD COLUMN IF NOT EXISTS device_name text NOT NULL DEFAULT 'Device';
 ALTER TABLE passkey_ceremonies ADD COLUMN IF NOT EXISTS device_name text NOT NULL DEFAULT 'Device';
+ALTER TABLE sync_records ALTER COLUMN ciphertext DROP NOT NULL;
+ALTER TABLE sync_records ADD COLUMN IF NOT EXISTS object_key text;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'sync_records_payload_location') THEN
+    ALTER TABLE sync_records ADD CONSTRAINT sync_records_payload_location
+      CHECK ((ciphertext IS NOT NULL AND object_key IS NULL) OR (ciphertext IS NULL AND object_key IS NOT NULL));
+  END IF;
+END $$;

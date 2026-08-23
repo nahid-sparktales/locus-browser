@@ -15,6 +15,6 @@ FROM node:24-alpine
 USER node
 WORKDIR /app
 COPY --from=build --chown=node:node /out ./
-ENV NODE_ENV=production PORT=8790 LOCUS_GALLERY_PACKAGES=/packages
+ENV NODE_ENV=production PORT=8790 LOCUS_GALLERY_MODE=production LOCUS_GALLERY_PACKAGES=/packages LOCUS_GALLERY_METADATA=/metadata
 EXPOSE 8790
 CMD ["node", "dist/server.js"]

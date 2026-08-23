@@ -45,4 +45,30 @@ describe("encrypted sync", () => {
     const right = new HybridLogicalClock("device-b").tick(1_700_000_000_000);
     expect(left < right).toBe(true);
   });
+
+  it("round-trips varied payloads and rejects ciphertext or associated-data fuzz mutations", async () => {
+    const key = await generateAccountKey();
+    for (let index = 0; index < 100; index += 1) {
+      const metadata = {
+        accountId: "account-fuzz",
+        deviceId: `device-${index % 7}`,
+        collection: (["bookmarks", "history", "settings", "extensions"] as const)[index % 4]!,
+        recordId: `record-${index}`,
+        clock: new HybridLogicalClock(`device-${index % 7}`).tick(1_787_408_000_000 + index),
+      };
+      const payload = {
+        index,
+        text: `${"🙂".repeat(index % 11)}\0${"x".repeat(index * 3)}`,
+        nested: { enabled: index % 2 === 0, values: [index, null, `value-${index}`] },
+      };
+      const record = await encryptRecord(key, metadata, payload);
+      await expect(decryptRecord(key, record)).resolves.toEqual(payload);
+      const first = record.ciphertext[0]!;
+      await expect(decryptRecord(key, {
+        ...record,
+        ciphertext: `${first === "A" ? "B" : "A"}${record.ciphertext.slice(1)}`,
+      })).rejects.toThrow();
+      await expect(decryptRecord(key, { ...record, clock: `${record.clock}-tampered` })).rejects.toThrow();
+    }
+  });
 });

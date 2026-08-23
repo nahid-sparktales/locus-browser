@@ -1,5 +1,5 @@
 {
-  "contractVersion": 2,
+  "contractVersion": 3,
   "manifestVersion": 3,
   "supportedManifestKeys": [
     "manifest_version", "name", "version", "description", "icons", "author",
@@ -10,8 +10,8 @@
   "apis": {
     "runtime": "stable",
     "action": "planned",
-    "tabs": "tested-subset",
-    "scripting": "stable",
+    "tabs": "permission-admission",
+    "scripting": "permission-admission",
     "contentScripts": "stable",
     "storage.local": "stable",
     "commands": "planned",
@@ -20,13 +20,19 @@
     "downloads": "planned",
     "bookmarks": "planned",
     "history": "planned",
-    "webRequest": "stable",
+    "webRequest": "permission-admission",
     "declarativeNetRequest": "planned",
-    "serviceWorker": "planned"
+    "serviceWorker": "post-canary"
   },
   "permissions": [
     "activeTab", "scripting", "storage", "tabs", "webRequest"
   ],
   "privateProfilesDefault": "disabled",
-  "remoteCode": "forbidden"
+  "remoteCode": "forbidden",
+  "canaryEngine": {
+    "electron": "43.4.1",
+    "exercised": ["runtime", "contentScripts", "storage.local"],
+    "permissionAdmission": ["activeTab", "scripting", "tabs", "webRequest"],
+    "excluded": ["action", "commands", "contextMenus", "notifications", "downloads", "bookmarks", "history", "declarativeNetRequest", "serviceWorker"]
+  }
 }

@@ -1,0 +1,4 @@
+provider: github
+owner: nahid-sparktales
+repo: locus-browser
+updaterCacheDirName: locus-browser-updater

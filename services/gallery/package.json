@@ -8,6 +8,7 @@
     "prebuild": "pnpm --filter @locus/extensions build",
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/server.ts",
+    "publish:metadata": "tsx src/publish.ts",
     "start": "node dist/server.js",
     "pretypecheck": "pnpm --filter @locus/extensions build",
     "typecheck": "tsc -p tsconfig.json --noEmit",

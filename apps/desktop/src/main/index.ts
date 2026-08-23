@@ -1,7 +1,9 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BrowserWindow, Menu, app, ipcMain, nativeImage, type IpcMainInvokeEvent } from "electron";
+import { AppUpdater } from "./AppUpdater.js";
 import { BrowserController, platformRootFromApp } from "./BrowserController.js";
+import { snapshotDatabaseForVersion } from "./DatabaseSnapshot.js";
 import { requiresShellSender } from "./BrowserCommandPolicy.js";
 import { BrowserCommandSchema, ipcChannels } from "../shared/ipc.js";
 
@@ -9,6 +11,7 @@ app.name = "Locus Browser";
 app.setPath("userData", process.env.LOCUS_BROWSER_USER_DATA || join(app.getPath("appData"), "Locus Browser"));
 
 const controllers = new Set<BrowserController>();
+const updater = new AppUpdater();
 let rendererUrl = "";
 let preloadPath = "";
 let platformRoot = "";
@@ -24,10 +27,15 @@ app.whenReady().then(() => {
     || new URL(`file://${join(currentDirectory, "..", "renderer", "index.html")}`).toString();
   preloadPath = join(currentDirectory, "..", "preload", "index.cjs");
   platformRoot = platformRootFromApp();
+  snapshotDatabaseForVersion(join(app.getPath("userData"), "browser.sqlite3"), app.getVersion());
   installAppIcon();
   installIpc();
   createWindow(false, "default");
   installMenu();
+  if (app.isPackaged) {
+    updater.initialize(() => focusedController()?.window);
+    setTimeout(() => void updater.check(false), 15_000);
+  }
 });
 
 function installAppIcon(): void {
@@ -49,6 +57,7 @@ function installMenu(): void {
       label: app.name,
       submenu: [
         { role: "about" },
+        { label: "Check for Updates…", enabled: app.isPackaged, click: () => void updater.check(true) },
         { type: "separator" },
         { role: "hide" },
         { role: "hideOthers" },

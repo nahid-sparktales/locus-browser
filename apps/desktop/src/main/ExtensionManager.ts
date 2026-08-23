@@ -2,10 +2,12 @@ import {
   capabilityRegistry,
   compareExtensionVersions,
   extensionContentScriptMatches,
+  extensionIsRevoked,
   permissionExpansion,
   trustedGalleryKeys,
   validateManifest,
   type LocusExtensionManifest,
+  type ExtensionRevocation,
 } from "@locus/extensions";
 import type { ExtensionManagerState } from "../shared/types.js";
 import { BrowserDatabase, type StoredExtensionInstall, type StoredExtensionPackage } from "./BrowserDatabase.js";
@@ -38,6 +40,7 @@ export class ExtensionManager {
   readonly #runtime: ExtensionRuntime;
   readonly #galleryStore: GalleryExtensionStore | undefined;
   #loading = false;
+  #revocations: ExtensionRevocation[] = [];
 
   constructor(database: BrowserDatabase, profileId: string, runtime: ExtensionRuntime, galleryStore?: GalleryExtensionStore) {
     this.#database = database;
@@ -96,6 +99,44 @@ export class ExtensionManager {
 
   developerMode(): boolean {
     return this.#database.setting(this.#profileId, "extensionDeveloperMode") === true;
+  }
+
+  enforceRevocations(revocations: readonly ExtensionRevocation[]): number {
+    this.#revocations = [...revocations];
+    let disabled = 0;
+    for (const install of this.#database.listExtensionInstalls(this.#profileId)) {
+      if (install.source !== "gallery") continue;
+      const activePackage = this.#activePackage(install);
+      const revocation = this.#matchingRevocation(install.id, install.version, activePackage);
+      if (!revocation) continue;
+      this.#unload(install);
+      this.#database.setExtensionLoadState(
+        this.#profileId,
+        install.id,
+        false,
+        install.runtimeId,
+        `Disabled by Locus extension security: ${revocation.reason} (${revocation.id})`,
+      );
+      disabled += 1;
+    }
+    return disabled;
+  }
+
+  disableGalleryUntilSecurityVerified(): number {
+    let disabled = 0;
+    for (const install of this.#database.listExtensionInstalls(this.#profileId)) {
+      if (install.source !== "gallery" || (!install.enabled && !this.#runtime.getExtension(install.runtimeId ?? ""))) continue;
+      this.#unload(install);
+      this.#database.setExtensionLoadState(
+        this.#profileId,
+        install.id,
+        false,
+        install.runtimeId,
+        "Disabled until Locus can verify the signed extension security notices.",
+      );
+      disabled += 1;
+    }
+    return disabled;
   }
 
   async initialize(): Promise<void> {
@@ -181,6 +222,15 @@ export class ExtensionManager {
     if (!this.#galleryStore || review.source !== "gallery" || !("id" in inspection)) {
       throw new Error("Expected a signed gallery extension review");
     }
+    this.#assertNotRevoked(inspection.id, inspection.manifest.version, {
+      extensionId: inspection.id,
+      version: inspection.manifest.version,
+      installPath: inspection.path,
+      packageFingerprint: inspection.fingerprint,
+      publisherFingerprint: inspection.publisherFingerprint,
+      galleryFingerprint: inspection.galleryFingerprint,
+      installedAt: 0,
+    });
     const existing = this.#database.listExtensionInstalls(this.#profileId).find((install) => install.id === inspection.id);
     const activePackage = existing?.installPath
       ? this.#database.listExtensionPackages(this.#profileId, existing.id).find((item) => item.installPath === existing.installPath)
@@ -231,6 +281,7 @@ export class ExtensionManager {
 
   async prepareEnable(id: string): Promise<ExtensionPermissionReview> {
     const install = this.#install(id);
+    if (install.source === "gallery") this.#assertNotRevoked(id, install.version, this.#activePackage(install));
     if (!install.installPath) throw new Error("Install this gallery extension on this Mac before enabling it");
     const inspection = await inspectUnpackedExtension(install.installPath);
     const previous = storedManifest(install);
@@ -243,6 +294,7 @@ export class ExtensionManager {
     const rollbackPackage = this.#database.listExtensionPackages(this.#profileId, id)
       .find((extensionPackage) => extensionPackage.installPath !== install.installPath);
     if (!rollbackPackage) throw new Error("No verified rollback version is available");
+    this.#assertNotRevoked(id, rollbackPackage.version, rollbackPackage);
     const inspection = await inspectUnpackedExtension(rollbackPackage.installPath);
     const previous = storedManifest(install);
     return {
@@ -259,6 +311,7 @@ export class ExtensionManager {
     if (install.source !== "gallery" || review.source !== "rollback" || !rollbackPackage || rollbackPackage.extensionId !== id) {
       throw new Error("Expected a verified rollback review");
     }
+    this.#assertNotRevoked(id, rollbackPackage.version, rollbackPackage);
     const inspection = await inspectUnpackedExtension(rollbackPackage.installPath);
     if (inspection.fingerprint !== review.inspection.fingerprint || inspection.path !== rollbackPackage.installPath) {
       throw new Error("Rollback extension files changed while permissions were being reviewed");
@@ -346,6 +399,30 @@ export class ExtensionManager {
     const install = this.#database.listExtensionInstalls(this.#profileId).find((item) => item.id === id);
     if (!install) throw new Error("Extension is no longer installed in this profile");
     return install;
+  }
+
+  #activePackage(install: StoredExtensionInstall): StoredExtensionPackage | undefined {
+    if (!install.installPath) return undefined;
+    return this.#database.listExtensionPackages(this.#profileId, install.id)
+      .find((item) => item.installPath === install.installPath);
+  }
+
+  #matchingRevocation(
+    id: string,
+    version: string,
+    extensionPackage?: StoredExtensionPackage,
+  ): ExtensionRevocation | undefined {
+    return extensionIsRevoked({
+      id,
+      version,
+      packageSha256: extensionPackage?.packageFingerprint ?? "",
+      publisherFingerprint: extensionPackage?.publisherFingerprint ?? "",
+    }, this.#revocations);
+  }
+
+  #assertNotRevoked(id: string, version: string, extensionPackage?: StoredExtensionPackage): void {
+    const revocation = this.#matchingRevocation(id, version, extensionPackage);
+    if (revocation) throw new Error(`Extension package is revoked: ${revocation.reason} (${revocation.id})`);
   }
 
   async #loadStored(install: StoredExtensionInstall): Promise<void> {

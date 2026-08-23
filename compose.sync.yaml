@@ -7,7 +7,12 @@ services:
       PORT: "8787"
       HOST: 0.0.0.0
       DATABASE_URL: postgres://locus:locus@postgres:5432/locus_sync
-      S3_ENDPOINT: http://objects:9000
+      LOCUS_SYNC_S3_ENDPOINT: http://objects:9000
+      LOCUS_SYNC_S3_BUCKET: locus-sync-opaque
+      LOCUS_SYNC_S3_FORCE_PATH_STYLE: "true"
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: locus
+      AWS_SECRET_ACCESS_KEY: locus-development-only
       LOCUS_SYNC_BOOTSTRAP_TOKEN: local-development-device-token-change-before-use
       LOCUS_PASSKEY_RP_NAME: Locus Sync
       LOCUS_PASSKEY_RP_ID: localhost
@@ -19,6 +24,8 @@ services:
         condition: service_healthy
       objects:
         condition: service_started
+      objects-init:
+        condition: service_completed_successfully
   postgres:
     image: postgres:17-alpine
     environment:
@@ -41,6 +48,17 @@ services:
       MINIO_ROOT_PASSWORD: locus-development-only
     volumes:
       - locus-sync-objects:/data
+  objects-init:
+    image: minio/mc:latest
+    depends_on:
+      objects:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        until mc alias set local http://objects:9000 locus locus-development-only; do sleep 1; done &&
+        mc mb --ignore-existing local/locus-sync-opaque &&
+        mc anonymous set none local/locus-sync-opaque
 
 volumes:
   locus-sync-postgres:

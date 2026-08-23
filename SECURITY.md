@@ -29,17 +29,22 @@ Locus Browser treats every webpage and extension as hostile content.
   storage. Updates preserve publisher identity and a verified prior version is
   retained for rollback. The included key is canary-only and must be rotated
   before beta distribution.
-- Gallery catalog data is treated as untrusted discovery metadata. Only the
-  Electron main process fetches it, redirects are rejected, HTTPS is required
-  outside localhost, package paths must stay on the configured origin, and
-  catalogs/downloads have strict size and time limits. Downloads are streamed
-  to private temporary storage and must match the catalog size and SHA-256,
-  but installation still depends on the independent publisher/gallery
-  signature checks above.
+- Gallery catalog and revocation documents require an Ed25519 signature from a
+  compiled-in trust key. Only the Electron main process fetches them, redirects
+  are rejected, package paths stay on the sealed HTTPS origin, and documents/
+  downloads have strict size and time limits. The last verified revocation
+  document is retained for offline enforcement. Downloads are streamed to
+  private temporary storage and must match catalog size and SHA-256, but install
+  still depends on independent publisher/gallery package signatures.
 - Sync encryption happens before upload. The service receives ciphertext and
-  routing metadata only; passwords, cookies, site storage, AI sessions,
-  credentials, and workspace/run data have no sync collection.
+  routing metadata only; large envelopes may move to S3-compatible storage but
+  remain client-encrypted and size-verified. Passwords, cookies, site storage,
+  AI sessions, credentials, and workspace/run data have no sync collection.
+- Packaged gallery and sync origins are sealed into the signed application.
+  Missing or malformed release configuration disables those services, and
+  environment variables cannot redirect a packaged client.
 
-Please report vulnerabilities privately to the project maintainers. Do not
+Please use GitHub private vulnerability reporting to contact the project
+maintainers. Do not
 include credentials, private browsing data, or decrypted sync records in a
 public issue.

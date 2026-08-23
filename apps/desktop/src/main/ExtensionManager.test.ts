@@ -129,6 +129,9 @@ describe("ExtensionManager", () => {
     await manager.rollback("dev.locus.reading-notes", rollbackReview);
     expect(manager.state().installs[0]).toMatchObject({ version: "1.0.0", rollbackVersion: "1.1.0", loaded: true });
 
+    expect(manager.disableGalleryUntilSecurityVerified()).toBe(1);
+    expect(manager.state().installs[0]).toMatchObject({ enabled: false, loaded: false, error: expect.stringContaining("security notices") });
+
     const installedPaths = database.listExtensionPackages("default", "dev.locus.reading-notes").map((item) => item.installPath);
     await manager.remove("dev.locus.reading-notes");
     expect(manager.state().installs).toEqual([]);

@@ -16,7 +16,6 @@ const searchProviders: Array<{ id: SearchEngine; name: string; detail: string; m
   { id: "google", name: "Google", detail: "Familiar results", mark: "G" },
   { id: "bing", name: "Bing", detail: "Microsoft search", mark: "B" },
 ];
-const defaultSyncService = import.meta.env.VITE_LOCUS_SYNC_URL ?? "http://localhost:8787";
 
 export function Shell() {
   const state = useBrowserState();
@@ -705,12 +704,13 @@ function ExtensionSettings({ state }: { state: BrowserAppState }) {
 }
 
 function SyncSettings({ state }: { state: BrowserAppState }) {
-  const [serviceUrl, setServiceUrl] = useState(state.sync.serviceUrl ?? defaultSyncService);
+  const [serviceUrl, setServiceUrl] = useState(state.sync.serviceUrl ?? state.configuredSyncServiceUrl ?? "");
   const [recoveryKey, setRecoveryKey] = useState("");
   const [connectionMethod, setConnectionMethod] = useState<"create" | "recover" | "device">("create");
   const [pairingCode, setPairingCode] = useState("");
   const [formError, setFormError] = useState<string>();
   const busy = state.sync.status === "connecting" || state.sync.status === "syncing";
+  const serviceConfigured = Boolean(serviceUrl);
   const connected = Boolean(state.sync.accountId);
   const run = async (action: () => Promise<unknown>) => {
     setFormError(undefined);
@@ -809,11 +809,12 @@ function SyncSettings({ state }: { state: BrowserAppState }) {
                 ))}
               </div>
               <form className="sync-form" onSubmit={connectionMethod === "create" ? register : connectionMethod === "recover" ? signIn : enroll}>
-                <label><span>Sync service</span><input type="url" required value={serviceUrl} onChange={(event) => setServiceUrl(event.target.value)} placeholder="https://sync.example.com" /></label>
+                <label><span>Sync service</span><input type="url" required readOnly={Boolean(state.configuredSyncServiceUrl)} value={serviceUrl} onChange={(event) => setServiceUrl(event.target.value)} placeholder="Not configured in this build" /></label>
                 {connectionMethod === "recover" && <label><span>Recovery key</span><textarea required rows={3} value={recoveryKey} onChange={(event) => setRecoveryKey(event.target.value)} placeholder="LOCUS-…" autoComplete="off" spellCheck={false} /></label>}
                 <p className="sync-method-detail">{connectionMethod === "create" ? "Create an account with a passkey and receive a one-time recovery key." : connectionMethod === "recover" ? "Use your passkey and recovery key on this Mac." : "Get a pairing code and approve this Mac from a connected device—no recovery key needed."}</p>
+                {!serviceConfigured && <p className="sync-error" role="status">Encrypted sync is disabled in this build.</p>}
                 {(formError || state.sync.lastError) && <p className="sync-error" role="alert">{formError ?? state.sync.lastError}</p>}
-                <button className="sync-connect primary" type="submit" disabled={busy}>
+                <button className="sync-connect primary" type="submit" disabled={busy || !serviceConfigured}>
                   {connectionMethod === "create" ? <KeyRound size={13} /> : connectionMethod === "recover" ? <LogIn size={13} /> : <Laptop size={13} />}
                   {busy ? "Waiting for passkey…" : connectionMethod === "create" ? "Create sync account" : connectionMethod === "recover" ? "Sign in with recovery key" : "Get pairing code"}
                 </button>

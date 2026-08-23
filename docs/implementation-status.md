@@ -1,140 +1,117 @@
 # Implementation status
 
-This repository is an executable engine proof and product foundation, not a
-stable browser release. The browser canary is now intentionally scoped around
-excellent browsing and one local solo agent instead of reproducing every team,
-schedule, and orchestration surface from native Locus.
+The repository is a source-complete canary candidate for Apple Silicon macOS
+14+. It is intentionally scoped around normal browsing and one excellent solo
+agent rather than every team and orchestration surface in native Locus.
 
-## Implemented in this baseline
+## Canary product scope
 
-- Electron/React/TypeScript application that builds and launches on macOS.
-- Permanent tab strip, navigation controls, omnibox, functional browser
-  library sidebar, profile/download controls, and a top-right Work control.
-- Sandboxed `WebContentsView` tabs, explicit destruction, popup-to-tab routing,
-  strict renderer isolation, brokered site permissions, certificate rejection,
-  profile partitions, restoration, history records, and WAL SQLite storage.
-- Editable bookmarks, browsable history, a persisted download manager with
-  cancel/reveal actions, ephemeral private windows, page find/zoom, native
-  printing, and PDF export.
-- Create/open/rename/delete profile management with separate Chromium
-  partitions and profile-scoped history, bookmarks, downloads, settings, and
-  permission decisions. Search provider, appearance, downloads folder, and
-  sleeping policy are user-selectable.
-- First-run onboarding that keeps remote pages hidden until the user explicitly
-  chooses an unsponsored search provider, Locus appearance, and tab-sleep
-  policy. No provider is preselected and no Locus data is imported.
-- Persisted tab groups with collapse/reorder membership, media pause/resume and
-  mute controls, and real background-tab sleeping. Sleeping destroys the tab
-  renderer and restores it on selection while protecting active audio,
-  downloads, agent grants, loading tabs, and active media.
-- The same semantic light/dark palette as native Locus: warm paper surfaces,
-  ink typography, lime signal, olive actions, and semantic status colors,
-  including Reduced Motion and Reduced Transparency alternatives.
-- Locus Browser identity with a single black `L` on the native lime tile,
-  exported as PNG/ICNS assets and installed on the macOS window and Dock.
-- Right Work dock with split/overlay layout, 360–720 px bounds, 60%/520 px
-  expansion limits, interruptible 340 ms resize, Reduced Motion handling, and
-  a pinned composer. The focused right-side rail keeps Chat, Plan, Changes,
-  Files, and Terminal; secondary native-Locus surfaces are deliberately absent.
-- Locus-parity solo model picker for ChatGPT Plan, ChatGPT API, Kimi, Claude
-  API, vLLM/OpenAI-compatible endpoints, and dynamically discovered Ollama
-  models. The selected route persists per profile; API keys use native hidden
-  entry and OS encryption without crossing renderer state or IPC. ChatGPT Plan
-  account state, sign-in, model discovery, and sign-out use the managed local
-  runtime component.
-- Durable local solo-agent conversations with new/resume actions, browser
-  sidebar history, transcript restoration, streaming state, permission prompts,
-  and immediate Stop feedback while cancellation reaches the runtime safely.
-- Runtime-backed Plan, Changes, Files, and Terminal surfaces: structured plan
-  approval/progress, live Git status and bounded per-file diffs, searchable
-  UTF-8 workspace previews, and a permission-aware agent tool timeline. The
-  file broker excludes secret-shaped paths, binary artifacts, dependency/cache
-  trees, path traversal, and symlink escapes before renderer exposure.
-- Automatic local-agent recovery with bounded backoff, a manual retry action,
-  profile-scoped active-session persistence, and exact conversation/workspace
-  restoration after either an agent crash or a full browser restart.
-- Native trusted-workspace selection bound to the local runtime session and
-  preserved when starting or reopening a conversation.
-- Safe image attachments selected in the main process, checked by file size and
-  content signature, capped at 10 images/15 MB each/25 MB total, and represented
-  in the renderer by metadata only.
-- Live local-agent connection and all existing browser tool wire names.
-- Explicit per-session tab grants, agent-created tabs, visible indicators,
-  one-click revoke, protected URLs/fields, screenshot consent/masking,
-  background CDP input, console/network capture, and quarantined downloads.
-- Profile-scoped, OS-encrypted credential save/update, explicit account-driven
-  autofill, and deletion. Password values move only between the sandboxed
-  page's private isolated world and the main process; trusted renderers, Work
-  Mode, browser state, and agent APIs receive metadata only. Private windows
-  never capture or save credentials.
-- Signed `.locusx` install/update/rollback flow with stable signed IDs, strict
-  Ed25519 publisher and trusted-gallery signatures, bounded archive expansion,
-  duplicate/path/inventory checks, review-to-install verification, canonical
-  profile-owned extraction, managed-copy integrity checks, publisher continuity,
-  persisted package history, native permission review, restart restoration,
-  and safe removal. The visible trust identity is tied to a canary gallery key
-  that must be replaced before beta.
-- Versioned curated-gallery catalog contract and read-only Fastify service that
-  fails closed on invalid/untrusted packages, selects the latest semantic
-  version per stable ID, supports ETag catalog refreshes, and serves immutable
-  packages with SHA-256 metadata. The Electron broker provides bounded HTTPS/
-  loopback-only catalog fetching, same-origin redirect-free package downloads,
-  streaming size/hash checks, private staging cleanup, update discovery, native
-  review, and Locus-themed install/update controls. The renderer never fetches
-  gallery content directly.
-- Profile-scoped unpacked-extension Developer Mode with a native risk warning,
-  native API/host permission review, bounded real-path inventory, symlink and
-  remote-code rejection, fingerprinted review-to-load consistency, Electron
-  session loading before tab restoration, restart persistence, enable/disable/
-  removal controls, and an executable content-script compatibility fixture.
-  Extensions are absent from Private Windows; developer installs and paths are
-  excluded from sync. Registry v2 advertises only the current engine-backed
-  `activeTab`, `scripting`, `storage`, `tabs`, and `webRequest` permission
-  groups while broader APIs remain marked planned.
-- X25519 device keys, sealed account-key delivery, XChaCha20-Poly1305 records,
-  per-record key derivation, checksummed recovery keys, hybrid logical clocks,
-  and field-merge helpers.
-- Hosted WebAuthn registration and authentication with discoverable passkeys,
-  user verification, signature-counter updates, expiring one-use ceremonies,
-  one-use desktop claims, strict ceremony-page CSP, and exact production
-  relying-party/origin validation.
-- Profile-scoped, opt-in encrypted sync connected to bookmarks, history, tab
-  groups, ordinary web tabs, selected browser settings, and curated extension
-  metadata. Device tokens, private keys, and the account key are protected by
-  the OS credential store; generated recovery keys stay in a native
-  main-process confirmation instead of crossing the renderer bridge.
-- Locus-themed device management lists the current and remote devices, creates
-  expiring pairing codes, lets an existing device approve the new X25519 public
-  key, supports explicit revocation, and allows a new Mac to claim its wrapped
-  account key exactly once.
-- Recovery-key rotation decrypts and verifies the full local replica, creates
-  a new account key, re-encrypts every record, wraps the new key independently
-  for every active device, and commits the records, wraps, and key version in a
-  single server transaction. Writes made with an older key version are then
-  rejected.
-- Durable SQLite outbox/inbox state, per-record encryption, cursoring, hybrid
-  logical-clock conflict handling, stale-replay rejection, 90-day tombstones,
-  offline retry, periodic sync, remote-device tabs, encrypted recovery-key
-  verification before first upload, device revocation, cloud deletion, account
-  deletion, PostgreSQL schema, and a container stack.
-- Multi-device integration coverage confirms ciphertext-only server storage,
-  convergence after concurrent updates, malformed-ciphertext isolation,
-  one-use auth claims, replay rejection, revocation, and cloud-data reset.
+- Secure Electron/React/TypeScript browser with permanent browser chrome,
+  sandboxed `WebContentsView` tabs, profile partitions, crash/session restore,
+  private windows, tab groups and sleeping, history, bookmarks, downloads,
+  permissions, zoom/find, printing/PDF, media controls, and OS-encrypted
+  gesture-gated passwords.
+- Locus light/dark semantic theme, the lime **L** app identity, keyboard and
+  VoiceOver semantics, Reduced Motion/Transparency behavior, and 200% text
+  scaling checks.
+- A resizable right Work dock focused on Chat, Plan, Changes, Files, and
+  Terminal. It preserves the page canvas, keeps active work alive while hidden,
+  and restores the exact conversation after a runtime or browser restart.
+- ChatGPT Plan, ChatGPT API, Kimi, Claude API, vLLM/OpenAI-compatible, and
+  discovered Ollama models. Provider secrets use native entry and macOS-backed
+  encryption and never cross renderer state or IPC.
+- Explicit per-session tab grants, visible control indicators and revoke,
+  protected credential/payment fields, hosted-screenshot consent, background
+  input, console/network capture, and quarantined agent downloads.
+- Native workspace choice, bounded image attachments, plan approval, live Git
+  changes/diffs, containment-checked file previews, permission-aware terminal
+  activity, Stop/steering, and bounded local-agent restart.
 
-## Required before canary
+## Canary release and security foundation
 
-- Add S3-backed large opaque envelopes, broader offline/failure simulations,
-  production-scale key-rotation migrations, fuzzing, and an external sync
-  cryptography review.
-- Replace the canary gallery key with an offline production key ceremony and
-  deploy the gallery behind production object storage/CDN controls; add
-  action/commands/context-menu and other planned MV3 shims, then ship per-API
-  native compatibility fixtures, malware review, publisher onboarding, key
-  rotation, staged update rollout, revocation, and emergency takedown policy.
-- Team orchestration, schedules, checkpoints, and a dedicated `AGENTS.md`
-  panel remain outside the intentionally focused initial browser canary scope.
-- Bundle the Python runtime, implement signed component/app updates, add Forge
-  packaging, hardened-runtime entitlements, signing/notarization, canary/beta
-  channels, and schema rollback.
-- Complete end-to-end, accessibility, crash/restore, performance, fuzzing,
-  cryptography, soak, and external security reviews.
+- A self-contained pinned Python agent runtime is embedded in the signed app;
+  nested Mach-O files are signed explicitly under hardened runtime.
+- Apple Silicon DMG/ZIP packaging, Developer ID signing, notarization/stapling
+  hooks, canary update checks, install-on-quit, database snapshots, and two-
+  version rollback retention.
+- Browser CI and protected tag release workflows run typechecking, 145 tests,
+  production builds, native extension compatibility, UI/accessibility/performance
+  acceptance, dependency audit, code-sign/Gatekeeper checks, SBOM generation,
+  and signed release-manifest verification.
+- Trusted shell/work crash recovery, 1,000 malformed IPC-envelope cases,
+  extension-archive fuzzing, sync-envelope fuzzing, offline replay simulations,
+  and ciphertext/associated-data tamper checks.
+- The packaged app ignores service-origin environment overrides. Gallery and
+  sync HTTPS origins are sealed into the signed release and fail closed if the
+  release configuration is missing or invalid.
+
+## Extensions in canary
+
+- Signed `.locusx` packages have independent Ed25519 publisher and gallery
+  signatures, a SHA-256 inventory, bounded extraction, stable IDs, publisher
+  continuity, native permission review, managed storage, update, rollback, and
+  restart restoration.
+- Signed catalog and revocation documents, offline retention of the last
+  verified security notice, deterministic staged rollout, rate limiting,
+  production fail-closed metadata loading, and immediate disable/unload of
+  revoked installs.
+- Developer Mode supports reviewed local unpacked extensions and is off in
+  private profiles. Developer paths/storage never sync.
+- The pinned Electron 43.4.1 contract proves `runtime`, content scripts, and
+  `storage.local`; it verifies permission admission for `activeTab`, `scripting`,
+  `tabs`, and `webRequest`. Broader Chrome-style APIs are explicitly post-canary
+  until native fixtures prove them.
+
+## Encrypted sync in canary
+
+- Passkey accounts, X25519 device approval, XChaCha20-Poly1305 records,
+  per-record key derivation, checksummed one-time recovery keys, OS-protected
+  device/account keys, key-version gates, recovery proof before first write,
+  and transactional full-replica key rotation.
+- PostgreSQL stores opaque routing metadata and small ciphertext. Large
+  ciphertext uses S3-compatible storage with staged cleanup around database
+  commits, size verification, encrypted-object metadata, rotation cleanup, and
+  complete account deletion.
+- Durable local outbox/inbox, hybrid logical clocks, deterministic field merge,
+  cursoring, offline retry, replay rejection, 90-day tombstones, remote-device
+  tabs, device revocation, and cloud/account deletion.
+- Only bookmarks, history, groups, ordinary tabs, selected settings, and curated
+  extension metadata sync. Passwords, cookies, site storage, workspaces, AI
+  sessions, memory, provider credentials, and run records remain local.
+
+## Automated gate status
+
+The local candidate currently passes 145 unit/integration/fuzz tests, the full
+production build, the Electron compatibility fixture, three responsive UI
+surfaces, warm tab switching under the 150 ms p95 gate, Reduced Motion, 200%
+scaling, a production dependency audit with no known vulnerabilities, and a
+CycloneDX 1.6 SBOM. A locally signed app also passed deep code-sign verification
+and launched with its embedded Python runtime.
+
+## External launch gates
+
+These steps cannot be completed by source changes alone and remain required
+before inviting canary users:
+
+- Deploy the controlled gallery, sync, PostgreSQL, and S3-compatible services;
+  complete the offline production gallery/release key ceremonies and configure
+  the protected GitHub `canary` environment.
+- Run the tag workflow with Apple App Store Connect credentials so the public
+  DMG/ZIP is notarized, stapled, Gatekeeper-assessed, manifest-signed, and
+  published from CI.
+- Publish the pinned managed ChatGPT Plan component used by the packaged agent
+  runtime, or keep that route visibly unavailable for the first cohort.
+- Complete independent desktop security, encrypted-sync cryptography, and
+  accessibility reviews; resolve every critical/high finding.
+- Run clean-Mac acceptance, a 24-hour internal cohort, long-session soak,
+  service backup/restore, and update/rollback rehearsals.
+
+The exact credential setup, tag flow, acceptance checklist, and rollback steps
+are in [`canary-runbook.md`](canary-runbook.md).
+
+## Post-canary work
+
+Team orchestration, schedules, checkpoints, a dedicated `AGENTS.md` surface,
+broader Chrome-extension API shims, Windows/Linux releases, AI-session sync,
+cookie/password sync, the Mac App Store, and arbitrary Chrome Web Store
+compatibility remain intentionally outside the initial canary.

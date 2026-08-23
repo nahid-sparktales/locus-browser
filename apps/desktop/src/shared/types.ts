@@ -387,6 +387,7 @@ export interface BrowserAppState {
   passwordManagerAvailable: boolean;
   extensions: ExtensionManagerState;
   sync: SyncAccountState;
+  configuredSyncServiceUrl?: string;
   remoteTabs: RemoteTabState[];
   onboardingRequired: boolean;
   settings: BrowserSettingsState;

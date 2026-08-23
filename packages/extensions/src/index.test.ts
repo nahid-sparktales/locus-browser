@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 import {
   extensionContentScriptMatches,
   ExtensionGalleryCatalogSchema,
+  extensionGalleryDocumentMessage,
   extensionGalleryDownloadPath,
+  extensionIsRevoked,
   locusxContractVersion,
   locusxGalleryMessage,
   locusxPublisherMessage,
@@ -13,6 +15,8 @@ import {
   validateExtensionFile,
   validateManifest,
   verifyLocusx,
+  verifySignedExtensionCatalog,
+  verifySignedExtensionRevocations,
 } from "./index.js";
 
 describe("Locus extension contract", () => {
@@ -55,6 +59,42 @@ describe("Locus extension contract", () => {
         downloadPath: extensionGalleryDownloadPath(id, version),
       }],
     }).success).toBe(true);
+  });
+
+  it("verifies signed catalog and revocation documents and rejects tampering", () => {
+    const key = generateKeyPairSync("ed25519");
+    const publicKeyPem = key.publicKey.export({ format: "pem", type: "spki" }).toString();
+    const fingerprint = publicKeyFingerprint(publicKeyPem);
+    const catalog = ExtensionGalleryCatalogSchema.parse({
+      catalogVersion: 1,
+      packageContractVersion: 2,
+      extensions: [{
+        id: "dev.locus.notes", name: "Notes", version: "1.2.0",
+        publisherFingerprint: "a".repeat(64), galleryFingerprint: fingerprint,
+        packageSha256: "c".repeat(64), packageSize: 100, permissions: ["storage"],
+        hostPermissions: [], downloadPath: extensionGalleryDownloadPath("dev.locus.notes", "1.2.0"),
+        rollout: { percentage: 25, seed: "canary-rollout-seed" },
+      }],
+    });
+    const signedCatalog = signedDocument("catalog", catalog, key, publicKeyPem, fingerprint);
+    expect(verifySignedExtensionCatalog(signedCatalog, new Set([fingerprint]))).toEqual(catalog);
+    expect(() => verifySignedExtensionCatalog({
+      ...signedCatalog,
+      payload: { ...catalog, packageContractVersion: 99 },
+    }, new Set([fingerprint]))).toThrow();
+
+    const revocations = {
+      version: 1 as const,
+      generatedAt: 1_787_408_000,
+      revocations: [{
+        id: "notes-security-1", extensionId: "dev.locus.notes", version: "1.2.0",
+        reason: "security" as const, effectiveAt: 1_787_408_000,
+      }],
+    };
+    const signedRevocations = signedDocument("revocations", revocations, key, publicKeyPem, fingerprint);
+    const verified = verifySignedExtensionRevocations(signedRevocations, new Set([fingerprint]));
+    expect(extensionIsRevoked(catalog.extensions[0]!, verified.revocations, 1_787_408_001)?.reason).toBe("security");
+    expect(extensionIsRevoked(catalog.extensions[0]!, verified.revocations, 1_787_407_999)).toBeUndefined();
   });
 
   it("rejects remote or escaping content-script resources", () => {
@@ -103,7 +143,39 @@ describe("Locus extension contract", () => {
     expect(() => validateExtensionFile("worker.js", strToU8('new Function("return 1")'))).toThrow("Dynamic code execution");
     expect(() => validateExtensionFile("worker.js", strToU8('chrome.runtime.onInstalled.addListener(() => {})'))).not.toThrow();
   });
+
+  it("fails closed on deterministic archive fuzz without accepting random bytes", () => {
+    let state = 0x1a2b3c4d;
+    for (let size = 0; size < 200; size += 1) {
+      const bytes = new Uint8Array(size);
+      for (let index = 0; index < bytes.length; index += 1) {
+        state = (Math.imul(state, 1_103_515_245) + 12_345) >>> 0;
+        bytes[index] = state & 0xff;
+      }
+      expect(() => verifyLocusx(bytes, new Set())).toThrow();
+    }
+  });
 });
+
+function signedDocument(
+  kind: "catalog" | "revocations",
+  payload: unknown,
+  key: { publicKey: KeyObject; privateKey: KeyObject },
+  publicKeyPem: string,
+  fingerprint: string,
+) {
+  return {
+    documentVersion: 1,
+    kind,
+    payload,
+    signature: {
+      algorithm: "Ed25519",
+      publicKeyPem,
+      fingerprint,
+      value: sign(null, extensionGalleryDocumentMessage(kind, payload), key.privateKey).toString("base64"),
+    },
+  };
+}
 
 function digest(value: Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");

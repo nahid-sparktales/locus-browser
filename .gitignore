@@ -1,6 +1,9 @@
 node_modules/
 dist/
 out/
+release/
+apps/desktop/build/AgentRuntime/
+.agent-runtime/
 coverage/
 .DS_Store
 .env

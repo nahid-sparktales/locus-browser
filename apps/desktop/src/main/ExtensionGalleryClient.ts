@@ -1,11 +1,15 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, open, realpath, rm, type FileHandle } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, realpath, rename, rm, writeFile, type FileHandle } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
-  ExtensionGalleryCatalogSchema,
+  extensionIsRevoked,
   extensionGalleryDownloadPath,
+  trustedGalleryFingerprints,
+  verifySignedExtensionCatalog,
+  verifySignedExtensionRevocations,
   type ExtensionGalleryCatalog,
   type ExtensionGalleryEntry,
+  type ExtensionRevocation,
 } from "@locus/extensions";
 
 const MAX_CATALOG_BYTES = 1024 * 1024;
@@ -26,12 +30,24 @@ export interface DownloadedGalleryPackage {
 export class ExtensionGalleryClient {
   readonly #serviceUrl: string;
   readonly #downloadRoot: string;
+  readonly #clientId: string;
+  readonly #trustedFingerprints: Set<string>;
+  readonly #trustDevelopmentDocuments: boolean;
   #catalog: ExtensionGalleryCatalog | undefined;
-  #etag: string | undefined;
+  #revocations: ExtensionRevocation[] = [];
 
-  constructor(serviceUrl: string, downloadRoot: string) {
+  constructor(
+    serviceUrl: string,
+    downloadRoot: string,
+    clientId = downloadRoot,
+    trustedFingerprints: ReadonlySet<string> = trustedGalleryFingerprints,
+    trustDevelopmentDocuments = false,
+  ) {
     this.#serviceUrl = normalizeGalleryServiceUrl(serviceUrl);
     this.#downloadRoot = resolve(downloadRoot);
+    this.#clientId = clientId;
+    this.#trustedFingerprints = new Set(trustedFingerprints);
+    this.#trustDevelopmentDocuments = trustDevelopmentDocuments;
   }
 
   get serviceUrl(): string {
@@ -42,34 +58,50 @@ export class ExtensionGalleryClient {
     return this.#catalog;
   }
 
+  revocations(): readonly ExtensionRevocation[] {
+    return this.#revocations;
+  }
+
   async refresh(): Promise<ExtensionGalleryCatalog> {
-    const response = await fetch(`${this.#serviceUrl}/v1/extensions`, {
-      method: "GET",
-      redirect: "error",
-      signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
-      headers: {
-        accept: "application/json",
-        ...(this.#etag ? { "if-none-match": this.#etag } : {}),
-      },
-    });
-    if (response.status === 304 && this.#catalog) return this.#catalog;
-    if (!response.ok) throw new Error(`Extension gallery returned ${response.status}`);
-    const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
-    if (contentType !== "application/json") throw new Error("Extension gallery returned an unexpected content type");
-    const declaredLength = Number(response.headers.get("content-length") ?? 0);
-    if (declaredLength > MAX_CATALOG_BYTES) throw new Error("Extension gallery catalog exceeds 1 MB");
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength > MAX_CATALOG_BYTES) throw new Error("Extension gallery catalog exceeds 1 MB");
-    const catalog = ExtensionGalleryCatalogSchema.parse(JSON.parse(Buffer.from(bytes).toString("utf8")));
-    for (const entry of catalog.extensions) this.#validatedDownloadUrl(entry);
-    this.#catalog = catalog;
-    this.#etag = response.headers.get("etag") ?? undefined;
-    return catalog;
+    let documents: { catalog: unknown; revocations: unknown };
+    try {
+      const [catalog, revocations] = await Promise.all([
+        this.#fetchJson("/v1/extensions"),
+        this.#fetchJson("/v1/revocations"),
+      ]);
+      documents = { catalog, revocations };
+    } catch (networkError) {
+      try {
+        documents = JSON.parse(await readFile(this.#securityDocumentPath(), "utf8")) as typeof documents;
+      } catch {
+        throw networkError;
+      }
+    }
+    const catalogRaw = documents.catalog;
+    const revocationsRaw = documents.revocations;
+    if (this.#trustDevelopmentDocuments) {
+      for (const document of [catalogRaw, revocationsRaw]) {
+        const fingerprint = documentFingerprint(document);
+        if (fingerprint) this.#trustedFingerprints.add(fingerprint);
+      }
+    }
+    const source = verifySignedExtensionCatalog(catalogRaw, this.#trustedFingerprints);
+    const revocations = verifySignedExtensionRevocations(revocationsRaw, this.#trustedFingerprints).revocations;
+    for (const entry of source.extensions) this.#validatedDownloadUrl(entry);
+    this.#revocations = revocations;
+    this.#catalog = {
+      ...source,
+      extensions: source.extensions.filter((entry) => !extensionIsRevoked(entry, revocations)
+        && eligibleForRollout(entry, this.#clientId)),
+    };
+    await this.#cacheSecurityDocuments(documents);
+    return this.#catalog;
   }
 
   async download(extensionId: string): Promise<DownloadedGalleryPackage> {
     const entry = this.#catalog?.extensions.find((candidate) => candidate.id === extensionId);
     if (!entry) throw new Error("Refresh the extension gallery before installing this package");
+    if (extensionIsRevoked(entry, this.#revocations)) throw new Error("This extension package has been revoked");
     const url = this.#validatedDownloadUrl(entry);
     const response = await fetch(url, {
       method: "GET",
@@ -139,6 +171,35 @@ export class ExtensionGalleryClient {
     }
     return url.toString();
   }
+
+  async #fetchJson(path: string): Promise<unknown> {
+    const response = await fetch(`${this.#serviceUrl}${path}`, {
+      method: "GET",
+      redirect: "error",
+      signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
+      headers: { accept: "application/json" },
+    });
+    if (!response.ok) throw new Error(`Extension gallery returned ${response.status}`);
+    const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+    if (contentType !== "application/json") throw new Error("Extension gallery returned an unexpected content type");
+    const declaredLength = Number(response.headers.get("content-length") ?? 0);
+    if (declaredLength > MAX_CATALOG_BYTES) throw new Error("Extension gallery document exceeds 1 MB");
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > MAX_CATALOG_BYTES) throw new Error("Extension gallery document exceeds 1 MB");
+    return JSON.parse(Buffer.from(bytes).toString("utf8"));
+  }
+
+  #securityDocumentPath(): string {
+    return join(this.#downloadRoot, "security-documents.json");
+  }
+
+  async #cacheSecurityDocuments(documents: { catalog: unknown; revocations: unknown }): Promise<void> {
+    await mkdir(this.#downloadRoot, { recursive: true, mode: 0o700 });
+    const destination = this.#securityDocumentPath();
+    const temporary = `${destination}.next`;
+    await writeFile(temporary, `${JSON.stringify(documents)}\n`, { mode: 0o600 });
+    await rename(temporary, destination);
+  }
 }
 
 async function writeAll(handle: FileHandle, bytes: Uint8Array): Promise<void> {
@@ -158,4 +219,22 @@ export function normalizeGalleryServiceUrl(value: string): string {
     throw new Error("Extension gallery URL must be an origin without credentials, query, or path");
   }
   return url.origin;
+}
+
+function eligibleForRollout(entry: ExtensionGalleryEntry, clientId: string): boolean {
+  if (!entry.rollout || entry.rollout.percentage >= 100) return true;
+  const cohort = createHash("sha256")
+    .update(`${entry.id}\0${entry.rollout.seed}\0${clientId}`)
+    .digest()
+    .readUInt32BE(0) % 100;
+  return cohort < entry.rollout.percentage;
+}
+
+function documentFingerprint(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || !("signature" in value)) return undefined;
+  const signature = value.signature;
+  if (!signature || typeof signature !== "object" || !("fingerprint" in signature)) return undefined;
+  return typeof signature.fingerprint === "string" && /^[a-f0-9]{64}$/.test(signature.fingerprint)
+    ? signature.fingerprint
+    : undefined;
 }

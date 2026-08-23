@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 import { randomBytes } from "node:crypto";
-import { accessSync, constants, mkdirSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync } from "node:fs";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import { EventEmitter } from "node:events";
@@ -34,8 +34,14 @@ export class AgentRuntime extends EventEmitter {
     this.#token = randomBytes(32).toString("base64url");
     const port = await availablePort();
     this.#baseUrl = `http://127.0.0.1:${port}`;
-    const agentRoot = join(this.#platformRoot, "agent");
-    const python = this.#pythonExecutable(agentRoot);
+    const packaged = existsSync(join(this.#platformRoot, "source", "ollama_code"));
+    const agentRoot = packaged ? join(this.#platformRoot, "source") : join(this.#platformRoot, "agent");
+    const python = packaged
+      ? join(this.#platformRoot, "python", "bin", "python3")
+      : this.#pythonExecutable(agentRoot);
+    const pythonPath = packaged
+      ? [agentRoot, join(this.#platformRoot, "site-packages")].join(":")
+      : agentRoot;
     mkdirSync(this.#dataRoot, { recursive: true });
     this.emit("status", { status: "starting", message: "Starting the local agent…" });
 
@@ -43,7 +49,8 @@ export class AgentRuntime extends EventEmitter {
       cwd: agentRoot,
       env: {
         ...process.env,
-        PYTHONPATH: agentRoot,
+        PYTHONPATH: pythonPath,
+        ...(packaged ? { PYTHONDONTWRITEBYTECODE: "1" } : {}),
         LOCUS_AGENT_TOKEN: this.#token,
         OLLAMA_CODE_HOME: this.#dataRoot,
         PYTHONUNBUFFERED: "1",
