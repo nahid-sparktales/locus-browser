@@ -69,6 +69,15 @@ schedule, and orchestration surface from native Locus.
   never capture or save credentials.
 - Signed `.locusx` verifier, API/permission registry, permission-expansion
   checks, inventory validation, remote-code rules, and dual signatures.
+- Profile-scoped unpacked-extension Developer Mode with a native risk warning,
+  native API/host permission review, bounded real-path inventory, symlink and
+  remote-code rejection, fingerprinted review-to-load consistency, Electron
+  session loading before tab restoration, restart persistence, enable/disable/
+  removal controls, and an executable content-script compatibility fixture.
+  Extensions are absent from Private Windows; developer installs and paths are
+  excluded from sync. Registry v2 advertises only the current engine-backed
+  `activeTab`, `scripting`, `storage`, `tabs`, and `webRequest` permission
+  groups while broader APIs remain marked planned.
 - X25519 device keys, sealed account-key delivery, XChaCha20-Poly1305 records,
   per-record key derivation, checksummed recovery keys, hybrid logical clocks,
   and field-merge helpers.
@@ -104,9 +113,10 @@ schedule, and orchestration surface from native Locus.
 - Add S3-backed large opaque envelopes, broader offline/failure simulations,
   production-scale key-rotation migrations, fuzzing, and an external sync
   cryptography review.
-- Load verified gallery extensions into profile sessions, add developer-mode
-  UI, implement the supported MV3 shims, and ship compatibility/malware/update/
-  rollback infrastructure.
+- Extract and load verified `.locusx` gallery packages through an official
+  signing-key allowlist and gallery UI; add action/commands/context-menu and
+  other planned MV3 shims, then ship per-API native compatibility fixtures,
+  malware review, permission-expanding updates, and rollback infrastructure.
 - Team orchestration, schedules, checkpoints, and a dedicated `AGENTS.md`
   panel remain outside the intentionally focused initial browser canary scope.
 - Bundle the Python runtime, implement signed component/app updates, add Forge

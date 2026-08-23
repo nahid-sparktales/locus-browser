@@ -18,6 +18,10 @@ Locus Browser treats every webpage and extension as hostile content.
 - Password material is encrypted with Electron `safeStorage`, is indexed only
   by origin and username, and requires a main-process user-gesture assertion to
   reveal.
+- Unpacked extensions require an explicitly warned per-profile Developer Mode
+  and native permission review. Their folders are bounded and revalidated for
+  symlinks, path escapes, unsupported capabilities, remote code, and changes
+  between review and load. They never run in Private Windows or enter sync.
 - Sync encryption happens before upload. The service receives ciphertext and
   routing metadata only; passwords, cookies, site storage, AI sessions,
   credentials, and workspace/run data have no sync collection.

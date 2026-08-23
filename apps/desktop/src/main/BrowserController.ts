@@ -20,6 +20,7 @@ import {
   type BrowserActionResult,
 } from "@locus/protocol";
 import { bridgeInvocation, browserBridgeSource } from "@locus/browser-bridge";
+import { extensionContentScriptMatches } from "@locus/extensions";
 import { z } from "zod";
 import { ipcChannels } from "../shared/channels.js";
 import type { BrowserCommand } from "../shared/ipc.js";
@@ -49,6 +50,7 @@ import { BrowserDatabase, type StoredDownload, type StoredTab, type StoredTabGro
 import { CredentialVault } from "./CredentialVault.js";
 import { credentialAutofillInvocation, credentialObserverSource, parseCredentialCandidate, type PageCredentialCandidate } from "./CredentialPageBridge.js";
 import { electronCredentialCipher } from "./ElectronCredentialCipher.js";
+import { ExtensionManager, type ExtensionPermissionReview } from "./ExtensionManager.js";
 import { TabAccessRegistry } from "./TabAccessRegistry.js";
 import { canSleepTab, shouldSleepTab } from "./TabSleepingPolicy.js";
 import { SyncAccountManager } from "./SyncAccountManager.js";
@@ -242,6 +244,7 @@ export class BrowserController {
   readonly #database: BrowserDatabase;
   readonly #credentials: CredentialVault;
   readonly #workModelProviders: WorkModelProviderStore;
+  readonly #extensions: ExtensionManager | undefined;
   readonly #grants = new TabAccessRegistry();
   readonly #tabs = new Map<string, TabRecord>();
   readonly #groups = new Map<string, TabGroupState>();
@@ -352,14 +355,16 @@ export class BrowserController {
       onRecoveryKey: (key) => void this.#showSyncRecoveryKey(key),
     });
 
-    this.#configureProfileSession();
-    this.#restoreTabs();
+    const profileSession = this.#configureProfileSession();
+    this.#extensions = this.#privateWindow ? undefined : new ExtensionManager(this.#database, this.#profileId, profileSession.extensions);
     if (this.#privateWindow) {
+      this.#restoreTabs();
       this.#runtimeState = "offline";
       this.#runtimeMessage = "Work Mode is unavailable in private windows.";
     } else {
       this.#createWorkView(rendererUrl, preloadPath);
       this.#bindRuntime();
+      void this.#initializeExtensionsAndRestoreTabs();
     }
     this.#layout(false);
     if (!this.#privateWindow) void this.#runtime.start();
@@ -402,6 +407,13 @@ export class BrowserController {
       credentialSuggestions,
       savedCredentials: this.#credentials.list(),
       passwordManagerAvailable: this.#credentials.available(),
+      extensions: this.#extensions?.state() ?? {
+        developerMode: false,
+        loading: false,
+        installs: [],
+        supportedApiCount: 0,
+        message: "Extensions are disabled in Private Windows.",
+      },
       sync: this.#sync?.state() ?? { status: "disconnected", pendingRecords: 0, devices: [] },
       remoteTabs: this.#sync?.remoteTabs() ?? [],
       onboardingRequired: !this.#privateWindow && !this.#settings.onboardingComplete,
@@ -624,6 +636,18 @@ export class BrowserController {
         }
         break;
       }
+      case "set-extension-developer-mode":
+        await this.#setExtensionDeveloperMode(command.enabled);
+        break;
+      case "install-unpacked-extension":
+        await this.#installUnpackedExtension();
+        break;
+      case "set-extension-enabled":
+        await this.#setExtensionEnabled(command.extensionId, command.enabled);
+        break;
+      case "remove-extension":
+        await this.#removeExtension(command.extensionId);
+        break;
       case "complete-onboarding": {
         const previousHome = searchHome(this.#settings.searchEngine);
         this.#settings = {
@@ -1262,6 +1286,7 @@ export class BrowserController {
     this.window.setBackgroundColor(this.#surfaceBackground());
     this.#workView?.setBackgroundColor(this.#surfaceBackground());
     this.#sleepEligibleTabs();
+    void this.#extensions?.initialize().then(() => this.#broadcast());
     this.#broadcast();
   }
 
@@ -1310,8 +1335,116 @@ export class BrowserController {
     }, storedTabs, storedGroups);
   }
 
-  #configureProfileSession(): void {
-    this.#hardenSession(session.fromPartition(this.#partitionName));
+  #configureProfileSession(): Electron.Session {
+    const profileSession = session.fromPartition(this.#partitionName);
+    this.#hardenSession(profileSession);
+    return profileSession;
+  }
+
+  async #initializeExtensionsAndRestoreTabs(): Promise<void> {
+    try {
+      await this.#extensions?.initialize();
+    } finally {
+      if (this.#disposed) return;
+      this.#restoreTabs();
+      this.#layout(false);
+      this.#broadcast();
+    }
+  }
+
+  async #setExtensionDeveloperMode(enabled: boolean): Promise<void> {
+    if (!this.#extensions || enabled === this.#extensions.developerMode()) return;
+    if (enabled) {
+      const result = await dialog.showMessageBox(this.window, {
+        type: "warning",
+        title: "Turn on Extension Developer Mode?",
+        message: "Unpacked extensions are trusted local code",
+        detail: "Only load folders you created or reviewed. An unpacked extension can read and change pages covered by its approved site permissions. Developer extensions never run in Private Windows and are never synced.",
+        buttons: ["Turn On", "Cancel"],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      });
+      if (result.response !== 0) return;
+    }
+    await this.#extensions.setDeveloperMode(enabled);
+  }
+
+  async #installUnpackedExtension(): Promise<void> {
+    if (!this.#extensions?.developerMode()) throw new Error("Turn on Extension Developer Mode first");
+    const result = await dialog.showOpenDialog(this.window, {
+      title: "Choose Unpacked Locus Extension",
+      properties: ["openDirectory"],
+    });
+    const path = result.filePaths[0];
+    if (result.canceled || !path) return;
+    const review = await this.#extensions.inspectUnpacked(path);
+    if (!await this.#confirmExtensionPermissions(review, "Load Extension")) return;
+    await this.#extensions.installUnpacked(review);
+  }
+
+  async #setExtensionEnabled(id: string, enabled: boolean): Promise<void> {
+    if (!this.#extensions) return;
+    if (!enabled) {
+      await this.#extensions.setEnabled(id, false);
+      return;
+    }
+    const review = await this.#extensions.prepareEnable(id);
+    if (review.expansion.length && !await this.#confirmExtensionPermissions(review, "Approve and Enable")) return;
+    await this.#extensions.setEnabled(id, true, review);
+  }
+
+  async #removeExtension(id: string): Promise<void> {
+    if (!this.#extensions) return;
+    const extension = this.#extensions.state().installs.find((install) => install.id === id);
+    if (!extension) return;
+    const result = await dialog.showMessageBox(this.window, {
+      type: "warning",
+      title: `Remove ${extension.name}?`,
+      message: "Remove this extension from the current browser profile?",
+      detail: extension.source === "developer"
+        ? "Locus Browser will unload the extension and forget it. The original developer folder will not be deleted."
+        : "Locus Browser will unload this extension from the current profile.",
+      buttons: ["Remove", "Cancel"],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (result.response === 0) this.#extensions.remove(id);
+  }
+
+  async #confirmExtensionPermissions(review: ExtensionPermissionReview, action: string): Promise<boolean> {
+    const manifest = review.inspection.manifest;
+    const apiPermissions = [
+      ...manifest.permissions,
+      ...manifest.optional_permissions.map((permission) => `${permission} (optional)`),
+    ];
+    const declaredHosts = new Set([...manifest.host_permissions, ...manifest.optional_host_permissions]);
+    const hosts = [
+      ...manifest.host_permissions,
+      ...manifest.optional_host_permissions.map((permission) => `${permission} (optional)`),
+      ...extensionContentScriptMatches(manifest)
+        .filter((permission) => !declaredHosts.has(permission))
+        .map((permission) => `${permission} (content script)`),
+    ];
+    const detail = [
+      manifest.description || "No description provided.",
+      `API access: ${apiPermissions.length ? apiPermissions.join(", ") : "None"}`,
+      `Site access: ${hosts.length ? hosts.join(", ") : "None"}`,
+      ...(review.expansion.length ? [`New access: ${review.expansion.join(", ")}`] : []),
+      `${review.inspection.fileCount} files · ${(review.inspection.totalBytes / 1_048_576).toFixed(2)} MB · Files stay in ${review.inspection.path}`,
+    ].join("\n\n");
+    const result = await dialog.showMessageBox(this.window, {
+      type: review.expansion.length ? "warning" : "info",
+      title: `${action}: ${manifest.name}`,
+      message: `${manifest.name} ${manifest.version} requests the following access`,
+      detail,
+      buttons: [action, "Cancel"],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    return result.response === 0;
   }
 
   #hardenSession(browserSession: Electron.Session): void {
@@ -1503,6 +1636,7 @@ export class BrowserController {
       return;
     }
     const profileSession = session.fromPartition(profile.partitionName);
+    for (const extension of profileSession.extensions.getAllExtensions()) profileSession.extensions.removeExtension(extension.id);
     await Promise.all([profileSession.clearStorageData(), profileSession.clearCache()]);
     this.#database.deleteProfile(profileId);
   }

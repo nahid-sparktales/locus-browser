@@ -73,6 +73,17 @@ The app identity is the Locus lime tile with a single black **L**. The source
 assets live at `apps/desktop/assets/icon.png` and `icon.icns`; macOS installs
 the same icon for the application window and Dock while running locally.
 
+Extensions are profile scoped and disabled in Private Windows. Settings now
+offers an explicitly warned Developer Mode for local unpacked MV3 extensions,
+shows API and site access before first load or permission expansion, and lets
+the user enable, disable, or remove each install. The main process scans a
+bounded folder, rejects symlinks, unsafe resource paths, unsupported manifest
+capabilities, and remote executable code, then loads the extension into the
+profile session before restored pages open. Unpacked developer extensions and
+their local paths are never synced. The current engine-backed permission
+allowlist is deliberately narrow: `activeTab`, `scripting`, `storage`, `tabs`,
+and `webRequest`; broader gallery APIs remain future compatibility work.
+
 Optional Locus encrypted sync now provides passkey accounts and client-side
 encrypted bookmarks, history, tab groups, ordinary web tabs, selected settings,
 and curated extension metadata. Sync keys stay protected by the operating
@@ -93,6 +104,10 @@ For renderer-only UI work, `pnpm --filter @locus/browser-desktop exec vite`
 opens a safe local preview with representative browser state. Production file
 builds never install that preview bridge; they require the sandboxed Electron
 preload and main-process schema validation.
+
+The harmless unpacked fixture at `fixtures/extensions/reading-notes` can be
+used to verify Developer Mode and content-script loading against
+`https://example.com` in an isolated profile.
 
 ## Verify
 

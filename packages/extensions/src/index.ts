@@ -3,29 +3,43 @@ import { strFromU8, unzipSync } from "fflate";
 import { z } from "zod";
 
 export const capabilityRegistry = {
-  contractVersion: 1,
+  contractVersion: 2,
   manifestVersion: 3,
   supportedManifestKeys: [
-    "manifest_version", "name", "version", "description", "icons", "action",
-    "background", "content_scripts", "permissions", "host_permissions",
-    "optional_permissions", "optional_host_permissions", "commands", "storage",
-    "content_security_policy", "web_accessible_resources", "minimum_locus_version",
+    "manifest_version", "name", "version", "description", "icons", "author",
+    "short_name", "default_locale", "minimum_chrome_version", "content_scripts",
+    "permissions", "host_permissions", "optional_permissions", "optional_host_permissions",
   ],
   permissions: [
-    "activeTab", "scripting", "storage", "contextMenus", "notifications",
-    "downloads", "bookmarks", "history", "webRequest", "declarativeNetRequest",
+    "activeTab", "scripting", "storage", "tabs", "webRequest",
   ],
 } as const;
+
+const ContentScriptsSchema = z.array(z.object({
+  matches: z.array(z.string()).min(1).max(200),
+  exclude_matches: z.array(z.string()).max(200).optional(),
+  js: z.array(z.string()).max(200).optional(),
+  css: z.array(z.string()).max(200).optional(),
+  run_at: z.enum(["document_start", "document_end", "document_idle"]).optional(),
+  all_frames: z.boolean().optional(),
+  match_about_blank: z.boolean().optional(),
+}).strict()).max(200);
 
 const ManifestSchema = z.object({
   manifest_version: z.literal(3),
   name: z.string().trim().min(1).max(80),
   version: z.string().regex(/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/),
   description: z.string().max(500).optional(),
-  permissions: z.array(z.string()).default([]),
-  optional_permissions: z.array(z.string()).default([]),
-  host_permissions: z.array(z.string()).default([]),
-  optional_host_permissions: z.array(z.string()).default([]),
+  icons: z.record(z.string(), z.string()).optional(),
+  author: z.string().max(200).optional(),
+  short_name: z.string().trim().min(1).max(40).optional(),
+  default_locale: z.string().regex(/^[A-Za-z0-9_-]{2,20}$/).optional(),
+  minimum_chrome_version: z.string().regex(/^\d+(?:\.\d+){0,3}$/).optional(),
+  content_scripts: ContentScriptsSchema.default([]),
+  permissions: z.array(z.string()).max(200).default([]),
+  optional_permissions: z.array(z.string()).max(200).default([]),
+  host_permissions: z.array(z.string()).max(200).default([]),
+  optional_host_permissions: z.array(z.string()).max(200).default([]),
 }).passthrough();
 
 const InventorySchema = z.object({
@@ -64,6 +78,17 @@ export function validateManifest(raw: unknown): LocusExtensionManifest {
     throw new Error(`Unsupported extension permissions: ${[...new Set(unsupportedPermissions)].join(", ")}`);
   }
   for (const pattern of [...parsed.host_permissions, ...parsed.optional_host_permissions]) validateHostPattern(pattern);
+  for (const script of parsed.content_scripts) {
+    for (const pattern of [...script.matches, ...(script.exclude_matches ?? [])]) validateHostPattern(pattern);
+    for (const path of [...(script.js ?? []), ...(script.css ?? [])]) validateRelativeExtensionPath(path);
+    if (!(script.js?.length || script.css?.length)) throw new Error("Content scripts must include local JavaScript or CSS files");
+  }
+  if (parsed.icons !== undefined) {
+    for (const [size, path] of Object.entries(parsed.icons)) {
+      if (!/^\d{1,4}$/.test(size)) throw new Error("Extension icons must use numeric sizes and local paths");
+      validateRelativeExtensionPath(path);
+    }
+  }
   return parsed;
 }
 
@@ -85,13 +110,14 @@ export function verifyLocusx(archive: Uint8Array, trustedGalleryFingerprints: Re
     const bytes = required(files, item.path);
     if (bytes.byteLength !== item.size) throw new Error(`Size mismatch for ${item.path}`);
     if (sha256(bytes) !== item.sha256) throw new Error(`SHA-256 mismatch for ${item.path}`);
-    scanForRemoteCode(item.path, bytes);
+    validateExtensionFile(item.path, bytes);
   }
   for (const path of files.keys()) {
     if (!["inventory.json", "signatures.json"].includes(path) && !inventoryPaths.has(path)) {
       throw new Error(`Uninventoried file: ${path}`);
     }
   }
+  for (const path of extensionLocalResources(manifest)) required(files, path);
 
   const signedMessage = Buffer.from(`${sha256(manifestBytes)}:${sha256(inventoryBytes)}`, "utf8");
   if (!verify(null, signedMessage, signatures.publisher.publicKeyPem, Buffer.from(signatures.publisher.signature, "base64"))) {
@@ -118,13 +144,26 @@ export function permissionExpansion(previous: LocusExtensionManifest, next: Locu
     ...previous.optional_permissions,
     ...previous.host_permissions,
     ...previous.optional_host_permissions,
+    ...extensionContentScriptMatches(previous),
   ]);
-  return [
+  return [...new Set([
     ...next.permissions,
     ...next.optional_permissions,
     ...next.host_permissions,
     ...next.optional_host_permissions,
-  ].filter((permission) => !existing.has(permission));
+    ...extensionContentScriptMatches(next),
+  ].filter((permission) => !existing.has(permission)))];
+}
+
+export function extensionContentScriptMatches(manifest: LocusExtensionManifest): string[] {
+  return [...new Set(manifest.content_scripts.flatMap((script) => script.matches))];
+}
+
+export function extensionLocalResources(manifest: LocusExtensionManifest): string[] {
+  return [...new Set([
+    ...manifest.content_scripts.flatMap((script) => [...(script.js ?? []), ...(script.css ?? [])]),
+    ...Object.values(manifest.icons ?? {}),
+  ])];
 }
 
 function required(files: ReadonlyMap<string, Uint8Array>, path: string): Uint8Array {
@@ -141,16 +180,24 @@ function validateArchivePath(path: string): void {
 
 function validateHostPattern(pattern: string): void {
   if (pattern === "<all_urls>") return;
-  if (!/^(https?|\*):\/\/(\*\.)?[A-Za-z0-9.-]+\/.*$/.test(pattern)) {
+  if (!/^(https?|\*):\/\/(?:\*|\*\.[A-Za-z0-9.-]+|[A-Za-z0-9.-]+)\/.*$/.test(pattern)) {
     throw new Error(`Unsupported host permission pattern: ${pattern}`);
   }
 }
 
-function scanForRemoteCode(path: string, bytes: Uint8Array): void {
+function validateRelativeExtensionPath(path: string): void {
+  if (!path || path.startsWith("/") || path.includes("\\") || path.split("/").includes("..") || /^[a-z][a-z0-9+.-]*:/i.test(path)) {
+    throw new Error(`Unsafe extension resource path: ${path}`);
+  }
+}
+
+export function validateExtensionFile(path: string, bytes: Uint8Array): void {
   if (!/\.(?:js|mjs|cjs|html|json)$/i.test(path)) return;
   const source = strFromU8(bytes);
   if (/\b(?:eval|Function)\s*\(/.test(source)) throw new Error(`Dynamic code execution is forbidden in ${path}`);
   if (/https?:\/\/[^\s"']+\.(?:js|mjs)(?:[?"']|$)/i.test(source)) throw new Error(`Remote executable code is forbidden in ${path}`);
+  if (/<script\b[^>]*\bsrc\s*=\s*["']https?:\/\//i.test(source)) throw new Error(`Remote executable code is forbidden in ${path}`);
+  if (/\b(?:import\s*\(|from\s+)["']https?:\/\//i.test(source)) throw new Error(`Remote executable code is forbidden in ${path}`);
 }
 
 function sha256(value: Uint8Array): string {

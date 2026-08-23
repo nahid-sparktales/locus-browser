@@ -108,6 +108,35 @@ describe("BrowserDatabase", () => {
     database.close();
   });
 
+  it("stores profile-scoped extension load metadata", () => {
+    const database = new BrowserDatabase(join(mkdtempSync(join(tmpdir(), "locus-extensions-")), "browser.sqlite"));
+    const work = database.createProfile("Work");
+    database.saveExtensionInstall(work.id, {
+      id: "extension-a",
+      runtimeId: "runtime-a",
+      name: "Workspace Notes",
+      version: "1.2.0",
+      enabled: true,
+      source: "developer",
+      installPath: "/tmp/workspace-notes",
+      manifestJson: JSON.stringify({ manifest_version: 3, name: "Workspace Notes", version: "1.2.0" }),
+    });
+
+    expect(database.listExtensionInstalls("default")).toEqual([]);
+    expect(database.listExtensionInstalls(work.id)).toMatchObject([{
+      id: "extension-a",
+      runtimeId: "runtime-a",
+      name: "Workspace Notes",
+      enabled: true,
+      source: "developer",
+    }]);
+    database.setExtensionLoadState(work.id, "extension-a", false, undefined, "Disabled for review");
+    expect(database.listExtensionInstalls(work.id)[0]).toMatchObject({ enabled: false, lastError: "Disabled for review" });
+    database.deleteExtensionInstall(work.id, "extension-a");
+    expect(database.listExtensionInstalls(work.id)).toEqual([]);
+    database.close();
+  });
+
   it("round-trips tab groups with their tab membership", () => {
     const database = new BrowserDatabase(join(mkdtempSync(join(tmpdir(), "locus-groups-")), "browser.sqlite"));
     database.saveWindow({ id: "group-window", profileId: "default", sidebarOpen: true, workOpen: false, workWidth: 420 }, [{
@@ -162,15 +191,25 @@ describe("BrowserDatabase", () => {
     database.setSetting("default", "downloadDirectory", "/private/downloads");
     database.saveDownload("default", { id: "download", filename: "secret.pdf", url: "https://example.com/secret.pdf", path: "/private/secret.pdf", state: "completed", receivedBytes: 10, totalBytes: 10, agentInitiated: false, startedAt: 1 });
     database.saveCredential("default", { id: "login", origin: "https://example.com", username: "person", encryptedPassword: Uint8Array.from([1, 2, 3]) });
+    database.saveExtensionInstall("default", {
+      id: "gallery-extension", name: "Gallery Extension", version: "1.0.0", enabled: true,
+      source: "gallery", manifestJson: "{}",
+    });
+    database.saveExtensionInstall("default", {
+      id: "developer-extension", name: "Private Developer Path", version: "1.0.0", enabled: true,
+      source: "developer", installPath: "/private/developer-extension", manifestJson: "{}",
+    });
 
     let counter = 0;
     expect(database.queueSyncSnapshot("default", "device-a", () => `1787408000000-${String(counter++).padStart(6, "0")}-device-a`)).toBeGreaterThan(0);
     const records = database.syncOutbox("default");
-    expect(new Set(records.map((record) => record.collection))).toEqual(new Set(["bookmarks", "history", "tab-groups", "remote-tabs", "settings"]));
+    expect(new Set(records.map((record) => record.collection))).toEqual(new Set(["bookmarks", "history", "tab-groups", "remote-tabs", "settings", "extensions"]));
     expect(records.filter((record) => record.collection === "remote-tabs")).toHaveLength(1);
     expect(records.find((record) => record.collection === "settings")?.recordId).toBe("appearance");
     expect(JSON.stringify(records)).not.toContain("secret.pdf");
     expect(JSON.stringify(records)).not.toContain("person");
+    expect(JSON.stringify(records)).not.toContain("developer-extension");
+    expect(JSON.stringify(records)).not.toContain("/private/developer-extension");
     database.close();
 
     const reopened = new BrowserDatabase(path);

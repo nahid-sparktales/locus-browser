@@ -36,3 +36,18 @@ describe("Solo Work surface commands", () => {
     expect(BrowserCommandSchema.safeParse({ type }).success).toBe(true);
   });
 });
+
+describe("extension management commands", () => {
+  it.each([
+    { type: "set-extension-developer-mode", enabled: true },
+    { type: "install-unpacked-extension" },
+    { type: "set-extension-enabled", extensionId: "extension-1", enabled: false },
+    { type: "remove-extension", extensionId: "extension-1" },
+  ])("accepts and bounds $type", (command) => {
+    expect(BrowserCommandSchema.safeParse(command).success).toBe(true);
+  });
+
+  it("rejects oversized extension identifiers", () => {
+    expect(BrowserCommandSchema.safeParse({ type: "remove-extension", extensionId: "x".repeat(256) }).success).toBe(false);
+  });
+});

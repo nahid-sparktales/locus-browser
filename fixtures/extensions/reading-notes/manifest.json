@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Locus Reading Notes",
+  "version": "1.0.0",
+  "description": "A harmless compatibility fixture for Locus Browser extension testing.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://example.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://example.com/*"],
+      "js": ["content.js", "worker.js"]
+    }
+  ]
+}

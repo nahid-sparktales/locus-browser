@@ -1,33 +1,31 @@
 {
-  "contractVersion": 1,
+  "contractVersion": 2,
   "manifestVersion": 3,
   "supportedManifestKeys": [
-    "manifest_version", "name", "version", "description", "icons", "action",
-    "background", "content_scripts", "permissions", "host_permissions",
-    "optional_permissions", "optional_host_permissions", "commands",
-    "storage", "content_security_policy", "web_accessible_resources",
-    "minimum_locus_version"
+    "manifest_version", "name", "version", "description", "icons", "author",
+    "short_name", "default_locale", "minimum_chrome_version", "content_scripts",
+    "permissions", "host_permissions", "optional_permissions",
+    "optional_host_permissions"
   ],
   "apis": {
     "runtime": "stable",
-    "action": "stable",
-    "tabs": "stable",
+    "action": "planned",
+    "tabs": "tested-subset",
     "scripting": "stable",
     "contentScripts": "stable",
     "storage.local": "stable",
-    "commands": "stable",
-    "contextMenus": "stable",
-    "notifications": "stable",
-    "downloads": "stable",
-    "bookmarks": "stable",
-    "history": "stable",
-    "webRequest": "tested-subset",
-    "declarativeNetRequest": "tested-subset",
-    "serviceWorker": "tested-subset"
+    "commands": "planned",
+    "contextMenus": "planned",
+    "notifications": "planned",
+    "downloads": "planned",
+    "bookmarks": "planned",
+    "history": "planned",
+    "webRequest": "stable",
+    "declarativeNetRequest": "planned",
+    "serviceWorker": "planned"
   },
   "permissions": [
-    "activeTab", "scripting", "storage", "contextMenus", "notifications",
-    "downloads", "bookmarks", "history", "webRequest", "declarativeNetRequest"
+    "activeTab", "scripting", "storage", "tabs", "webRequest"
   ],
   "privateProfilesDefault": "disabled",
   "remoteCode": "forbidden"

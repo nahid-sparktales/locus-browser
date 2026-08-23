@@ -70,6 +70,29 @@ export interface BrowserSettingsState {
   onboardingComplete: boolean;
 }
 
+export interface ExtensionInstallState {
+  id: string;
+  name: string;
+  version: string;
+  description?: string;
+  enabled: boolean;
+  loaded: boolean;
+  source: "gallery" | "developer";
+  installPath?: string;
+  permissions: string[];
+  hostPermissions: string[];
+  error?: string;
+  updatedAt: number;
+}
+
+export interface ExtensionManagerState {
+  developerMode: boolean;
+  loading: boolean;
+  installs: ExtensionInstallState[];
+  supportedApiCount: number;
+  message: string;
+}
+
 export interface CredentialSuggestionState {
   id: string;
   username: string;
@@ -336,6 +359,7 @@ export interface BrowserAppState {
   credentialSuggestions: CredentialSuggestionState[];
   savedCredentials: SavedCredentialState[];
   passwordManagerAvailable: boolean;
+  extensions: ExtensionManagerState;
   sync: SyncAccountState;
   remoteTabs: RemoteTabState[];
   onboardingRequired: boolean;

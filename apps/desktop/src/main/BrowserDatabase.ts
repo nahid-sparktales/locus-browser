@@ -98,6 +98,19 @@ export interface StoredSitePermission {
   updatedAt: number;
 }
 
+export interface StoredExtensionInstall {
+  id: string;
+  runtimeId?: string;
+  name: string;
+  version: string;
+  enabled: boolean;
+  source: "gallery" | "developer";
+  installPath?: string;
+  manifestJson: string;
+  lastError?: string;
+  updatedAt?: number;
+}
+
 export type BrowserSyncCollection = "bookmarks" | "history" | "tab-groups" | "remote-tabs" | "settings" | "extensions";
 
 export interface StoredSyncAccount {
@@ -425,6 +438,53 @@ export class BrowserDatabase {
     `).run(profileId, key, JSON.stringify(value));
   }
 
+  listExtensionInstalls(profileId: string): StoredExtensionInstall[] {
+    const rows = this.#database.prepare(`
+      SELECT extension_id AS id, runtime_id AS runtimeId, name, version, enabled, source,
+             install_path AS installPath, manifest_json AS manifestJson,
+             last_error AS lastError, updated_at AS updatedAt
+      FROM extension_installs WHERE profile_id = ? ORDER BY name COLLATE NOCASE ASC, extension_id ASC
+    `).all(profileId) as unknown as Array<Omit<StoredExtensionInstall, "enabled" | "source"> & { enabled: number; source: string }>;
+    return rows.flatMap((row) => row.source === "gallery" || row.source === "developer"
+      ? [{ ...row, enabled: Boolean(row.enabled), source: row.source }]
+      : []);
+  }
+
+  saveExtensionInstall(profileId: string, install: StoredExtensionInstall): void {
+    this.#database.prepare(`
+      INSERT INTO extension_installs(
+        profile_id, extension_id, runtime_id, name, version, enabled, source,
+        install_path, manifest_json, last_error, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+      ON CONFLICT(profile_id, extension_id) DO UPDATE SET
+        runtime_id=excluded.runtime_id, name=excluded.name, version=excluded.version,
+        enabled=excluded.enabled, source=excluded.source, install_path=excluded.install_path,
+        manifest_json=excluded.manifest_json, last_error=excluded.last_error, updated_at=excluded.updated_at
+    `).run(
+      profileId,
+      install.id,
+      install.runtimeId ?? null,
+      install.name,
+      install.version,
+      Number(install.enabled),
+      install.source,
+      install.installPath ?? null,
+      install.manifestJson,
+      install.lastError ?? null,
+    );
+  }
+
+  setExtensionLoadState(profileId: string, id: string, enabled: boolean, runtimeId?: string, lastError?: string): void {
+    this.#database.prepare(`
+      UPDATE extension_installs SET enabled=?, runtime_id=COALESCE(?, runtime_id),
+        last_error=?, updated_at=unixepoch() WHERE profile_id=? AND extension_id=?
+    `).run(Number(enabled), runtimeId ?? null, lastError ?? null, profileId, id);
+  }
+
+  deleteExtensionInstall(profileId: string, id: string): void {
+    this.#database.prepare("DELETE FROM extension_installs WHERE profile_id=? AND extension_id=?").run(profileId, id);
+  }
+
   saveCredential(profileId: string, credential: StoredCredential): void {
     this.#database.prepare(`
       INSERT INTO browser_credentials(id, profile_id, origin, username, encrypted_password, updated_at)
@@ -721,7 +781,8 @@ export class BrowserDatabase {
     `).all(profileId) as unknown as Array<{ key: string; valueJson: string }>;
     for (const item of settings) result.push({ collection: "settings", recordId: item.key, tombstone: false, value: JSON.parse(item.valueJson) });
     const extensions = this.#database.prepare(`
-      SELECT extension_id AS id, version, enabled, source FROM extension_installs WHERE profile_id=?
+      SELECT extension_id AS id, version, enabled, source FROM extension_installs
+      WHERE profile_id=? AND source='gallery'
     `).all(profileId) as unknown as Array<{ id: string; version: string; enabled: number; source: string }>;
     for (const item of extensions) result.push({ collection: "extensions", recordId: item.id, tombstone: false, value: { ...item, enabled: Boolean(item.enabled) } });
     return result;
@@ -762,15 +823,16 @@ export class BrowserDatabase {
     }
     if (record.collection === "extensions") {
       if (record.tombstone) {
-        this.#database.prepare("DELETE FROM extension_installs WHERE profile_id=? AND extension_id=?").run(profileId, record.recordId);
+        this.#database.prepare("DELETE FROM extension_installs WHERE profile_id=? AND extension_id=? AND source='gallery'").run(profileId, record.recordId);
       } else {
         const value = record.value as { version?: unknown; enabled?: unknown; source?: unknown };
-        if (typeof value.version !== "string" || typeof value.enabled !== "boolean" || typeof value.source !== "string") return false;
+        if (typeof value.version !== "string" || typeof value.enabled !== "boolean" || value.source !== "gallery") return false;
         this.#database.prepare(`
           INSERT INTO extension_installs(profile_id, extension_id, version, enabled, source, manifest_json, updated_at)
           VALUES (?, ?, ?, ?, ?, '{}', unixepoch())
           ON CONFLICT(profile_id, extension_id) DO UPDATE SET version=excluded.version,
             enabled=excluded.enabled, source=excluded.source, updated_at=excluded.updated_at
+          WHERE extension_installs.source='gallery'
         `).run(profileId, record.recordId, value.version, Number(value.enabled), value.source);
       }
       return true;
@@ -970,6 +1032,10 @@ export class BrowserDatabase {
     this.#ensureColumn("downloads", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
     this.#ensureColumn("browser_credentials", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
     this.#ensureColumn("sync_accounts", "key_version", "INTEGER NOT NULL DEFAULT 1");
+    this.#ensureColumn("extension_installs", "runtime_id", "TEXT");
+    this.#ensureColumn("extension_installs", "name", "TEXT NOT NULL DEFAULT ''");
+    this.#ensureColumn("extension_installs", "install_path", "TEXT");
+    this.#ensureColumn("extension_installs", "last_error", "TEXT");
     this.#database.exec(`
       CREATE INDEX IF NOT EXISTS history_visits_profile_time ON history_visits(profile_id, visited_at DESC);
       CREATE INDEX IF NOT EXISTS bookmarks_profile_position ON bookmarks(profile_id, position ASC);
@@ -979,6 +1045,7 @@ export class BrowserDatabase {
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (3, unixepoch());
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (4, unixepoch());
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (5, unixepoch());
+      INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (6, unixepoch());
     `);
   }
 

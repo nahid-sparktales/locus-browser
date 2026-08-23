@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bookmark, Bot, Check, ChevronDown,
-  CircleAlert, Clock3, Cloud, CloudOff, Copy, Download, EyeOff, FileDown, Globe2, History,
+  CircleAlert, Clock3, Cloud, CloudOff, Copy, Download, EyeOff, FileDown, FolderPlus, Globe2, History,
   KeyRound, Laptop, Layers3, LayoutList, LockKeyhole, LogIn, LogOut, Minus, Monitor, Moon, MoreHorizontal, PanelLeft,
-  Pause, Play, Plus, Printer, RefreshCw, Search, Settings, ShieldCheck,
+  Pause, Play, Plus, Printer, Puzzle, RefreshCw, Search, Settings, ShieldCheck,
   Sparkles, Square, Sun, UserRound, UsersRound, Volume2, VolumeX, X,
 } from "lucide-react";
 import type { BrowserCommand } from "../shared/ipc.js";
@@ -558,9 +558,10 @@ function SettingsPanel({ state }: { state: BrowserAppState }) {
         </select>
       </SettingRow>
       <SettingRow label="Downloads" detail={state.settings.downloadDirectory}>
-        <button onClick={() => void command({ type: "choose-download-directory" })}>Choose folder…</button>
+        <button type="button" onClick={() => void command({ type: "choose-download-directory" })}>Choose folder…</button>
       </SettingRow>
-      {!state.privateWindow && <SyncSettings state={state} />}
+      <ExtensionSettings state={state} />
+      {!state.privateWindow ? <SyncSettings state={state} /> : null}
       <div className="settings-subheading">Profiles</div>
       {state.profiles.map((profile) => (
         <div className="permission-setting" key={profile.id}>
@@ -586,6 +587,79 @@ function SettingsPanel({ state }: { state: BrowserAppState }) {
         </div>
       )) : <p className="settings-empty">Sites you allow or block will appear here.</p>}
     </div>
+  );
+}
+
+function ExtensionSettings({ state }: { state: BrowserAppState }) {
+  const [busy, setBusy] = useState<string>();
+  const [error, setError] = useState<string>();
+  const run = async (key: string, value: BrowserCommand) => {
+    setBusy(key);
+    setError(undefined);
+    try {
+      await command(value);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Extension request failed");
+    } finally {
+      setBusy(undefined);
+    }
+  };
+  const manager = state.extensions;
+  return (
+    <section className="extension-settings" aria-labelledby="extension-settings-title">
+      <div className="settings-subheading" id="extension-settings-title">Extensions</div>
+      {state.privateWindow ? (
+        <div className="extension-private-note"><EyeOff size={14} /><span><strong>Off in Private Windows</strong><small>Extensions cannot inspect or change private pages.</small></span></div>
+      ) : (
+        <>
+          <div className="extension-developer-card">
+            <span className="extension-icon"><Puzzle size={15} /></span>
+            <span><strong>Developer Mode</strong><small>Load reviewed, unpacked MV3 extensions for this profile only.</small></span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={manager.developerMode}
+              aria-label="Extension Developer Mode"
+              className={`settings-switch ${manager.developerMode ? "on" : ""}`}
+              disabled={Boolean(busy) || manager.loading}
+              onClick={() => void run("developer-mode", { type: "set-extension-developer-mode", enabled: !manager.developerMode })}
+            ><span /></button>
+          </div>
+          <p className="extension-contract">{manager.message} Locus accepts {manager.supportedApiCount} current engine-backed permission groups and rejects unsupported manifest capabilities or remote executable code.</p>
+          {error ? <p className="extension-error" role="alert"><CircleAlert size={12} />{error}</p> : null}
+          <button
+            className="extension-load-button"
+            type="button"
+            disabled={!manager.developerMode || Boolean(busy) || manager.loading}
+            onClick={() => void run("install", { type: "install-unpacked-extension" })}
+          ><FolderPlus size={13} />Load unpacked extension…</button>
+          {manager.installs.length ? (
+            <div className="extension-list">
+              {manager.installs.map((extension) => {
+                const attention = Boolean(extension.error);
+                const needsGalleryInstall = extension.source === "gallery" && !extension.installPath;
+                const status = needsGalleryInstall ? "Not on this Mac" : attention ? "Needs attention" : extension.loaded ? "Loaded" : extension.enabled && !manager.developerMode ? "Developer Mode off" : extension.enabled ? "Waiting" : "Disabled";
+                const disableToggle = Boolean(busy) || manager.loading || needsGalleryInstall || (extension.source === "developer" && !manager.developerMode);
+                const nextEnabled = attention ? true : !extension.enabled;
+                return (
+                  <article className={`extension-card ${attention ? "attention" : ""}`} key={extension.id}>
+                    <header><span className="extension-icon"><Puzzle size={14} /></span><span><strong>{extension.name}</strong><small>{extension.version} · {extension.source === "developer" ? "Unpacked" : "Gallery"}</small></span><i className={extension.loaded ? "loaded" : attention ? "attention" : ""}>{status}</i></header>
+                    {extension.description ? <p>{extension.description}</p> : null}
+                    {extension.installPath ? <small className="extension-path" title={extension.installPath}>{extension.installPath}</small> : null}
+                    <div className="extension-access"><span>APIs · {extension.permissions.length || "None"}</span><span>Sites · {extension.hostPermissions.length || "None"}</span></div>
+                    {attention ? <p className="extension-card-error"><CircleAlert size={11} />{extension.error}</p> : null}
+                    <footer>
+                      <button type="button" disabled={disableToggle} onClick={() => void run(extension.id, { type: "set-extension-enabled", extensionId: extension.id, enabled: nextEnabled })}>{needsGalleryInstall ? "Gallery required" : attention ? "Review & enable" : extension.enabled ? "Disable" : "Enable"}</button>
+                      <button type="button" className="danger" disabled={Boolean(busy)} onClick={() => void run(`remove-${extension.id}`, { type: "remove-extension", extensionId: extension.id })}>Remove</button>
+                    </footer>
+                  </article>
+                );
+              })}
+            </div>
+          ) : <p className="settings-empty">No extensions installed in this profile.</p>}
+        </>
+      )}
+    </section>
   );
 }
 

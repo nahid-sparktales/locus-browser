@@ -6,15 +6,20 @@
   "license": "Apache-2.0",
   "main": "dist/main/index.js",
   "scripts": {
+    "prebuild": "pnpm --filter @locus/extensions build",
     "build": "pnpm build:main && vite build",
     "build:main": "tsup src/main/index.ts --format esm --platform node --out-dir dist/main --external electron --external node:sqlite && tsup src/preload/index.ts --format cjs --platform node --out-dir dist/preload --external electron",
+    "predev": "pnpm --filter @locus/extensions build",
     "dev": "pnpm build:preload && concurrently -k -n renderer,main,preload,app 'vite --host 127.0.0.1' 'tsup src/main/index.ts --format esm --platform node --out-dir dist/main --external electron --external node:sqlite --watch' 'tsup src/preload/index.ts --format cjs --platform node --out-dir dist/preload --external electron --watch' 'wait-on http://127.0.0.1:5173 dist/main/index.js dist/preload/index.cjs && cross-env LOCUS_RENDERER_URL=http://127.0.0.1:5173 electron .'",
     "build:preload": "tsup src/preload/index.ts --format cjs --platform node --out-dir dist/preload --external electron",
+    "pretest": "pnpm --filter @locus/extensions build",
     "test": "vitest run src",
+    "pretypecheck": "pnpm --filter @locus/extensions build",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@locus/browser-bridge": "link:../../../locus-platform/packages/browser-bridge",
+    "@locus/extensions": "workspace:*",
     "@locus/protocol": "link:../../../locus-platform/packages/protocol",
     "@locus/sync-crypto": "workspace:*",
     "lucide-react": "0.468.0",

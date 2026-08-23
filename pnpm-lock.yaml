@@ -23,6 +23,9 @@ importers:
       '@locus/browser-bridge':
         specifier: link:../../../locus-platform/packages/browser-bridge
         version: link:../../../locus-platform/packages/browser-bridge
+      '@locus/extensions':
+        specifier: workspace:*
+        version: link:../../packages/extensions
       '@locus/protocol':
         specifier: link:../../../locus-platform/packages/protocol
         version: link:../../../locus-platform/packages/protocol

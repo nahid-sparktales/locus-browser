@@ -72,6 +72,27 @@ encryption, reveal, autofill, and deletion are profile scoped and require an
 explicit browser-chrome action; the password is never serialized into renderer
 state or any Work/agent protocol.
 
+Extension management is also a trusted-shell operation. Each normal profile's
+persistent Chromium session has a profile-scoped extension manager; Private
+Windows use a separate in-memory partition and never receive extensions. Before
+Electron sees an unpacked directory, the main process resolves its real path,
+bounds file count and bytes, rejects every symlink, validates the MV3 manifest
+against the versioned Locus registry, checks content-script resource paths, and
+scans executable text for dynamic or remote code. A second fingerprinted scan
+immediately before load prevents files from changing between the native access
+review and installation. Enabled extensions are restored before saved webpages
+open. New permissions block automatic startup until the user reviews them;
+disabling unloads the runtime extension, and removal forgets only the profile
+record without deleting the developer's source folder.
+
+Only gallery extension ID/version/enabled/source metadata participates in
+encrypted sync. Developer installs and filesystem paths are excluded at the
+database snapshot boundary. The current registry exposes only the
+Electron-backed permission groups used by this foundation; action UI, commands,
+context menus, notifications, downloads, bookmarks, history, declarative
+rules, and MV3 service-worker shims remain explicitly planned rather than being
+advertised as compatible.
+
 ## Tab ownership
 
 Browser tabs are independent of conversations. `TabAccessRegistry` grants one

@@ -7,6 +7,7 @@ const previewOnboarding = previewParams.has("onboarding");
 const previewCredential = previewParams.has("credential");
 const previewSync = previewParams.has("sync");
 const previewPairing = previewParams.has("pairing");
+const previewExtensions = previewParams.has("extensions");
 
 const previewState: BrowserAppState = {
   windowId: "preview",
@@ -68,6 +69,25 @@ const previewState: BrowserAppState = {
   credentialSuggestions: [{ id: "demo-login", username: "nahid@example.com" }],
   savedCredentials: [{ id: "demo-login", origin: "https://github.com", username: "nahid@example.com", updatedAt: 1_787_408_000 }],
   passwordManagerAvailable: true,
+  extensions: {
+    developerMode: previewExtensions,
+    loading: false,
+    supportedApiCount: 5,
+    message: previewExtensions ? "Developer Mode is on. Unpacked extensions can inspect granted sites." : "Developer Mode is off. Unpacked extensions are not loaded.",
+    installs: previewExtensions ? [{
+      id: "preview-extension",
+      name: "Reading Notes",
+      version: "1.0.0",
+      description: "Save selected passages to your local reading notes.",
+      enabled: true,
+      loaded: true,
+      source: "developer",
+      installPath: "/Users/nahid/Developer/reading-notes",
+      permissions: ["storage"],
+      hostPermissions: ["https://*.example.com/*"],
+      updatedAt: 1_787_408_000,
+    }] : [],
+  },
   sync: previewSync
     ? {
         status: "connected", serviceUrl: "https://sync.locusbrowser.test", accountId: "account-preview", deviceId: "macbook-local",
@@ -383,6 +403,24 @@ function applyPreviewCommand(command: BrowserCommand): void {
       break;
     case "set-sleep-after":
       previewState.settings.sleepAfterMinutes = command.minutes;
+      break;
+    case "set-extension-developer-mode":
+      previewState.extensions.developerMode = command.enabled;
+      previewState.extensions.message = command.enabled ? "Developer Mode is on. Unpacked extensions can inspect granted sites." : "Developer Mode is off. Unpacked extensions are not loaded.";
+      previewState.extensions.installs = previewState.extensions.installs.map((extension) => ({ ...extension, loaded: command.enabled && extension.enabled }));
+      break;
+    case "install-unpacked-extension":
+      previewState.extensions.installs = [{
+        id: "preview-extension", name: "Reading Notes", version: "1.0.0", description: "Save selected passages to your local reading notes.",
+        enabled: true, loaded: true, source: "developer", installPath: "/Users/nahid/Developer/reading-notes",
+        permissions: ["storage"], hostPermissions: ["https://*.example.com/*"], updatedAt: Math.floor(Date.now() / 1_000),
+      }];
+      break;
+    case "set-extension-enabled":
+      previewState.extensions.installs = previewState.extensions.installs.map((extension) => extension.id === command.extensionId ? { ...extension, enabled: command.enabled, loaded: command.enabled } : extension);
+      break;
+    case "remove-extension":
+      previewState.extensions.installs = previewState.extensions.installs.filter((extension) => extension.id !== command.extensionId);
       break;
     case "delete-profile":
       previewState.profiles = previewState.profiles.filter((profile) => profile.id !== command.profileId);
