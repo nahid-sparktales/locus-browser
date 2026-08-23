@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BrowserWindow, Menu, app, ipcMain, type IpcMainInvokeEvent } from "electron";
+import { BrowserWindow, Menu, app, ipcMain, nativeImage, type IpcMainInvokeEvent } from "electron";
 import { BrowserController, platformRootFromApp } from "./BrowserController.js";
 import { requiresShellSender } from "./BrowserCommandPolicy.js";
 import { BrowserCommandSchema, ipcChannels } from "../shared/ipc.js";
@@ -24,10 +24,16 @@ app.whenReady().then(() => {
     || new URL(`file://${join(currentDirectory, "..", "renderer", "index.html")}`).toString();
   preloadPath = join(currentDirectory, "..", "preload", "index.cjs");
   platformRoot = platformRootFromApp();
+  installAppIcon();
   installIpc();
   createWindow(false, "default");
   installMenu();
 });
+
+function installAppIcon(): void {
+  const icon = nativeImage.createFromPath(join(app.getAppPath(), "assets", "icon.png"));
+  if (!icon.isEmpty() && process.platform === "darwin") app.dock?.setIcon(icon);
+}
 
 app.on("activate", () => {
   const existing = [...controllers][0];

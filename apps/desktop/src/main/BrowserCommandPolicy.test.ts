@@ -30,6 +30,8 @@ describe("browser command sender policy", () => {
     expect(requiresShellSender({ type: "toggle-work" })).toBe(false);
     expect(requiresShellSender({ type: "new-work-conversation" })).toBe(false);
     expect(requiresShellSender({ type: "select-work-conversation", sessionId: "session-1" })).toBe(false);
+    expect(requiresShellSender({ type: "choose-workspace" })).toBe(false);
+    expect(requiresShellSender({ type: "choose-work-attachments" })).toBe(false);
     expect(requiresShellSender({ type: "work-send", text: "Summarize this page" })).toBe(false);
   });
 });

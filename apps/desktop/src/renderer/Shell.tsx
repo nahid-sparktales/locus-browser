@@ -207,7 +207,7 @@ function OnboardingSurface({ state }: { state: BrowserAppState }) {
     <main className={`onboarding-shell theme-${appearance}`}>
       <form className="onboarding-card" onSubmit={submit}>
         <header className="onboarding-heading">
-          <span className="onboarding-mark"><Sparkles size={20} /></span>
+          <span className="onboarding-mark" aria-hidden="true">L</span>
           <div><p>Welcome to</p><h1>Locus Browser</h1></div>
         </header>
         <p className="onboarding-intro">A calm, private browser with Locus ready when you turn on Work Mode. Your browser data stays separate from the Locus app.</p>

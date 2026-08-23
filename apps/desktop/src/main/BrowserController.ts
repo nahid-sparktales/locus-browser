@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   BrowserWindow,
   WebContentsView,
@@ -33,6 +33,7 @@ import type {
   SearchEngine,
   SidebarSection,
   TabGroupState,
+  WorkAttachmentState,
   WorkConversationState,
   WorkMessage,
 } from "../shared/types.js";
@@ -44,6 +45,12 @@ import { electronCredentialCipher } from "./ElectronCredentialCipher.js";
 import { TabAccessRegistry } from "./TabAccessRegistry.js";
 import { canSleepTab, shouldSleepTab } from "./TabSleepingPolicy.js";
 import { SyncAccountManager } from "./SyncAccountManager.js";
+import {
+  MAX_WORK_ATTACHMENTS,
+  attachmentBudgetIssue,
+  detectImageMimeType,
+  type WorkImageMimeType,
+} from "./WorkAttachmentPolicy.js";
 
 const CHROME_HEIGHT = 92;
 const SIDEBAR_WIDTH = 248;
@@ -70,15 +77,23 @@ const AgentSessionsSchema = z.object({
   })),
   current: z.string().optional().default(""),
 });
+const AgentSessionInfoSchema = z.object({
+  session_id: z.string().min(1).max(255),
+  cwd: z.string().nullish().transform((value) => value ?? ""),
+});
 const AgentSessionResultSchema = z.object({
   messages: z.array(z.object({ role: z.string(), content: z.unknown() })).optional().default([]),
-  session_info: z.object({ session_id: z.string().min(1).max(255) }),
+  session_info: AgentSessionInfoSchema,
 });
 const AgentSessionTranscriptSchema = z.object({
   messages: z.array(z.object({ role: z.string(), content: z.unknown() })).optional().default([]),
 });
 const AgentNewSessionSchema = z.object({
-  session_info: z.object({ session_id: z.string().min(1).max(255) }),
+  session_info: AgentSessionInfoSchema,
+});
+const AgentConfigSchema = z.object({
+  cwd: z.string(),
+  session_info: AgentSessionInfoSchema,
 });
 
 interface TabRecord {
@@ -90,6 +105,11 @@ interface TabRecord {
   agentDownloadArmedUntil: number;
   lastActiveAt: number;
   credentialBindingName: string;
+}
+
+interface WorkAttachmentRecord extends WorkAttachmentState {
+  mimeType: WorkImageMimeType;
+  data: string;
 }
 
 interface BrowserPermissionWaiter {
@@ -159,6 +179,8 @@ export class BrowserController {
   #stopRequested = false;
   #messages: WorkMessage[] = [welcomeWorkMessage()];
   #conversations: WorkConversationState[] = [];
+  #workspacePath = "";
+  #attachments = new Map<string, WorkAttachmentRecord>();
   #pendingPermission: PendingPermission | undefined;
   #pendingSitePermission: PendingSitePermission | undefined;
   #pendingCredential: PendingCredentialRecord | undefined;
@@ -195,6 +217,7 @@ export class BrowserController {
       trafficLightPosition: { x: 16, y: 16 },
       backgroundColor: this.#surfaceBackground(),
       title: this.#privateWindow ? `Private — ${profile.name} — Locus Browser` : `${profile.name} — Locus Browser`,
+      icon: join(app.getAppPath(), "assets", "icon.png"),
       show: false,
       webPreferences: trustedRendererPreferences(preloadPath),
     });
@@ -285,6 +308,8 @@ export class BrowserController {
         busy: this.#busy,
         messages: this.#messages,
         conversations: this.#conversations,
+        attachments: [...this.#attachments.values()].map(({ data: _data, ...attachment }) => attachment),
+        ...(this.#workspacePath ? { workspace: { name: basename(this.#workspacePath) || this.#workspacePath, path: this.#workspacePath } } : {}),
         ...(this.#pendingPermission ? { pendingPermission: this.#pendingPermission } : {}),
       },
     };
@@ -589,6 +614,15 @@ export class BrowserController {
         break;
       case "select-work-conversation":
         await this.#selectWorkConversation(command.sessionId);
+        break;
+      case "choose-workspace":
+        await this.#chooseWorkspace();
+        break;
+      case "choose-work-attachments":
+        await this.#chooseWorkAttachments();
+        break;
+      case "remove-work-attachment":
+        this.#attachments.delete(command.attachmentId);
         break;
       case "work-send":
         this.#sendWorkMessage(command.text);
@@ -1471,7 +1505,9 @@ export class BrowserController {
         : undefined;
       const nextSessionId = String(sessionInfo?.session_id ?? event.session_id ?? "").trim();
       if (nextSessionId) this.#setSessionId(nextSessionId);
+      this.#workspacePath = String(sessionInfo?.cwd ?? event.cwd ?? "").trim();
       this.#messages = [welcomeWorkMessage()];
+      this.#attachments.clear();
       this.#workPanel = "chat";
       this.#pendingPermission = undefined;
       this.#busy = false;
@@ -1483,6 +1519,7 @@ export class BrowserController {
     if (type === "session_info") {
       const nextSessionId = String(event.session_id ?? event.id ?? "").trim();
       if (nextSessionId) this.#setSessionId(nextSessionId);
+      if (typeof event.cwd === "string") this.#workspacePath = event.cwd.trim();
       if (nextSessionId && this.#messages.length === 1 && this.#messages[0]?.text === welcomeWorkMessageText) {
         await this.#restoreCurrentTranscript(nextSessionId);
       }
@@ -1534,10 +1571,21 @@ export class BrowserController {
   #sendWorkMessage(text: string): void {
     this.#stopRequested = false;
     this.#messages.push({ id: randomUUID(), role: "user", text });
-    const sent = this.#runtime.send({ type: "user_message", text, mode: this.#workMode });
+    const attachments = [...this.#attachments.values()].map((attachment) => ({
+      name: attachment.name,
+      mime_type: attachment.mimeType,
+      data: attachment.data,
+    }));
+    const sent = this.#runtime.send({
+      type: "user_message",
+      text,
+      mode: this.#workMode,
+      ...(attachments.length ? { attachments } : {}),
+    });
     if (!sent) {
       this.#messages.push({ id: randomUUID(), role: "system", text: "The local agent is offline. Your message was not sent." });
     } else {
+      this.#attachments.clear();
       this.#busy = true;
     }
   }
@@ -1545,9 +1593,11 @@ export class BrowserController {
   async #newWorkConversation(): Promise<void> {
     if (this.#busy || this.#runtimeState !== "online") return;
     try {
-      const result = AgentNewSessionSchema.parse(await this.#runtime.newSession());
+      const result = AgentNewSessionSchema.parse(await this.#runtime.newSession(this.#workspacePath));
       this.#setSessionId(result.session_info.session_id);
+      this.#workspacePath = result.session_info.cwd.trim();
       this.#messages = [welcomeWorkMessage()];
+      this.#attachments.clear();
       this.#pendingPermission = undefined;
       this.#stopRequested = false;
       this.#workPanel = "chat";
@@ -1570,8 +1620,10 @@ export class BrowserController {
     try {
       const result = AgentSessionResultSchema.parse(await this.#runtime.resumeSession(sessionId));
       this.#setSessionId(result.session_info.session_id);
+      this.#workspacePath = result.session_info.cwd.trim();
       const messages = result.messages.map(agentWorkMessage).filter((message): message is WorkMessage => Boolean(message));
       this.#messages = messages.length ? messages : [welcomeWorkMessage()];
+      this.#attachments.clear();
       this.#pendingPermission = undefined;
       this.#stopRequested = false;
       this.#workPanel = "chat";
@@ -1600,6 +1652,61 @@ export class BrowserController {
       this.#broadcast();
     } catch {
       // Conversation history is secondary to the active WebSocket session.
+    }
+  }
+
+  async #chooseWorkspace(): Promise<void> {
+    if (this.#busy || this.#runtimeState !== "online") return;
+    const result = await dialog.showOpenDialog(this.window, {
+      title: "Choose a Workspace for Solo Work",
+      ...(this.#workspacePath ? { defaultPath: this.#workspacePath } : {}),
+      properties: ["openDirectory"],
+    });
+    const selectedPath = result.filePaths[0];
+    if (result.canceled || !selectedPath) return;
+    try {
+      const config = AgentConfigSchema.parse(await this.#runtime.setWorkspace(selectedPath));
+      this.#setSessionId(config.session_info.session_id);
+      this.#workspacePath = config.cwd.trim();
+      await this.#refreshConversations();
+    } catch (error) {
+      this.#messages.push({ id: randomUUID(), role: "system", text: agentRequestError(error, "Could not open that workspace") });
+    }
+  }
+
+  async #chooseWorkAttachments(): Promise<void> {
+    if (this.#busy || this.#runtimeState !== "online" || this.#attachments.size >= MAX_WORK_ATTACHMENTS) return;
+    const result = await dialog.showOpenDialog(this.window, {
+      title: "Attach Images to Solo Work",
+      properties: ["openFile", "multiSelections"],
+      filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp"] }],
+    });
+    if (result.canceled || !result.filePaths.length) return;
+    try {
+      const metadata = await Promise.all(result.filePaths.map(async (path) => ({ path, size: (await stat(path)).size })));
+      const budgetIssue = attachmentBudgetIssue(
+        [...this.#attachments.values()].map((attachment) => attachment.size),
+        metadata.map((candidate) => candidate.size),
+      );
+      if (budgetIssue) throw new Error(budgetIssue);
+      const candidates = await Promise.all(metadata.map(async (candidate) => ({ ...candidate, bytes: await readFile(candidate.path) })));
+      for (const candidate of candidates) {
+        const mimeType = detectImageMimeType(candidate.bytes);
+        if (!mimeType) throw new Error(`${basename(candidate.path)} is not a supported image.`);
+      }
+      for (const candidate of candidates) {
+        const mimeType = detectImageMimeType(candidate.bytes)!;
+        const id = randomUUID();
+        this.#attachments.set(id, {
+          id,
+          name: basename(candidate.path).slice(0, 255) || "image",
+          mimeType,
+          size: candidate.bytes.byteLength,
+          data: candidate.bytes.toString("base64"),
+        });
+      }
+    } catch (error) {
+      this.#messages.push({ id: randomUUID(), role: "system", text: agentRequestError(error, "Could not attach those images") });
     }
   }
 

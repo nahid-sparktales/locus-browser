@@ -8,7 +8,9 @@ import {
   ClipboardList,
   FileCode2,
   FileDiff,
+  FolderOpen,
   GitBranch,
+  ImageIcon,
   MessageSquareText,
   Paperclip,
   RotateCcw,
@@ -65,7 +67,7 @@ export function WorkDock() {
     <div className={`work-dock theme-${state.settings.appearance}`}>
       <div className="dock-resize-handle" onPointerDown={startResize} onPointerMove={resize} onPointerUp={stopResize} onPointerCancel={stopResize} />
       <header className="dock-header">
-        <div className="dock-title"><span className="locus-mark"><Sparkles size={14} /></span><strong>Work</strong></div>
+        <div className="dock-title"><span className="locus-mark" aria-hidden="true">L</span><strong>Work</strong></div>
         <div className={`runtime-chip ${state.work.runtime}`}><span />{state.work.runtime === "online" ? "Ready" : state.work.runtime}</div>
         <button className="dock-close" title="Hide Work Mode (⌘⌥L)" onClick={() => void command({ type: "toggle-work" })}><X size={16} /></button>
       </header>
@@ -81,7 +83,7 @@ export function WorkDock() {
           </div>
 
           {state.work.pendingPermission && <PermissionCard state={state} />}
-          {state.work.panel === "chat" ? <ChatPanel state={state} grantLevel={grant?.level} /> : <SurfacePanel panel={state.work.panel} />}
+          {state.work.panel === "chat" ? <ChatPanel state={state} grantLevel={grant?.level} /> : <SurfacePanel panel={state.work.panel} state={state} />}
         </main>
 
         <nav className="work-rail" aria-label="Work surfaces">
@@ -128,6 +130,14 @@ function ChatPanel({ state, grantLevel }: { state: BrowserAppState; grantLevel: 
         </div>
       </div>
 
+      <div className={`workspace-bar ${state.work.workspace ? "selected" : ""}`}>
+        <FolderOpen size={13} />
+        <span title={state.work.workspace?.path}>{state.work.workspace?.name ?? "No workspace selected"}</span>
+        <button type="button" disabled={state.work.busy || state.work.runtime !== "online"} onClick={() => void command({ type: "choose-workspace" })}>
+          {state.work.workspace ? "Change" : "Choose folder"}
+        </button>
+      </div>
+
       <div className="messages" aria-live="polite">
         {state.work.messages.map((message) => (
           <article key={message.id} className={`message ${message.role} ${message.id === latestId ? "latest" : ""}`}>
@@ -142,6 +152,16 @@ function ChatPanel({ state, grantLevel }: { state: BrowserAppState; grantLevel: 
           {modes.map((mode) => <button key={mode.id} type="button" role="radio" aria-checked={state.work.mode === mode.id} className={state.work.mode === mode.id ? "active" : ""} onKeyDown={navigateModeRadio} onClick={() => void command({ type: "set-work-mode", mode: mode.id })}>{mode.label}</button>)}
         </div>
         <div className="composer">
+          {state.work.attachments.length > 0 ? (
+            <div className="attachment-strip" aria-label="Attached images">
+              {state.work.attachments.map((attachment) => (
+                <span className="attachment-chip" key={attachment.id} title={`${attachment.name} · ${formatBytes(attachment.size)}`}>
+                  <ImageIcon size={12} /><span>{attachment.name}</span>
+                  <button type="button" aria-label={`Remove ${attachment.name}`} onClick={() => void command({ type: "remove-work-attachment", attachmentId: attachment.id })}><X size={11} /></button>
+                </span>
+              ))}
+            </div>
+          ) : null}
           <textarea
             value={text}
             placeholder={state.work.runtime === "online" ? "Ask Locus to work with you…" : state.work.runtimeMessage}
@@ -153,7 +173,7 @@ function ChatPanel({ state, grantLevel }: { state: BrowserAppState; grantLevel: 
             }}
           />
           <div className="composer-actions">
-            <button type="button" title="Attach files"><Paperclip size={15} /></button>
+            <button type="button" title="Attach images" aria-label="Attach images" disabled={state.work.busy || state.work.runtime !== "online" || state.work.attachments.length >= 10} onClick={() => void command({ type: "choose-work-attachments" })}><Paperclip size={15} /></button>
             <div className="composer-spacer" />
             <span className="context-meter" title="Context window">8%</span>
             {state.work.busy
@@ -182,12 +202,13 @@ function PermissionCard({ state }: { state: BrowserAppState }) {
   );
 }
 
-function SurfacePanel({ panel }: { panel: Exclude<WorkPanel, "chat"> }) {
+function SurfacePanel({ panel, state }: { panel: Exclude<WorkPanel, "chat">; state: BrowserAppState }) {
+  const workspaceName = state.work.workspace?.name;
   const content: Record<Exclude<WorkPanel, "chat">, { title: string; text: string; icon: React.ReactNode; actions: string[] }> = {
     plan: { title: "No plan yet", text: "Choose Plan mode and describe the outcome. Locus will present a decision-ready plan here for approval.", icon: <ClipboardList size={21} />, actions: ["Create a plan", "Review dependencies", "Approve before build"] },
     changes: { title: "No workspace changes", text: "File diffs and hunk-level accept or revert actions appear as Locus edits your workspace.", icon: <FileDiff size={21} />, actions: ["Working tree clean", "Review each edit", "Git handoff ready"] },
-    files: { title: "Open a workspace in chat", text: "Once a workspace is selected, browse files, inspect edits, and attach context without leaving the webpage.", icon: <FileCode2 size={21} />, actions: ["Files", "Search", "Attachments"] },
-    terminal: { title: "Terminal is agent-owned", text: "Commands, dev servers, and their output stay isolated from webpages and stream here during a run.", icon: <TerminalSquare size={21} />, actions: ["No running command", "No dev server", "Shell access requires approval"] },
+    files: { title: workspaceName ?? "Choose a workspace in Chat", text: state.work.workspace?.path ?? "Once a workspace is selected, browse files, inspect edits, and attach context without leaving the webpage.", icon: <FileCode2 size={21} />, actions: [workspaceName ? "Workspace ready" : "No workspace selected", "Search", "Image attachments"] },
+    terminal: { title: "Terminal is agent-owned", text: "Commands, dev servers, and their output stay isolated from webpages and stream here during a run.", icon: <TerminalSquare size={21} />, actions: [workspaceName ? `Workspace · ${workspaceName}` : "No workspace selected", "No dev server", "Shell access requires approval"] },
   };
   const item = content[panel];
   return (
@@ -217,4 +238,10 @@ function navigateModeRadio(event: React.KeyboardEvent<HTMLButtonElement>): void 
     : (current - 1 + buttons.length) % buttons.length;
   buttons[nextIndex]?.focus();
   buttons[nextIndex]?.click();
+}
+
+function formatBytes(value: number): string {
+  if (value < 1_024) return `${value} B`;
+  if (value < 1_048_576) return `${(value / 1_024).toFixed(1)} KB`;
+  return `${(value / 1_048_576).toFixed(1)} MB`;
 }

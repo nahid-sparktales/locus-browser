@@ -113,6 +113,8 @@ const previewState: BrowserAppState = {
       { id: "preview-session", title: "Research the current page", preview: "Research the current page", updatedAt: 1_787_408_000, current: true },
       { id: "preview-session-2", title: "Plan a focused browser workflow", preview: "Plan a focused browser workflow", updatedAt: 1_787_321_600, current: false },
     ],
+    attachments: [],
+    workspace: { name: "locus-browser", path: "/Users/nahid/Documents/locus-browser" },
   },
 };
 
@@ -165,6 +167,7 @@ function applyPreviewCommand(command: BrowserCommand): void {
       previewState.work.sessionId = id;
       previewState.work.panel = "chat";
       previewState.work.messages = [{ id: `${id}-welcome`, role: "assistant", text: "Work Mode is ready. Share this tab when you want Locus to read or interact with it." }];
+      previewState.work.attachments = [];
       previewState.work.conversations = [
         { id, title: "New conversation", preview: "", updatedAt: Math.floor(Date.now() / 1_000), current: true },
         ...previewState.work.conversations.map((conversation) => ({ ...conversation, current: false })),
@@ -175,6 +178,20 @@ function applyPreviewCommand(command: BrowserCommand): void {
       previewState.work.sessionId = command.sessionId;
       previewState.work.panel = "chat";
       previewState.work.conversations = previewState.work.conversations.map((conversation) => ({ ...conversation, current: conversation.id === command.sessionId }));
+      break;
+    case "choose-workspace":
+      previewState.work.workspace = { name: "locus-browser", path: "/Users/nahid/Documents/locus-browser" };
+      break;
+    case "choose-work-attachments":
+      previewState.work.attachments = [...previewState.work.attachments, {
+        id: "11111111-1111-4111-8111-111111111111",
+        name: "browser-reference.png",
+        mimeType: "image/png",
+        size: 248_320,
+      }];
+      break;
+    case "remove-work-attachment":
+      previewState.work.attachments = previewState.work.attachments.filter((attachment) => attachment.id !== command.attachmentId);
       break;
     case "toggle-bookmark":
       previewState.activePageBookmarked = !previewState.activePageBookmarked;

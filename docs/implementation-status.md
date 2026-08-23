@@ -30,6 +30,8 @@ schedule, and orchestration surface from native Locus.
 - The same semantic light/dark palette as native Locus: warm paper surfaces,
   ink typography, lime signal, olive actions, and semantic status colors,
   including Reduced Motion and Reduced Transparency alternatives.
+- Locus Browser identity with a single black `L` on the native lime tile,
+  exported as PNG/ICNS assets and installed on the macOS window and Dock.
 - Right Work dock with split/overlay layout, 360–720 px bounds, 60%/520 px
   expansion limits, interruptible 340 ms resize, Reduced Motion handling, and
   a pinned composer. The focused right-side rail keeps Chat, Plan, Changes,
@@ -37,6 +39,11 @@ schedule, and orchestration surface from native Locus.
 - Durable local solo-agent conversations with new/resume actions, browser
   sidebar history, transcript restoration, streaming state, permission prompts,
   and immediate Stop feedback while cancellation reaches the runtime safely.
+- Native trusted-workspace selection bound to the local runtime session and
+  preserved when starting or reopening a conversation.
+- Safe image attachments selected in the main process, checked by file size and
+  content signature, capped at 10 images/15 MB each/25 MB total, and represented
+  in the renderer by metadata only.
 - Live local-agent connection and all existing browser tool wire names.
 - Explicit per-session tab grants, agent-created tabs, visible indicators,
   one-click revoke, protected URLs/fields, screenshot consent/masking,
@@ -87,9 +94,9 @@ schedule, and orchestration surface from native Locus.
   UI, implement the supported MV3 shims, and ship compatibility/malware/update/
   rollback infrastructure.
 - Finish the useful solo adapters behind Plan, Changes, Files, and Terminal;
-  add attachments, model/account selection, workspace selection, and end-to-end
-  local-agent recovery. Team orchestration, schedules, checkpoints, and a
-  dedicated `AGENTS.md` panel are outside the initial browser canary scope.
+  add model/account selection and end-to-end local-agent recovery. Team
+  orchestration, schedules, checkpoints, and a dedicated `AGENTS.md` panel are
+  outside the initial browser canary scope.
 - Bundle the Python runtime, implement signed component/app updates, add Forge
   packaging, hardened-runtime entitlements, signing/notarization, canary/beta
   channels, and schema rollback.

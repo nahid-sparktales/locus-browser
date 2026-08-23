@@ -25,7 +25,16 @@ The Work renderer presents a focused solo-agent surface. The Electron broker
 starts the local Python runtime, communicates over an authenticated loopback
 channel, and uses its local session API to create, list, and resume durable
 conversations. Only normalized conversation metadata and display-safe message
-content cross into the trusted renderer.
+content cross into the trusted renderer. Workspace changes originate in a
+native directory picker and are applied to the authenticated local session;
+remote pages and renderer-supplied paths cannot select a workspace.
+
+Work image attachments are also admitted by the main-process broker. It checks
+count and byte budgets before loading data, verifies PNG/JPEG/GIF/WebP content
+signatures, and retains the encoded payload outside the renderer. The Work UI
+receives only an opaque attachment ID, display name, media type, and size; the
+broker adds the verified payload only when sending to the authenticated local
+agent runtime.
 
 Site camera, microphone, location, notification, and clipboard requests are
 resolved by the main-process broker. Unknown decisions appear only in trusted

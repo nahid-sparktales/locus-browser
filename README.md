@@ -1,5 +1,7 @@
 # Locus Browser
 
+<img src="apps/desktop/assets/icon.png" width="76" alt="Locus Browser app icon: a black L on a lime tile">
+
 A browser-first sibling to Locus: a secure Chromium browser with an explicit,
 resizable Solo Work dock. The page remains the primary canvas and the local
 agent can control only tabs the user shares or tabs the current conversation
@@ -43,9 +45,15 @@ light and dark surfaces use the same semantic palette as native Locus.
 Work Mode is intentionally focused on the solo-agent workflow. Its compact
 right-side rail keeps only Chat, Plan, Changes, Files, and Terminal. You can
 start a new local conversation or reopen a previous one from the browser
-sidebar; conversation transcripts stay on the device. Closing the dock does
+sidebar, choose its trusted workspace from native browser chrome, and attach
+bounded PNG, JPEG, GIF, or WebP images without exposing file paths to the
+renderer. Conversation transcripts stay on the device. Closing the dock does
 not stop an active run, while Stop returns the UI to idle immediately and
 interrupts the agent at its next safe boundary.
+
+The app identity is the Locus lime tile with a single black **L**. The source
+assets live at `apps/desktop/assets/icon.png` and `icon.icns`; macOS installs
+the same icon for the application window and Dock while running locally.
 
 Optional Locus encrypted sync now provides passkey accounts and client-side
 encrypted bookmarks, history, tab groups, ordinary web tabs, selected settings,

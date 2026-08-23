@@ -79,10 +79,17 @@ export class AgentRuntime extends EventEmitter {
     return await this.#requestJson("/api/sessions?limit=100");
   }
 
-  async newSession(): Promise<unknown> {
+  async newSession(cwd = ""): Promise<unknown> {
     return await this.#requestJson("/api/sessions/new", {
       method: "POST",
-      body: JSON.stringify({ reason: "new_session" }),
+      body: JSON.stringify({ reason: "new_session", ...(cwd ? { cwd } : {}) }),
+    });
+  }
+
+  async setWorkspace(cwd: string): Promise<unknown> {
+    return await this.#requestJson("/api/config", {
+      method: "POST",
+      body: JSON.stringify({ cwd }),
     });
   }
 

@@ -173,6 +173,18 @@ export interface WorkConversationState {
   cwd?: string;
 }
 
+export interface WorkWorkspaceState {
+  name: string;
+  path: string;
+}
+
+export interface WorkAttachmentState {
+  id: string;
+  name: string;
+  mimeType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+  size: number;
+}
+
 export interface PendingPermission {
   requestId: string;
   tool: string;
@@ -188,6 +200,8 @@ export interface WorkState {
   busy: boolean;
   messages: WorkMessage[];
   conversations: WorkConversationState[];
+  attachments: WorkAttachmentState[];
+  workspace?: WorkWorkspaceState;
   pendingPermission?: PendingPermission;
 }
 
