@@ -7,7 +7,7 @@ resizable Solo Work dock. The page remains the primary canvas and the local
 agent can control only tabs the user shares or tabs the current conversation
 creates.
 
-![Locus Browser showing Google beside the focused Solo Work dock](docs/images/locus-browser.png)
+![Locus Browser showing Google beside the Solo Work model picker](docs/images/locus-browser.png)
 
 This checkout is the executable engine proof and product foundation. See
 [`docs/implementation-status.md`](docs/implementation-status.md) for the exact
@@ -50,6 +50,14 @@ bounded PNG, JPEG, GIF, or WebP images without exposing file paths to the
 renderer. Conversation transcripts stay on the device. Closing the dock does
 not stop an active run, while Stop returns the UI to idle immediately and
 interrupts the agent at its next safe boundary.
+
+The model picker matches native Locus with ChatGPT Plan, ChatGPT API, Kimi,
+Claude API, vLLM/OpenAI-compatible endpoints, and models installed through
+Ollama. The active model is saved per browser profile. Provider keys are
+entered in a native hidden field, encrypted with macOS secure storage, and
+never placed in page content, Work Mode state, or renderer IPC. ChatGPT Plan
+uses Locus's managed sign-in flow and reports unavailable when its pinned
+runtime component is not installed in a development checkout.
 
 The app identity is the Locus lime tile with a single black **L**. The source
 assets live at `apps/desktop/assets/icon.png` and `icon.icns`; macOS installs

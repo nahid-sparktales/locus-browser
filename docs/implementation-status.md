@@ -36,6 +36,12 @@ schedule, and orchestration surface from native Locus.
   expansion limits, interruptible 340 ms resize, Reduced Motion handling, and
   a pinned composer. The focused right-side rail keeps Chat, Plan, Changes,
   Files, and Terminal; secondary native-Locus surfaces are deliberately absent.
+- Locus-parity solo model picker for ChatGPT Plan, ChatGPT API, Kimi, Claude
+  API, vLLM/OpenAI-compatible endpoints, and dynamically discovered Ollama
+  models. The selected route persists per profile; API keys use native hidden
+  entry and OS encryption without crossing renderer state or IPC. ChatGPT Plan
+  account state, sign-in, model discovery, and sign-out use the managed local
+  runtime component.
 - Durable local solo-agent conversations with new/resume actions, browser
   sidebar history, transcript restoration, streaming state, permission prompts,
   and immediate Stop feedback while cancellation reaches the runtime safely.
@@ -94,9 +100,9 @@ schedule, and orchestration surface from native Locus.
   UI, implement the supported MV3 shims, and ship compatibility/malware/update/
   rollback infrastructure.
 - Finish the useful solo adapters behind Plan, Changes, Files, and Terminal;
-  add model/account selection and end-to-end local-agent recovery. Team
-  orchestration, schedules, checkpoints, and a dedicated `AGENTS.md` panel are
-  outside the initial browser canary scope.
+  add end-to-end local-agent recovery. Team orchestration, schedules,
+  checkpoints, and a dedicated `AGENTS.md` panel are outside the initial
+  browser canary scope.
 - Bundle the Python runtime, implement signed component/app updates, add Forge
   packaging, hardened-runtime entitlements, signing/notarization, canary/beta
   channels, and schema rollback.

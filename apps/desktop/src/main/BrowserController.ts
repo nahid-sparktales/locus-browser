@@ -36,6 +36,9 @@ import type {
   WorkAttachmentState,
   WorkConversationState,
   WorkMessage,
+  WorkModelOptionState,
+  WorkModelProviderId,
+  WorkModelState,
 } from "../shared/types.js";
 import { AgentRuntime, type AgentEvent } from "./AgentRuntime.js";
 import { BrowserDatabase, type StoredDownload, type StoredTab, type StoredTabGroup } from "./BrowserDatabase.js";
@@ -51,6 +54,16 @@ import {
   detectImageMimeType,
   type WorkImageMimeType,
 } from "./WorkAttachmentPolicy.js";
+import { promptForNativeSecret } from "./NativeSecretPrompt.js";
+import {
+  WORK_MODEL_PROVIDERS,
+  WorkModelProviderStore,
+  deduplicatedWorkModels,
+  normalizeProviderSetup,
+  publishedContextWindow,
+  workModelProvider,
+  type ConfigurableWorkModelProviderId,
+} from "./WorkModelProviders.js";
 
 const CHROME_HEIGHT = 92;
 const SIDEBAR_WIDTH = 248;
@@ -94,6 +107,51 @@ const AgentNewSessionSchema = z.object({
 const AgentConfigSchema = z.object({
   cwd: z.string(),
   session_info: AgentSessionInfoSchema,
+});
+const AgentProviderStateSchema = z.object({
+  provider: z.enum(["ollama", "remote", "chatgpt"]),
+  host: z.string().default(""),
+  model: z.string().default(""),
+  remote_base_url: z.string().default(""),
+  remote_model: z.string().default(""),
+  has_api_key: z.boolean().default(false),
+  account_label: z.string().default(""),
+});
+const AgentModelsSchema = z.object({
+  models: z.array(z.object({
+    name: z.string().min(1).max(1_024),
+    parameter_size: z.string().optional().default(""),
+    vision: z.boolean().nullish(),
+  })),
+  current: z.string().optional().default(""),
+});
+const LocalModelsSchema = z.object({
+  models: z.array(z.object({
+    name: z.string().min(1).max(1_024),
+    details: z.object({ parameter_size: z.string().optional() }).optional(),
+  })),
+});
+const ChatGPTAccountSchema = z.object({
+  status: z.string(),
+  runtime_available: z.boolean().default(false),
+  runtime_version: z.string().default(""),
+  email: z.string().nullish(),
+  plan_type: z.string().nullish(),
+  message: z.string().nullish(),
+});
+const ChatGPTModelsSchema = z.object({
+  status: z.string(),
+  models: z.array(z.object({
+    id: z.string().min(1).max(1_024),
+    display_name: z.string().default(""),
+    description: z.string().default(""),
+    is_default: z.boolean().default(false),
+  })).default([]),
+});
+const ChatGPTLoginSchema = z.object({
+  status: z.literal("signing_in"),
+  login_id: z.string(),
+  auth_url: z.string().url(),
 });
 
 interface TabRecord {
@@ -149,6 +207,7 @@ export class BrowserController {
   readonly #canDeleteProfile: ((profileId: string) => boolean) | undefined;
   readonly #database: BrowserDatabase;
   readonly #credentials: CredentialVault;
+  readonly #workModelProviders: WorkModelProviderStore;
   readonly #grants = new TabAccessRegistry();
   readonly #tabs = new Map<string, TabRecord>();
   readonly #groups = new Map<string, TabGroupState>();
@@ -181,6 +240,13 @@ export class BrowserController {
   #conversations: WorkConversationState[] = [];
   #workspacePath = "";
   #attachments = new Map<string, WorkAttachmentRecord>();
+  #workModel: WorkModelState = initialWorkModelState();
+  #workModelCatalogs = new Map<WorkModelProviderId, WorkModelOptionState[]>();
+  #chatGPTAccount = ChatGPTAccountSchema.parse({ status: "signed_out" });
+  #chatGPTPollTimer: NodeJS.Timeout | undefined;
+  #chatGPTPollStartedAt = 0;
+  #workModelSwitching = false;
+  #workModelMessage = "Loading model options…";
   #pendingPermission: PendingPermission | undefined;
   #pendingSitePermission: PendingSitePermission | undefined;
   #pendingCredential: PendingCredentialRecord | undefined;
@@ -200,6 +266,7 @@ export class BrowserController {
     this.#profileId = profile.id;
     this.#partitionName = profile.partitionName;
     this.#credentials = new CredentialVault(this.#database, electronCredentialCipher, this.#profileId);
+    this.#workModelProviders = new WorkModelProviderStore(this.#database, electronCredentialCipher, this.#profileId);
     this.#windowId = options.windowId ?? (this.#privateWindow ? `private-${randomUUID()}` : this.#profileId === "default" ? "primary" : `primary-${this.#profileId}`);
     this.#settings = this.#loadSettings();
     this.#runtime = new AgentRuntime(platformRoot, join(app.getPath("userData"), "agent"));
@@ -309,6 +376,7 @@ export class BrowserController {
         messages: this.#messages,
         conversations: this.#conversations,
         attachments: [...this.#attachments.values()].map(({ data: _data, ...attachment }) => attachment),
+        model: this.#workModel,
         ...(this.#workspacePath ? { workspace: { name: basename(this.#workspacePath) || this.#workspacePath, path: this.#workspacePath } } : {}),
         ...(this.#pendingPermission ? { pendingPermission: this.#pendingPermission } : {}),
       },
@@ -624,6 +692,21 @@ export class BrowserController {
       case "remove-work-attachment":
         this.#attachments.delete(command.attachmentId);
         break;
+      case "configure-work-provider":
+        await this.#configureWorkProvider(command.providerId, command.model, command.baseUrl);
+        break;
+      case "select-work-model":
+        await this.#selectWorkModel(command.providerId, command.model);
+        break;
+      case "start-chatgpt-login":
+        await this.#startChatGPTLogin();
+        break;
+      case "sign-out-chatgpt":
+        await this.#signOutChatGPT();
+        break;
+      case "refresh-work-models":
+        await this.#refreshWorkModelCatalogs(true);
+        break;
       case "work-send":
         this.#sendWorkMessage(command.text);
         break;
@@ -649,6 +732,7 @@ export class BrowserController {
     if (this.#disposed) return;
     clearTimeout(this.#saveTimer);
     clearInterval(this.#sleepTimer);
+    clearInterval(this.#chatGPTPollTimer);
     this.#persistNow();
     this.#disposed = true;
     this.#sync?.dispose();
@@ -1491,7 +1575,10 @@ export class BrowserController {
     this.#runtime.on("status", (status: { status: BrowserAppState["work"]["runtime"]; message: string }) => {
       this.#runtimeState = status.status;
       this.#runtimeMessage = status.message;
-      if (status.status === "online") void this.#refreshConversations();
+      if (status.status === "online") {
+        void this.#refreshConversations();
+        void this.#initializeWorkModels();
+      }
       this.#broadcast();
     });
     this.#runtime.on("event", (event: AgentEvent) => void this.#handleAgentEvent(event));
@@ -1499,6 +1586,11 @@ export class BrowserController {
 
   async #handleAgentEvent(event: AgentEvent): Promise<void> {
     const type = String(event.type ?? "");
+    if (type === "chatgpt_account_updated") {
+      await this.#refreshChatGPTState(true);
+      this.#broadcast();
+      return;
+    }
     if (type === "session_started") {
       const sessionInfo = event.session_info && typeof event.session_info === "object"
         ? event.session_info as Record<string, unknown>
@@ -1566,6 +1658,361 @@ export class BrowserController {
       this.#messages.push({ id: randomUUID(), role: "system", text: String(event.message ?? event.error ?? "Agent error") });
     }
     this.#broadcast();
+  }
+
+  async #initializeWorkModels(): Promise<void> {
+    this.#workModelSwitching = true;
+    this.#workModelMessage = "Loading model options…";
+    this.#rebuildWorkModelState();
+    this.#broadcast();
+    try {
+      await Promise.all([this.#refreshLocalModelCatalog(), this.#refreshChatGPTState(false)]);
+      const current = AgentProviderStateSchema.parse(await this.#runtime.provider());
+      const requestedProvider = this.#workModelProviders.activeProvider();
+      const stored = this.#workModelProviders.config(requestedProvider);
+      const fallbackModel = requestedProvider === "local" && current.provider === "ollama" ? current.model : "";
+      const requestedModel = stored?.model || fallbackModel || this.#modelsFor(requestedProvider)[0]?.id || "";
+      if (requestedProvider !== "local" && !this.#providerCanConnect(requestedProvider)) {
+        throw new Error(`${workModelProvider(requestedProvider).name} needs to be connected again`);
+      }
+      await this.#applyWorkModelRoute(requestedProvider, requestedModel);
+      this.#workModelMessage = "Model options are ready";
+    } catch (error) {
+      const reason = agentRequestError(error, "Could not restore the selected model");
+      try {
+        const localModel = this.#workModelProviders.config("local")?.model || this.#modelsFor("local")[0]?.id || "";
+        await this.#applyWorkModelRoute("local", localModel);
+        this.#workModelMessage = `${reason}. Using local models.`;
+      } catch {
+        this.#workModelMessage = reason;
+      }
+    } finally {
+      this.#workModelSwitching = false;
+      this.#rebuildWorkModelState();
+      this.#broadcast();
+    }
+  }
+
+  async #configureWorkProvider(
+    providerId: ConfigurableWorkModelProviderId,
+    model: string,
+    rawBaseUrl?: string,
+  ): Promise<void> {
+    if (this.#busy || this.#runtimeState !== "online" || this.#workModelSwitching) return;
+    const previousProvider = this.#workModelProviders.activeProvider();
+    const previousModel = this.#workModelProviders.config(previousProvider)?.model || this.#workModel.activeModel;
+    try {
+      const setup = normalizeProviderSetup(providerId, rawBaseUrl, model);
+      const definition = workModelProvider(providerId);
+      const savedKey = this.#workModelProviders.apiKey(providerId);
+      const enteredKey = await promptForNativeSecret({
+        title: `Connect ${definition.name}`,
+        message: providerId === "vllm"
+          ? `Enter this endpoint's API key. Leave it empty for a trusted local vLLM server that does not require one. The key stays encrypted on this Mac.`
+          : `Enter your ${definition.name} key. Leave it empty to keep the key already saved on this Mac. Locus Browser never exposes it to webpages or Work Mode.`,
+        confirmLabel: "Connect",
+      });
+      if (enteredKey === undefined) return;
+      const apiKey = enteredKey || savedKey;
+      if (definition.requiresApiKey && !apiKey) throw new Error(`${definition.name} requires an API key`);
+
+      this.#workModelSwitching = true;
+      this.#workModelMessage = `Connecting ${definition.name}…`;
+      this.#rebuildWorkModelState();
+      this.#broadcast();
+      const response = AgentProviderStateSchema.parse(await this.#runtime.configureProvider({
+        provider: "remote",
+        base_url: setup.baseUrl,
+        api_key: apiKey,
+        model: setup.model,
+        auth_style: definition.authStyle,
+        account_label: definition.name,
+        lists_models: definition.listsModels,
+        published_context_window: publishedContextWindow(providerId, setup.model) ?? 0,
+        verify: true,
+      }));
+      this.#workModelProviders.saveProvider(
+        providerId,
+        setup,
+        enteredKey ? enteredKey : savedKey ? undefined : "",
+      );
+      this.#workModelProviders.setActive(providerId);
+      await this.#refreshActiveAgentCatalog(providerId).catch(() => undefined);
+      this.#workModelMessage = `Using ${definition.shortName} · ${response.model || setup.model}`;
+    } catch (error) {
+      this.#workModelMessage = agentRequestError(error, "Could not connect that model provider");
+      await this.#applyWorkModelRoute(previousProvider, previousModel).catch(() => undefined);
+    } finally {
+      this.#workModelSwitching = false;
+      this.#rebuildWorkModelState();
+      this.#broadcast();
+    }
+  }
+
+  async #selectWorkModel(providerId: WorkModelProviderId, model: string): Promise<void> {
+    if (this.#busy || this.#runtimeState !== "online" || this.#workModelSwitching) return;
+    this.#workModelSwitching = true;
+    this.#workModelMessage = `Switching to ${model}…`;
+    this.#rebuildWorkModelState();
+    this.#broadcast();
+    try {
+      if (!this.#providerCanConnect(providerId)) {
+        const provider = workModelProvider(providerId);
+        throw new Error(providerId === "chatgpt-plan" ? "Sign in with ChatGPT first" : `Connect ${provider.name} first`);
+      }
+      await this.#applyWorkModelRoute(providerId, model);
+      await this.#refreshActiveAgentCatalog(providerId).catch(() => undefined);
+      this.#workModelMessage = `Using ${workModelProvider(providerId).shortName} · ${model}`;
+    } catch (error) {
+      this.#workModelMessage = agentRequestError(error, "Could not switch models");
+    } finally {
+      this.#workModelSwitching = false;
+      this.#rebuildWorkModelState();
+      this.#broadcast();
+    }
+  }
+
+  async #applyWorkModelRoute(providerId: WorkModelProviderId, requestedModel: string): Promise<void> {
+    const definition = workModelProvider(providerId);
+    const model = requestedModel.trim();
+    if (providerId === "local") {
+      const state = AgentProviderStateSchema.parse(await this.#runtime.configureProvider({ provider: "ollama" }));
+      const selected = model || state.model || this.#modelsFor("local")[0]?.id || "";
+      if (selected && selected !== state.model) await this.#runtime.setModel(selected);
+      this.#workModelProviders.saveProvider("local", { model: selected });
+      this.#workModelProviders.setActive("local");
+      return;
+    }
+    if (providerId === "chatgpt-plan") {
+      if (this.#chatGPTAccount.status !== "signed_in") throw new Error("Sign in with ChatGPT before selecting a plan model");
+      const selected = model || this.#modelsFor(providerId)[0]?.id || "";
+      if (!selected) throw new Error("The ChatGPT account did not report any models");
+      const state = AgentProviderStateSchema.parse(await this.#runtime.configureProvider({
+        provider: "chatgpt",
+        account_id: "locus-browser-chatgpt",
+        account_label: "ChatGPT Plan",
+        model: selected,
+      }));
+      this.#workModelProviders.saveProvider(providerId, { model: state.model || selected });
+      this.#workModelProviders.setActive(providerId);
+      return;
+    }
+    const config = this.#workModelProviders.config(providerId);
+    if (!config?.baseUrl) throw new Error(`Connect ${definition.name} before selecting a model`);
+    const apiKey = this.#workModelProviders.apiKey(providerId);
+    if (definition.requiresApiKey && !apiKey) throw new Error(`${definition.name} needs an API key`);
+    const selected = model || config.model;
+    if (!selected) throw new Error("Choose a model before switching providers");
+    const state = AgentProviderStateSchema.parse(await this.#runtime.configureProvider({
+      provider: "remote",
+      base_url: config.baseUrl,
+      api_key: apiKey,
+      model: selected,
+      auth_style: definition.authStyle,
+      account_label: definition.name,
+      lists_models: definition.listsModels,
+      published_context_window: publishedContextWindow(providerId, selected) ?? 0,
+    }));
+    this.#workModelProviders.saveProvider(providerId, { baseUrl: config.baseUrl, model: state.model || selected });
+    this.#workModelProviders.setActive(providerId);
+  }
+
+  async #startChatGPTLogin(): Promise<void> {
+    if (this.#busy || this.#runtimeState !== "online" || this.#workModelSwitching) return;
+    try {
+      const result = ChatGPTLoginSchema.parse(await this.#runtime.startChatGPTLogin());
+      await shell.openExternal(result.auth_url);
+      this.#chatGPTAccount = { ...this.#chatGPTAccount, status: "signing_in", message: "Finish signing in in the page that opened." };
+      this.#workModelMessage = "Finish signing in with ChatGPT, then return to Locus Browser";
+      clearInterval(this.#chatGPTPollTimer);
+      this.#chatGPTPollStartedAt = Date.now();
+      this.#chatGPTPollTimer = setInterval(() => {
+        if (Date.now() - this.#chatGPTPollStartedAt > 120_000) {
+          clearInterval(this.#chatGPTPollTimer);
+          this.#chatGPTPollTimer = undefined;
+          this.#workModelMessage = "ChatGPT sign-in is still pending. Use Refresh when it is complete.";
+          this.#rebuildWorkModelState();
+          this.#broadcast();
+          return;
+        }
+        void this.#refreshChatGPTState(true).then(() => {
+          this.#rebuildWorkModelState();
+          this.#broadcast();
+        });
+      }, 1_500);
+    } catch (error) {
+      this.#workModelMessage = agentRequestError(error, "Could not start ChatGPT sign-in");
+    }
+    this.#rebuildWorkModelState();
+  }
+
+  async #signOutChatGPT(): Promise<void> {
+    if (this.#busy || this.#runtimeState !== "online") return;
+    try {
+      this.#chatGPTAccount = ChatGPTAccountSchema.parse(await this.#runtime.signOutChatGPT());
+      this.#workModelCatalogs.delete("chatgpt-plan");
+      if (this.#workModelProviders.activeProvider() === "chatgpt-plan") {
+        const localModel = this.#workModelProviders.config("local")?.model || this.#modelsFor("local")[0]?.id || "";
+        await this.#applyWorkModelRoute("local", localModel);
+      }
+      this.#workModelMessage = "Signed out of ChatGPT Plan";
+    } catch (error) {
+      this.#workModelMessage = agentRequestError(error, "Could not sign out of ChatGPT");
+    }
+    this.#rebuildWorkModelState();
+  }
+
+  async #refreshWorkModelCatalogs(refreshChatGPT: boolean): Promise<void> {
+    if (this.#runtimeState !== "online" || this.#workModelSwitching) return;
+    this.#workModelMessage = "Refreshing model options…";
+    this.#rebuildWorkModelState();
+    this.#broadcast();
+    const activeProvider = this.#workModelProviders.activeProvider();
+    await Promise.all([
+      this.#refreshLocalModelCatalog(),
+      this.#refreshChatGPTState(refreshChatGPT),
+      ...(activeProvider === "local" || activeProvider === "chatgpt-plan"
+        ? []
+        : [this.#refreshActiveAgentCatalog(activeProvider)]),
+    ]);
+    this.#workModelMessage = "Model options refreshed";
+    this.#rebuildWorkModelState();
+  }
+
+  async #refreshLocalModelCatalog(): Promise<void> {
+    try {
+      const result = LocalModelsSchema.parse(await this.#runtime.localModels());
+      this.#workModelCatalogs.set("local", result.models.map((model) => ({
+        id: model.name,
+        name: model.name,
+        ...(model.details?.parameter_size ? { detail: model.details.parameter_size } : {}),
+      })));
+    } catch {
+      this.#workModelCatalogs.set("local", []);
+    }
+  }
+
+  async #refreshChatGPTState(refresh: boolean): Promise<void> {
+    try {
+      this.#chatGPTAccount = ChatGPTAccountSchema.parse(await this.#runtime.chatGPTAccount(refresh));
+      if (this.#chatGPTAccount.status === "signed_in") {
+        const models = ChatGPTModelsSchema.parse(await this.#runtime.chatGPTModels());
+        this.#workModelCatalogs.set("chatgpt-plan", models.models.map((model) => ({
+          id: model.id,
+          name: model.display_name || model.id,
+          ...(model.description ? { detail: model.description } : {}),
+        })));
+        clearInterval(this.#chatGPTPollTimer);
+        this.#chatGPTPollTimer = undefined;
+        this.#workModelMessage = "ChatGPT Plan is connected";
+      } else if (this.#chatGPTAccount.status === "runtime_unavailable") {
+        clearInterval(this.#chatGPTPollTimer);
+        this.#chatGPTPollTimer = undefined;
+      }
+    } catch (error) {
+      this.#chatGPTAccount = ChatGPTAccountSchema.parse({
+        status: "runtime_unavailable",
+        message: agentRequestError(error, "ChatGPT Plan is unavailable"),
+      });
+    }
+  }
+
+  async #refreshActiveAgentCatalog(providerId: WorkModelProviderId): Promise<void> {
+    if (providerId === "local") {
+      await this.#refreshLocalModelCatalog();
+      return;
+    }
+    if (providerId === "chatgpt-plan") {
+      await this.#refreshChatGPTState(false);
+      return;
+    }
+    if (this.#workModelProviders.activeProvider() !== providerId) return;
+    const result = AgentModelsSchema.parse(await this.#runtime.models());
+    const models = result.models
+      .filter((model) => modelMatchesProvider(providerId, model.name))
+      .map((model) => ({
+        id: model.name,
+        name: model.name,
+        ...(model.parameter_size ? { detail: model.parameter_size } : {}),
+        ...(typeof model.vision === "boolean" ? { vision: model.vision } : {}),
+      }));
+    if (models.length) this.#workModelCatalogs.set(providerId, models);
+  }
+
+  #providerCanConnect(providerId: WorkModelProviderId): boolean {
+    if (providerId === "local") return true;
+    if (providerId === "chatgpt-plan") return this.#chatGPTAccount.status === "signed_in";
+    const definition = workModelProvider(providerId);
+    const config = this.#workModelProviders.config(providerId);
+    return Boolean(config?.baseUrl && config.model && (!definition.requiresApiKey || this.#workModelProviders.hasApiKey(providerId)));
+  }
+
+  #modelsFor(providerId: WorkModelProviderId): WorkModelOptionState[] {
+    const definition = workModelProvider(providerId);
+    const configuredModel = this.#workModelProviders.config(providerId)?.model;
+    const values: WorkModelOptionState[] = [
+      ...(configuredModel ? [{ id: configuredModel, name: configuredModel }] : []),
+      ...(this.#workModelCatalogs.get(providerId) ?? []),
+      ...definition.curatedModels.map((name) => ({ id: name, name })),
+    ];
+    return deduplicatedWorkModels(values);
+  }
+
+  #rebuildWorkModelState(): void {
+    const activeProvider = this.#workModelProviders.activeProvider();
+    const activeModel = this.#workModelProviders.config(activeProvider)?.model || "";
+    const activeDefinition = workModelProvider(activeProvider);
+    this.#workModel = {
+      activeProvider,
+      activeModel,
+      label: activeModel ? `${activeDefinition.shortName} · ${activeModel}` : activeDefinition.shortName,
+      switching: this.#workModelSwitching,
+      providers: WORK_MODEL_PROVIDERS.map((definition) => {
+        const config = this.#workModelProviders.config(definition.id);
+        const models = this.#modelsFor(definition.id);
+        if (definition.id === "chatgpt-plan") {
+          const signedIn = this.#chatGPTAccount.status === "signed_in";
+          const signingIn = this.#chatGPTAccount.status === "signing_in";
+          const unavailable = this.#chatGPTAccount.status === "runtime_unavailable";
+          const accountDetail = [this.#chatGPTAccount.email, this.#chatGPTAccount.plan_type].filter(Boolean).join(" · ");
+          return {
+            id: definition.id,
+            name: definition.name,
+            detail: definition.detail,
+            mark: definition.mark,
+            configured: signedIn,
+            status: signingIn ? "signing-in" as const : signedIn ? "ready" as const : unavailable ? "unavailable" as const : "needs-sign-in" as const,
+            statusMessage: signingIn ? "Finish sign-in in your browser" : signedIn ? accountDetail || "Signed in" : this.#chatGPTAccount.message || "Sign in required",
+            models,
+          };
+        }
+        if (definition.id === "local") {
+          return {
+            id: definition.id,
+            name: definition.name,
+            detail: definition.detail,
+            mark: definition.mark,
+            configured: models.length > 0,
+            status: models.length ? "ready" as const : "unavailable" as const,
+            statusMessage: models.length ? `${models.length} installed` : "Ollama is unavailable or has no models",
+            models,
+          };
+        }
+        const configured = this.#providerCanConnect(definition.id);
+        return {
+          id: definition.id,
+          name: definition.name,
+          detail: definition.detail,
+          mark: definition.mark,
+          configured,
+          status: configured ? "ready" as const : definition.id === "vllm" ? "needs-setup" as const : "needs-key" as const,
+          statusMessage: configured ? definition.id === "vllm" ? "Endpoint saved on this Mac" : "Key saved on this Mac" : definition.id === "vllm" ? "Endpoint setup required" : "API key required",
+          models,
+          ...(config?.baseUrl ? { baseUrl: config.baseUrl } : {}),
+        };
+      }),
+      ...(this.#workModelMessage ? { message: this.#workModelMessage } : {}),
+    };
   }
 
   #sendWorkMessage(text: string): void {
@@ -1972,6 +2419,42 @@ export class BrowserController {
     this.#layout(true);
     return await new Promise((resolve) => this.#permissionWaiters.set(requestId, { resolve }));
   }
+}
+
+function initialWorkModelState(): WorkModelState {
+  return {
+    activeProvider: "local",
+    activeModel: "",
+    label: "Local",
+    switching: false,
+    providers: WORK_MODEL_PROVIDERS.map((provider) => ({
+      id: provider.id,
+      name: provider.name,
+      detail: provider.detail,
+      mark: provider.mark,
+      configured: false,
+      status: provider.id === "chatgpt-plan"
+        ? "needs-sign-in"
+        : provider.id === "vllm"
+          ? "needs-setup"
+          : provider.id === "local"
+            ? "unavailable"
+            : "needs-key",
+      statusMessage: "Loading…",
+      models: provider.curatedModels.map((name) => ({ id: name, name })),
+    })),
+    message: "Loading model options…",
+  };
+}
+
+function modelMatchesProvider(providerId: WorkModelProviderId, model: string): boolean {
+  const name = model.toLowerCase();
+  const excluded = ["embedding", "whisper", "tts", "dall-e", "audio", "realtime", "moderation", "image", "transcribe", "search", "sora"];
+  if (excluded.some((part) => name.includes(part))) return false;
+  if (providerId === "openai-api") return ["gpt-", "chatgpt-", "codex", "o1", "o3", "o4"].some((prefix) => name.startsWith(prefix));
+  if (providerId === "claude-api") return name.startsWith("claude");
+  if (providerId === "kimi") return name.startsWith("kimi") || name.startsWith("moonshot");
+  return providerId === "vllm";
 }
 
 function welcomeWorkMessage(): WorkMessage {

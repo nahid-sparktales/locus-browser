@@ -115,6 +115,21 @@ const previewState: BrowserAppState = {
     ],
     attachments: [],
     workspace: { name: "locus-browser", path: "/Users/nahid/Documents/locus-browser" },
+    model: {
+      activeProvider: "openai-api",
+      activeModel: "gpt-5.6",
+      label: "ChatGPT API · gpt-5.6",
+      switching: false,
+      message: "Model options are ready",
+      providers: [
+        { id: "chatgpt-plan", name: "ChatGPT Plan", detail: "Use included ChatGPT subscription usage", mark: "P", configured: false, status: "needs-sign-in", statusMessage: "Sign in required", models: [{ id: "gpt-5.3-codex", name: "gpt-5.3-codex" }] },
+        { id: "openai-api", name: "ChatGPT API", detail: "OpenAI API key and usage billing", mark: "O", configured: true, status: "ready", statusMessage: "Key saved on this Mac", models: [{ id: "gpt-5.6", name: "gpt-5.6" }, { id: "gpt-5", name: "gpt-5" }] },
+        { id: "kimi", name: "Kimi", detail: "Moonshot API models", mark: "K", configured: false, status: "needs-key", statusMessage: "API key required", models: [{ id: "kimi-k3", name: "kimi-k3" }] },
+        { id: "claude-api", name: "Claude API", detail: "Anthropic API key", mark: "C", configured: false, status: "needs-key", statusMessage: "API key required", models: [{ id: "claude-sonnet-5", name: "claude-sonnet-5" }] },
+        { id: "vllm", name: "vLLM", detail: "Your OpenAI-compatible endpoint", mark: "V", configured: false, status: "needs-setup", statusMessage: "Endpoint setup required", models: [] },
+        { id: "local", name: "Local Models", detail: "Models installed in Ollama", mark: "L", configured: true, status: "ready", statusMessage: "2 installed", models: [{ id: "qwen3.6:27b", name: "qwen3.6:27b", detail: "27.8B" }, { id: "gemma3:12b", name: "gemma3:12b", detail: "12.2B" }] },
+      ],
+    },
   },
 };
 
@@ -192,6 +207,41 @@ function applyPreviewCommand(command: BrowserCommand): void {
       break;
     case "remove-work-attachment":
       previewState.work.attachments = previewState.work.attachments.filter((attachment) => attachment.id !== command.attachmentId);
+      break;
+    case "configure-work-provider":
+    case "select-work-model": {
+      const provider = previewState.work.model.providers.find((item) => item.id === command.providerId);
+      if (provider) {
+        provider.configured = true;
+        provider.status = "ready";
+        provider.statusMessage = command.providerId === "vllm" ? "Endpoint saved on this Mac" : "Key saved on this Mac";
+        if (!provider.models.some((model) => model.id === command.model)) provider.models.unshift({ id: command.model, name: command.model });
+        if (command.type === "configure-work-provider" && command.baseUrl) provider.baseUrl = command.baseUrl;
+        previewState.work.model.activeProvider = command.providerId;
+        previewState.work.model.activeModel = command.model;
+        previewState.work.model.label = `${provider.name} · ${command.model}`;
+      }
+      break;
+    }
+    case "start-chatgpt-login": {
+      const provider = previewState.work.model.providers.find((item) => item.id === "chatgpt-plan");
+      if (provider) {
+        provider.status = "signing-in";
+        provider.statusMessage = "Finish sign-in in your browser";
+      }
+      break;
+    }
+    case "sign-out-chatgpt": {
+      const provider = previewState.work.model.providers.find((item) => item.id === "chatgpt-plan");
+      if (provider) {
+        provider.configured = false;
+        provider.status = "needs-sign-in";
+        provider.statusMessage = "Sign in required";
+      }
+      break;
+    }
+    case "refresh-work-models":
+      previewState.work.model.message = "Model options refreshed";
       break;
     case "toggle-bookmark":
       previewState.activePageBookmarked = !previewState.activePageBookmarked;

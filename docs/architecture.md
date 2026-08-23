@@ -29,6 +29,15 @@ content cross into the trusted renderer. Workspace changes originate in a
 native directory picker and are applied to the authenticated local session;
 remote pages and renderer-supplied paths cannot select a workspace.
 
+Model routing is also owned by the Electron broker. The Work renderer may
+select only a validated provider/model pair or supply normalized vLLM endpoint
+metadata. API keys are collected by a native macOS hidden-entry dialog, then
+encrypted with `safeStorage` and persisted per browser profile; no command or
+public browser state contains the secret. The broker applies fixed official
+endpoints and authentication styles for OpenAI, Kimi, and Anthropic, discovers
+Ollama models from the loopback service, and delegates ChatGPT Plan account and
+model state to the pinned local runtime component.
+
 Work image attachments are also admitted by the main-process broker. It checks
 count and byte budgets before loading data, verifies PNG/JPEG/GIF/WebP content
 signatures, and retains the encoded payload outside the renderer. The Work UI

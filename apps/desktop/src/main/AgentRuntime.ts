@@ -93,6 +93,50 @@ export class AgentRuntime extends EventEmitter {
     });
   }
 
+  async setModel(model: string): Promise<unknown> {
+    return await this.#requestJson("/api/config", {
+      method: "POST",
+      body: JSON.stringify({ model }),
+    });
+  }
+
+  async provider(): Promise<unknown> {
+    return await this.#requestJson("/api/provider");
+  }
+
+  async configureProvider(value: Record<string, unknown>): Promise<unknown> {
+    return await this.#requestJson("/api/provider", {
+      method: "POST",
+      body: JSON.stringify(value),
+    });
+  }
+
+  async models(): Promise<unknown> {
+    return await this.#requestJson("/api/models");
+  }
+
+  async localModels(): Promise<unknown> {
+    const response = await fetch("http://127.0.0.1:11434/api/tags", { signal: AbortSignal.timeout(5_000) });
+    if (!response.ok) throw new Error(`Local model service failed (${response.status})`);
+    return await response.json();
+  }
+
+  async chatGPTAccount(refresh = false): Promise<unknown> {
+    return await this.#requestJson(`/api/chatgpt/account${refresh ? "?refresh=true" : ""}`);
+  }
+
+  async chatGPTModels(): Promise<unknown> {
+    return await this.#requestJson("/api/chatgpt/models");
+  }
+
+  async startChatGPTLogin(): Promise<unknown> {
+    return await this.#requestJson("/api/chatgpt/login/start", { method: "POST", body: "{}" });
+  }
+
+  async signOutChatGPT(): Promise<unknown> {
+    return await this.#requestJson("/api/chatgpt/logout", { method: "POST", body: "{}" });
+  }
+
   async session(sessionId: string): Promise<unknown> {
     return await this.#requestJson(`/api/sessions/${encodeURIComponent(sessionId)}`);
   }

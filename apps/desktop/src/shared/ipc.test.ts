@@ -1,0 +1,26 @@
+import { describe, expect, it } from "vitest";
+import { BrowserCommandSchema } from "./ipc.js";
+
+describe("Work model commands", () => {
+  it("accepts the six model sources and validates configurable endpoints", () => {
+    for (const providerId of ["chatgpt-plan", "openai-api", "kimi", "claude-api", "vllm", "local"] as const) {
+      expect(BrowserCommandSchema.safeParse({ type: "select-work-model", providerId, model: "model-name" }).success).toBe(true);
+    }
+    expect(BrowserCommandSchema.safeParse({
+      type: "configure-work-provider",
+      providerId: "vllm",
+      baseUrl: "http://127.0.0.1:8000/v1",
+      model: "organization/model",
+    }).success).toBe(true);
+  });
+
+  it("strips credentials from renderer commands before they reach the broker", () => {
+    const parsed = BrowserCommandSchema.parse({
+      type: "configure-work-provider",
+      providerId: "openai-api",
+      model: "gpt-5.6",
+      apiKey: "sk-must-not-cross-ipc",
+    });
+    expect(parsed).not.toHaveProperty("apiKey");
+  });
+});

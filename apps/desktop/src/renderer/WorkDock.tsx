@@ -11,10 +11,14 @@ import {
   FolderOpen,
   GitBranch,
   ImageIcon,
+  KeyRound,
+  LogOut,
   MessageSquareText,
   Paperclip,
   RotateCcw,
+  RefreshCw,
   SendHorizontal,
+  Server,
   Share2,
   Shield,
   Sparkles,
@@ -24,7 +28,7 @@ import {
   X,
 } from "lucide-react";
 import type { BrowserCommand } from "../shared/ipc.js";
-import type { BrowserAppState, WorkMode, WorkPanel } from "../shared/types.js";
+import type { BrowserAppState, WorkMode, WorkModelProviderId, WorkModelProviderState, WorkPanel } from "../shared/types.js";
 import { useBrowserState } from "./useBrowserState.js";
 
 const panels: Array<{ id: WorkPanel; label: string; icon: React.ReactNode }> = [
@@ -44,6 +48,7 @@ const modes: Array<{ id: WorkMode; label: string }> = [
 
 export function WorkDock() {
   const state = useBrowserState();
+  const [modelOpen, setModelOpen] = useState(false);
   const resizing = useRef<{ startX: number; startWidth: number } | null>(null);
 
   if (!state) return <div className="dock-loading"><Sparkles size={20} /></div>;
@@ -78,6 +83,12 @@ export function WorkDock() {
             <div><span className="panel-icon">{panel.icon}</span><strong>{panel.label}</strong></div>
             <div className="panel-actions">
               <span className="solo-chip"><UserRound size={11} />Solo</span>
+              <div className="model-picker-wrap">
+                <button className="model-chip" type="button" aria-expanded={modelOpen} title={`Model: ${state.work.model.label}`} onClick={() => setModelOpen((open) => !open)}>
+                  <Bot size={12} /><span>{state.work.model.label}</span><ChevronDown size={11} />
+                </button>
+                {modelOpen ? <ModelPicker state={state} close={() => setModelOpen(false)} /> : null}
+              </div>
               <button className="new-conversation" type="button" title="New conversation" disabled={state.work.busy || state.work.runtime !== "online"} onClick={() => void command({ type: "new-work-conversation" })}><SquarePen size={14} /></button>
             </div>
           </div>
@@ -96,6 +107,115 @@ export function WorkDock() {
       </div>
     </div>
   );
+}
+
+function ModelPicker({ state, close }: { state: BrowserAppState; close: () => void }) {
+  const [providerId, setProviderId] = useState<WorkModelProviderId>(state.work.model.activeProvider);
+  const initialVllm = state.work.model.providers.find((provider) => provider.id === "vllm");
+  const [vllmUrl, setVllmUrl] = useState(initialVllm?.baseUrl ?? "http://127.0.0.1:8000/v1");
+  const [vllmModel, setVllmModel] = useState(initialVllm?.models[0]?.id ?? "");
+  const provider = state.work.model.providers.find((item) => item.id === providerId) ?? state.work.model.providers[0]!;
+  const disabled = state.work.busy || state.work.runtime !== "online" || state.work.model.switching;
+
+  const chooseModel = (model: string) => {
+    if (provider.id === "openai-api" || provider.id === "kimi" || provider.id === "claude-api") {
+      const type = provider.configured ? "select-work-model" as const : "configure-work-provider" as const;
+      void command({ type, providerId: provider.id, model });
+    } else {
+      void command({ type: "select-work-model", providerId: provider.id, model });
+    }
+    close();
+  };
+
+  const reconnectProvider = () => {
+    if (provider.id !== "openai-api" && provider.id !== "kimi" && provider.id !== "claude-api") return;
+    const model = provider.models.find((item) => item.id === state.work.model.activeModel)?.id ?? provider.models[0]?.id;
+    if (!model) return;
+    void command({ type: "configure-work-provider", providerId: provider.id, model });
+    close();
+  };
+
+  return (
+    <section className="model-popover" aria-label="Choose a model">
+      <header className="model-popover-header">
+        <div><strong>Model</strong><small>Solo agent</small></div>
+        <div>
+          <button type="button" aria-label="Refresh models" title="Refresh models" disabled={disabled} onClick={() => void command({ type: "refresh-work-models" })}><RefreshCw size={13} /></button>
+          <button type="button" aria-label="Close model picker" onClick={close}><X size={14} /></button>
+        </div>
+      </header>
+
+      <div className="model-provider-grid" role="radiogroup" aria-label="Model providers">
+        {state.work.model.providers.map((item) => (
+          <button key={item.id} type="button" role="radio" aria-checked={provider.id === item.id} className={provider.id === item.id ? "selected" : ""} onKeyDown={navigateModeRadio} onClick={() => setProviderId(item.id)}>
+            <span className="model-provider-mark">{item.mark}</span>
+            <span><strong>{item.name}</strong><small>{providerStatusLabel(item)}</small></span>
+            <i className={`provider-status-dot ${item.status}`} />
+          </button>
+        ))}
+      </div>
+
+      <div className="model-provider-detail">
+        <div className="model-provider-heading">
+          <span className="model-provider-mark large">{provider.mark}</span>
+          <span><strong>{provider.name}</strong><small>{provider.detail}</small></span>
+        </div>
+        <p className={`model-provider-status ${provider.status}`}>{provider.statusMessage}</p>
+
+        {provider.id === "chatgpt-plan" && provider.status !== "ready" ? (
+          <div className="model-setup-card">
+            <p>Use the models and included usage available through your ChatGPT subscription. This is separate from API billing.</p>
+            <button type="button" className="model-primary-action" disabled={disabled || provider.status === "signing-in" || provider.status === "unavailable"} onClick={() => void command({ type: "start-chatgpt-login" })}>
+              <KeyRound size={14} />{provider.status === "signing-in" ? "Waiting for sign-in…" : "Sign in with ChatGPT"}
+            </button>
+          </div>
+        ) : provider.id === "vllm" ? (
+          <div className="model-setup-card vllm-setup">
+            <label>Endpoint URL<input value={vllmUrl} onChange={(event) => setVllmUrl(event.target.value)} placeholder="http://127.0.0.1:8000/v1" /></label>
+            <label>Model name<input value={vllmModel} onChange={(event) => setVllmModel(event.target.value)} placeholder="organization/model" /></label>
+            <button type="button" className="model-primary-action" disabled={disabled || !vllmUrl.trim() || !vllmModel.trim()} onClick={() => {
+              void command({ type: "configure-work-provider", providerId: "vllm", baseUrl: vllmUrl, model: vllmModel });
+              close();
+            }}><Server size={14} />{provider.configured ? "Update endpoint" : "Connect endpoint"}</button>
+          </div>
+        ) : null}
+
+        {provider.models.length > 0 && (provider.id !== "chatgpt-plan" || provider.status === "ready") ? (
+          <div className="model-option-list" role="radiogroup" aria-label={`${provider.name} models`}>
+            {provider.models.map((model) => {
+              const selected = provider.id === state.work.model.activeProvider && model.id === state.work.model.activeModel;
+              return (
+                <button key={model.id} type="button" role="radio" aria-checked={selected} className={selected ? "selected" : ""} disabled={disabled || (provider.id === "vllm" && !provider.configured)} onKeyDown={navigateModeRadio} onClick={() => chooseModel(model.id)}>
+                  <span className="model-radio">{selected ? <Check size={12} /> : null}</span>
+                  <span><strong>{model.name}</strong>{model.name !== model.id ? <small>{model.id}</small> : model.detail ? <small>{model.detail}</small> : null}</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : provider.id !== "vllm" && provider.status === "ready" ? <p className="model-empty">No models were reported. Refresh to try again.</p> : null}
+
+        {(provider.id === "openai-api" || provider.id === "kimi" || provider.id === "claude-api") && provider.configured ? (
+          <button type="button" className="model-secondary-action" disabled={disabled} onClick={reconnectProvider}><KeyRound size={13} />Update API key</button>
+        ) : null}
+        {provider.id === "chatgpt-plan" && provider.status === "ready" ? (
+          <button type="button" className="model-secondary-action danger" disabled={disabled} onClick={() => void command({ type: "sign-out-chatgpt" })}><LogOut size={13} />Sign out</button>
+        ) : null}
+      </div>
+
+      <footer className="model-popover-foot"><span>{state.work.model.switching ? "Switching model…" : state.work.model.message}</span><small>Keys stay encrypted on this Mac</small></footer>
+    </section>
+  );
+}
+
+function providerStatusLabel(provider: WorkModelProviderState): string {
+  switch (provider.status) {
+    case "ready": return provider.id === "local" ? provider.statusMessage : "Ready";
+    case "needs-key": return "Add key";
+    case "needs-setup": return "Set up";
+    case "needs-sign-in": return "Sign in";
+    case "signing-in": return "Signing in";
+    case "unavailable": return "Unavailable";
+  }
 }
 
 function ChatPanel({ state, grantLevel }: { state: BrowserAppState; grantLevel: "read" | "interact" | undefined }) {

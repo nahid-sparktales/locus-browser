@@ -1,6 +1,7 @@
 import type { TabAccessGrant } from "@locus/protocol";
 
 export type WorkMode = "ask" | "work" | "plan" | "build";
+export type WorkModelProviderId = "chatgpt-plan" | "openai-api" | "kimi" | "claude-api" | "vllm" | "local";
 export type SidebarSection = "tabs" | "bookmarks" | "history" | "downloads" | "spaces" | "conversations" | "settings";
 export type SearchEngine = "duckduckgo" | "brave" | "google" | "bing";
 export type Appearance = "system" | "light" | "dark";
@@ -185,6 +186,34 @@ export interface WorkAttachmentState {
   size: number;
 }
 
+export interface WorkModelOptionState {
+  id: string;
+  name: string;
+  detail?: string;
+  vision?: boolean;
+}
+
+export interface WorkModelProviderState {
+  id: WorkModelProviderId;
+  name: string;
+  detail: string;
+  mark: string;
+  configured: boolean;
+  status: "ready" | "needs-key" | "needs-setup" | "needs-sign-in" | "signing-in" | "unavailable";
+  statusMessage: string;
+  models: WorkModelOptionState[];
+  baseUrl?: string;
+}
+
+export interface WorkModelState {
+  activeProvider: WorkModelProviderId;
+  activeModel: string;
+  label: string;
+  switching: boolean;
+  providers: WorkModelProviderState[];
+  message?: string;
+}
+
 export interface PendingPermission {
   requestId: string;
   tool: string;
@@ -201,6 +230,7 @@ export interface WorkState {
   messages: WorkMessage[];
   conversations: WorkConversationState[];
   attachments: WorkAttachmentState[];
+  model: WorkModelState;
   workspace?: WorkWorkspaceState;
   pendingPermission?: PendingPermission;
 }
