@@ -24,3 +24,15 @@ describe("Work model commands", () => {
     expect(parsed).not.toHaveProperty("apiKey");
   });
 });
+
+describe("Solo Work surface commands", () => {
+  it("bounds renderer-selected workspace paths", () => {
+    expect(BrowserCommandSchema.safeParse({ type: "select-work-change", path: "src/app.ts", staged: true }).success).toBe(true);
+    expect(BrowserCommandSchema.safeParse({ type: "select-work-file", path: "README.md" }).success).toBe(true);
+    expect(BrowserCommandSchema.safeParse({ type: "select-work-file", path: "x".repeat(2_049) }).success).toBe(false);
+  });
+
+  it.each(["request-work-plan", "approve-work-plan", "revise-work-plan", "refresh-work-changes", "refresh-work-files", "clear-work-terminal", "restart-work-runtime"])("accepts %s", (type) => {
+    expect(BrowserCommandSchema.safeParse({ type }).success).toBe(true);
+  });
+});

@@ -51,6 +51,16 @@ renderer. Conversation transcripts stay on the device. Closing the dock does
 not stop an active run, while Stop returns the UI to idle immediately and
 interrupts the agent at its next safe boundary.
 
+Plan, Changes, Files, and Terminal are now live solo-agent surfaces rather
+than placeholders. Plans show task progress and an explicit Build decision;
+Changes uses the shared runtime's structured Git status and per-file diffs;
+Files previews bounded UTF-8 workspace files while excluding secrets, binary
+artifacts, dependency/cache trees, and symlink escapes; Terminal shows the
+agent's permission-aware tool activity and bounded output. If the local agent
+stops, the browser retries three times and restores the saved conversation and
+workspace. A manual Reconnect action remains available after retries are
+exhausted.
+
 The model picker matches native Locus with ChatGPT Plan, ChatGPT API, Kimi,
 Claude API, vLLM/OpenAI-compatible endpoints, and models installed through
 Ollama. The active model is saved per browser profile. Provider keys are

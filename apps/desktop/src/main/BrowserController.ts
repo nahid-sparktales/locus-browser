@@ -34,11 +34,15 @@ import type {
   SidebarSection,
   TabGroupState,
   WorkAttachmentState,
+  WorkChangesState,
   WorkConversationState,
+  WorkFilesState,
   WorkMessage,
   WorkModelOptionState,
   WorkModelProviderId,
   WorkModelState,
+  WorkPlanState,
+  WorkTerminalEntryState,
 } from "../shared/types.js";
 import { AgentRuntime, type AgentEvent } from "./AgentRuntime.js";
 import { BrowserDatabase, type StoredDownload, type StoredTab, type StoredTabGroup } from "./BrowserDatabase.js";
@@ -64,6 +68,8 @@ import {
   workModelProvider,
   type ConfigurableWorkModelProviderId,
 } from "./WorkModelProviders.js";
+import { interruptRunningWorkTerminal, updateWorkPlan, updateWorkTerminal } from "./WorkSurfaceEvents.js";
+import { listWorkspaceFiles, readWorkspaceFile } from "./WorkWorkspaceBrowser.js";
 
 const CHROME_HEIGHT = 92;
 const SIDEBAR_WIDTH = 248;
@@ -152,6 +158,34 @@ const ChatGPTLoginSchema = z.object({
   status: z.literal("signing_in"),
   login_id: z.string(),
   auth_url: z.string().url(),
+});
+const AgentGitStatusSchema = z.object({
+  ok: z.boolean(),
+  is_repo: z.boolean(),
+  error: z.string().nullish(),
+  branch: z.string().nullish(),
+  detached: z.boolean().default(false),
+  ahead: z.number().int().nonnegative().default(0),
+  behind: z.number().int().nonnegative().default(0),
+  files: z.array(z.object({
+    path: z.string().min(1).max(2_048),
+    orig_path: z.string().nullish(),
+    status: z.string().max(80).default("modified"),
+    staged: z.boolean().default(false),
+    unstaged: z.boolean().default(false),
+    untracked: z.boolean().default(false),
+    binary: z.boolean().default(false),
+    additions: z.number().int().nonnegative().nullish(),
+    deletions: z.number().int().nonnegative().nullish(),
+  })).max(2_000).default([]),
+});
+const AgentGitDiffSchema = z.object({
+  ok: z.boolean(),
+  path: z.string().max(2_048),
+  binary: z.boolean().default(false),
+  truncated: z.boolean().default(false),
+  raw: z.string().max(220_000).default(""),
+  error: z.string().nullish(),
 });
 
 interface TabRecord {
@@ -247,6 +281,14 @@ export class BrowserController {
   #chatGPTPollStartedAt = 0;
   #workModelSwitching = false;
   #workModelMessage = "Loading model options…";
+  #workPlan: WorkPlanState | undefined;
+  #workChanges: WorkChangesState = initialWorkChangesState();
+  #workFiles: WorkFilesState = initialWorkFilesState();
+  #workTerminal: WorkTerminalEntryState[] = [];
+  #runtimeRecovery = { attempt: 0, retrying: false, canRetry: false };
+  #runtimeRecoveryTimer: NodeJS.Timeout | undefined;
+  #runtimeRecoverySessionId = "";
+  #restoringRuntimeSession = false;
   #pendingPermission: PendingPermission | undefined;
   #pendingSitePermission: PendingSitePermission | undefined;
   #pendingCredential: PendingCredentialRecord | undefined;
@@ -267,6 +309,11 @@ export class BrowserController {
     this.#partitionName = profile.partitionName;
     this.#credentials = new CredentialVault(this.#database, electronCredentialCipher, this.#profileId);
     this.#workModelProviders = new WorkModelProviderStore(this.#database, electronCredentialCipher, this.#profileId);
+    const lastWorkSessionId = this.#database.setting(this.#profileId, "lastWorkSessionId");
+    if (!this.#privateWindow && typeof lastWorkSessionId === "string" && lastWorkSessionId.trim()) {
+      this.#sessionId = lastWorkSessionId.trim();
+      this.#runtimeRecoverySessionId = this.#sessionId;
+    }
     this.#windowId = options.windowId ?? (this.#privateWindow ? `private-${randomUUID()}` : this.#profileId === "default" ? "primary" : `primary-${this.#profileId}`);
     this.#settings = this.#loadSettings();
     this.#runtime = new AgentRuntime(platformRoot, join(app.getPath("userData"), "agent"));
@@ -377,6 +424,11 @@ export class BrowserController {
         conversations: this.#conversations,
         attachments: [...this.#attachments.values()].map(({ data: _data, ...attachment }) => attachment),
         model: this.#workModel,
+        ...(this.#workPlan ? { plan: this.#workPlan } : {}),
+        changes: this.#workChanges,
+        files: this.#workFiles,
+        terminal: this.#workTerminal,
+        recovery: this.#runtimeRecovery,
         ...(this.#workspacePath ? { workspace: { name: basename(this.#workspacePath) || this.#workspacePath, path: this.#workspacePath } } : {}),
         ...(this.#pendingPermission ? { pendingPermission: this.#pendingPermission } : {}),
       },
@@ -676,6 +728,8 @@ export class BrowserController {
         break;
       case "set-work-panel":
         this.#workPanel = command.panel;
+        if (command.panel === "changes") await this.#refreshWorkChanges();
+        if (command.panel === "files") await this.#refreshWorkFiles();
         break;
       case "new-work-conversation":
         await this.#newWorkConversation();
@@ -685,6 +739,33 @@ export class BrowserController {
         break;
       case "choose-workspace":
         await this.#chooseWorkspace();
+        break;
+      case "request-work-plan":
+        this.#requestWorkPlan();
+        break;
+      case "approve-work-plan":
+        this.#approveWorkPlan();
+        break;
+      case "revise-work-plan":
+        this.#reviseWorkPlan();
+        break;
+      case "refresh-work-changes":
+        await this.#refreshWorkChanges();
+        break;
+      case "select-work-change":
+        await this.#selectWorkChange(command.path, command.staged ?? false);
+        break;
+      case "refresh-work-files":
+        await this.#refreshWorkFiles();
+        break;
+      case "select-work-file":
+        await this.#selectWorkFile(command.path);
+        break;
+      case "clear-work-terminal":
+        this.#workTerminal = [];
+        break;
+      case "restart-work-runtime":
+        await this.#restartWorkRuntime(true);
         break;
       case "choose-work-attachments":
         await this.#chooseWorkAttachments();
@@ -715,6 +796,7 @@ export class BrowserController {
         this.#runtime.send({ type: "interrupt" });
         this.#busy = false;
         this.#pendingPermission = undefined;
+        this.#workTerminal = interruptRunningWorkTerminal(this.#workTerminal);
         for (const message of this.#messages) {
           if (message.streaming) message.streaming = false;
         }
@@ -733,6 +815,7 @@ export class BrowserController {
     clearTimeout(this.#saveTimer);
     clearInterval(this.#sleepTimer);
     clearInterval(this.#chatGPTPollTimer);
+    clearTimeout(this.#runtimeRecoveryTimer);
     this.#persistNow();
     this.#disposed = true;
     this.#sync?.dispose();
@@ -1573,11 +1656,17 @@ export class BrowserController {
 
   #bindRuntime(): void {
     this.#runtime.on("status", (status: { status: BrowserAppState["work"]["runtime"]; message: string }) => {
-      this.#runtimeState = status.status;
-      this.#runtimeMessage = status.message;
       if (status.status === "online") {
-        void this.#refreshConversations();
-        void this.#initializeWorkModels();
+        clearTimeout(this.#runtimeRecoveryTimer);
+        this.#runtimeRecoveryTimer = undefined;
+        this.#runtimeState = "online";
+        this.#runtimeMessage = this.#runtimeRecoverySessionId ? "Restoring your conversation…" : status.message;
+        void this.#finishRuntimeConnection();
+      } else if (status.status === "offline") {
+        this.#handleRuntimeOffline(status.message);
+      } else {
+        this.#runtimeState = status.status;
+        this.#runtimeMessage = status.message;
       }
       this.#broadcast();
     });
@@ -1586,11 +1675,16 @@ export class BrowserController {
 
   async #handleAgentEvent(event: AgentEvent): Promise<void> {
     const type = String(event.type ?? "");
+    const nextPlan = updateWorkPlan(this.#workPlan, event);
+    if (nextPlan !== this.#workPlan) this.#workPlan = nextPlan;
+    const nextTerminal = updateWorkTerminal(this.#workTerminal, event);
+    if (nextTerminal !== this.#workTerminal) this.#workTerminal = nextTerminal;
     if (type === "chatgpt_account_updated") {
       await this.#refreshChatGPTState(true);
       this.#broadcast();
       return;
     }
+    if (this.#restoringRuntimeSession && (type === "session_started" || type === "session_info")) return;
     if (type === "session_started") {
       const sessionInfo = event.session_info && typeof event.session_info === "object"
         ? event.session_info as Record<string, unknown>
@@ -1600,11 +1694,16 @@ export class BrowserController {
       this.#workspacePath = String(sessionInfo?.cwd ?? event.cwd ?? "").trim();
       this.#messages = [welcomeWorkMessage()];
       this.#attachments.clear();
+      this.#workPlan = undefined;
+      this.#workTerminal = [];
+      this.#workChanges = initialWorkChangesState();
+      this.#workFiles = initialWorkFilesState();
       this.#workPanel = "chat";
       this.#pendingPermission = undefined;
       this.#busy = false;
       this.#stopRequested = false;
       await this.#refreshConversations();
+      if (this.#workspacePath) await Promise.all([this.#refreshWorkChanges(), this.#refreshWorkFiles()]);
       this.#broadcast();
       return;
     }
@@ -1619,7 +1718,9 @@ export class BrowserController {
       this.#broadcast();
       return;
     }
-    if (type === "browser_action_request") {
+    if (type === "workspace_changed") {
+      await Promise.all([this.#refreshWorkChanges(), this.#refreshWorkFiles()]);
+    } else if (type === "browser_action_request") {
       const parsed = BrowserActionRequestSchema.safeParse(event);
       if (!parsed.success) return;
       const result = await this.#executeBrowserAction(parsed.data);
@@ -1658,6 +1759,210 @@ export class BrowserController {
       this.#messages.push({ id: randomUUID(), role: "system", text: String(event.message ?? event.error ?? "Agent error") });
     }
     this.#broadcast();
+  }
+
+  #handleRuntimeOffline(message: string): void {
+    if (this.#disposed || this.#privateWindow) return;
+    const savedSessionId = this.#database.setting(this.#profileId, "lastWorkSessionId");
+    if (!this.#runtimeRecoverySessionId && typeof savedSessionId === "string") {
+      this.#runtimeRecoverySessionId = savedSessionId.trim();
+    }
+    this.#runtimeState = "offline";
+    this.#busy = false;
+    this.#pendingPermission = undefined;
+    this.#workTerminal = interruptRunningWorkTerminal(this.#workTerminal);
+    clearTimeout(this.#runtimeRecoveryTimer);
+    this.#runtimeRecoveryTimer = undefined;
+    if (this.#runtimeRecovery.attempt >= 3) {
+      this.#runtimeRecovery = { ...this.#runtimeRecovery, retrying: false, canRetry: true };
+      this.#runtimeMessage = `${message}. Reconnect when you are ready.`;
+      return;
+    }
+    const attempt = this.#runtimeRecovery.attempt + 1;
+    this.#runtimeRecovery = { attempt, retrying: true, canRetry: false };
+    this.#runtimeMessage = `${message}. Reconnecting (${attempt}/3)…`;
+    const delay = [750, 2_000, 5_000][attempt - 1] ?? 5_000;
+    this.#runtimeRecoveryTimer = setTimeout(() => void this.#restartWorkRuntime(false), delay);
+  }
+
+  async #restartWorkRuntime(manual: boolean): Promise<void> {
+    if (this.#disposed || this.#privateWindow) return;
+    clearTimeout(this.#runtimeRecoveryTimer);
+    this.#runtimeRecoveryTimer = undefined;
+    if (manual) this.#runtimeRecovery = { attempt: 1, retrying: true, canRetry: false };
+    this.#runtimeState = "starting";
+    this.#runtimeMessage = "Restarting the local agent…";
+    this.#broadcast();
+    try {
+      await this.#runtime.restart();
+    } catch (error) {
+      this.#handleRuntimeOffline(agentRequestError(error, "The local agent could not restart"));
+      this.#broadcast();
+    }
+  }
+
+  async #finishRuntimeConnection(): Promise<void> {
+    const recoverySessionId = this.#runtimeRecoverySessionId;
+    this.#restoringRuntimeSession = Boolean(recoverySessionId);
+    let recovered = false;
+    try {
+      if (recoverySessionId) {
+        const result = AgentSessionResultSchema.parse(await this.#runtime.resumeSession(recoverySessionId));
+        this.#applyRuntimeSession(result);
+        recovered = true;
+      }
+    } catch {
+      try {
+        const sessions = AgentSessionsSchema.parse(await this.#runtime.listSessions());
+        if (sessions.current) {
+          const fallback = AgentSessionResultSchema.parse(await this.#runtime.resumeSession(sessions.current));
+          this.#applyRuntimeSession(fallback);
+        } else {
+          const created = AgentNewSessionSchema.parse(await this.#runtime.newSession(this.#workspacePath));
+          this.#setSessionId(created.session_info.session_id);
+          this.#workspacePath = created.session_info.cwd.trim();
+        }
+        this.#messages.push({ id: randomUUID(), role: "system", text: "The previous conversation was unavailable, so Locus opened the latest recoverable chat." });
+      } catch {
+        this.#messages.push({ id: randomUUID(), role: "system", text: "The agent reconnected, but the previous conversation could not be restored." });
+      }
+    } finally {
+      this.#runtimeRecoverySessionId = "";
+      this.#restoringRuntimeSession = false;
+    }
+    this.#runtimeState = "online";
+    this.#runtimeRecovery = { attempt: 0, retrying: false, canRetry: false };
+    this.#runtimeMessage = recovered ? "Conversation recovered" : "Local agent ready";
+    await Promise.all([
+      this.#refreshConversations(),
+      this.#initializeWorkModels(),
+      ...(this.#workspacePath ? [this.#refreshWorkChanges(), this.#refreshWorkFiles()] : []),
+    ]);
+    this.#broadcast();
+  }
+
+  #applyRuntimeSession(result: z.infer<typeof AgentSessionResultSchema>): void {
+    this.#setSessionId(result.session_info.session_id);
+    this.#workspacePath = result.session_info.cwd.trim();
+    const messages = result.messages.map(agentWorkMessage).filter((message): message is WorkMessage => Boolean(message));
+    this.#messages = messages.length ? messages : [welcomeWorkMessage()];
+    this.#attachments.clear();
+    this.#pendingPermission = undefined;
+    this.#busy = false;
+    this.#stopRequested = false;
+  }
+
+  #requestWorkPlan(): void {
+    if (this.#busy || this.#runtimeState !== "online") return;
+    this.#workMode = "plan";
+    this.#workPanel = "chat";
+    this.#sendWorkMessage("Create a concise, decision-complete implementation plan for the current request and workspace.");
+  }
+
+  #approveWorkPlan(): void {
+    if (!this.#workPlan?.pendingApproval || this.#busy || this.#runtimeState !== "online") return;
+    this.#workPlan = { ...this.#workPlan, pendingApproval: false };
+    this.#workMode = "build";
+    this.#workPanel = "chat";
+    this.#sendWorkMessage("Implement the plan you just created, in order. Keep the task list updated as you complete each step.");
+  }
+
+  #reviseWorkPlan(): void {
+    if (!this.#workPlan) return;
+    this.#workPlan = { ...this.#workPlan, pendingApproval: false };
+    this.#workMode = "plan";
+    this.#workPanel = "chat";
+  }
+
+  async #refreshWorkChanges(): Promise<void> {
+    if (!this.#workspacePath) {
+      this.#workChanges = { ...initialWorkChangesState(), error: "Choose a workspace to review changes." };
+      return;
+    }
+    if (this.#runtimeState !== "online") return;
+    const selectedPath = this.#workChanges.selectedPath;
+    const selectedStaged = this.#workChanges.selectedStaged ?? false;
+    this.#workChanges = { ...this.#workChanges, loading: true, error: undefined };
+    this.#broadcast();
+    try {
+      const result = AgentGitStatusSchema.parse(await this.#runtime.gitStatus());
+      const files = result.files.map((file) => ({
+        path: file.path,
+        ...(file.orig_path ? { originalPath: file.orig_path } : {}),
+        status: file.status,
+        staged: file.staged,
+        unstaged: file.unstaged,
+        untracked: file.untracked,
+        binary: file.binary,
+        ...(typeof file.additions === "number" ? { additions: file.additions } : {}),
+        ...(typeof file.deletions === "number" ? { deletions: file.deletions } : {}),
+      }));
+      const keepSelection = selectedPath && files.some((file) => file.path === selectedPath);
+      this.#workChanges = {
+        loading: false,
+        isRepository: result.is_repo,
+        ...(result.branch ? { branch: result.branch } : {}),
+        detached: result.detached,
+        ahead: result.ahead,
+        behind: result.behind,
+        files,
+        ...(!result.ok || result.error ? { error: result.error || "Git status is unavailable" } : {}),
+      };
+      if (keepSelection) await this.#selectWorkChange(selectedPath, selectedStaged);
+    } catch (error) {
+      this.#workChanges = { ...initialWorkChangesState(), error: agentRequestError(error, "Could not load workspace changes") };
+    }
+  }
+
+  async #selectWorkChange(path: string, staged: boolean): Promise<void> {
+    if (this.#runtimeState !== "online" || !this.#workChanges.files.some((file) => file.path === path)) return;
+    this.#workChanges = { ...this.#workChanges, loading: true, selectedPath: path, selectedStaged: staged, error: undefined };
+    this.#broadcast();
+    try {
+      const result = AgentGitDiffSchema.parse(await this.#runtime.gitDiff(path, staged));
+      this.#workChanges = {
+        ...this.#workChanges,
+        loading: false,
+        selectedPath: path,
+        selectedStaged: staged,
+        diff: result.raw,
+        diffBinary: result.binary,
+        diffTruncated: result.truncated,
+        ...(!result.ok || result.error ? { error: result.error || "That diff is unavailable" } : {}),
+      };
+    } catch (error) {
+      this.#workChanges = { ...this.#workChanges, loading: false, error: agentRequestError(error, "Could not load that diff") };
+    }
+  }
+
+  async #refreshWorkFiles(): Promise<void> {
+    if (!this.#workspacePath) {
+      this.#workFiles = { ...initialWorkFilesState(), error: "Choose a workspace to browse files." };
+      return;
+    }
+    const selectedPath = this.#workFiles.selectedPath;
+    this.#workFiles = { ...this.#workFiles, loading: true, error: undefined };
+    this.#broadcast();
+    try {
+      const result = await listWorkspaceFiles(this.#workspacePath);
+      const keepSelection = selectedPath && result.entries.some((entry) => entry.path === selectedPath);
+      this.#workFiles = { loading: false, entries: result.entries, truncated: result.truncated };
+      if (keepSelection) await this.#selectWorkFile(selectedPath);
+    } catch (error) {
+      this.#workFiles = { ...initialWorkFilesState(), error: agentRequestError(error, "Could not browse that workspace") };
+    }
+  }
+
+  async #selectWorkFile(path: string): Promise<void> {
+    if (!this.#workspacePath || !this.#workFiles.entries.some((entry) => entry.path === path)) return;
+    this.#workFiles = { ...this.#workFiles, loading: true, selectedPath: path, error: undefined };
+    this.#broadcast();
+    try {
+      const result = await readWorkspaceFile(this.#workspacePath, path);
+      this.#workFiles = { ...this.#workFiles, loading: false, selectedPath: result.path, content: result.content, contentTruncated: result.truncated };
+    } catch (error) {
+      this.#workFiles = { ...this.#workFiles, loading: false, selectedPath: path, content: undefined, error: agentRequestError(error, "Could not preview that file") };
+    }
   }
 
   async #initializeWorkModels(): Promise<void> {
@@ -2045,12 +2350,17 @@ export class BrowserController {
       this.#workspacePath = result.session_info.cwd.trim();
       this.#messages = [welcomeWorkMessage()];
       this.#attachments.clear();
+      this.#workPlan = undefined;
+      this.#workTerminal = [];
+      this.#workChanges = initialWorkChangesState();
+      this.#workFiles = initialWorkFilesState();
       this.#pendingPermission = undefined;
       this.#stopRequested = false;
       this.#workPanel = "chat";
       this.#workOpen = true;
       this.#layout(true);
       await this.#refreshConversations();
+      if (this.#workspacePath) await Promise.all([this.#refreshWorkChanges(), this.#refreshWorkFiles()]);
     } catch (error) {
       this.#messages.push({ id: randomUUID(), role: "system", text: agentRequestError(error, "Could not start a new conversation") });
     }
@@ -2066,17 +2376,16 @@ export class BrowserController {
     }
     try {
       const result = AgentSessionResultSchema.parse(await this.#runtime.resumeSession(sessionId));
-      this.#setSessionId(result.session_info.session_id);
-      this.#workspacePath = result.session_info.cwd.trim();
-      const messages = result.messages.map(agentWorkMessage).filter((message): message is WorkMessage => Boolean(message));
-      this.#messages = messages.length ? messages : [welcomeWorkMessage()];
-      this.#attachments.clear();
-      this.#pendingPermission = undefined;
-      this.#stopRequested = false;
+      this.#applyRuntimeSession(result);
+      this.#workPlan = undefined;
+      this.#workTerminal = [];
+      this.#workChanges = initialWorkChangesState();
+      this.#workFiles = initialWorkFilesState();
       this.#workPanel = "chat";
       this.#workOpen = true;
       this.#layout(true);
       await this.#refreshConversations();
+      if (this.#workspacePath) await Promise.all([this.#refreshWorkChanges(), this.#refreshWorkFiles()]);
     } catch (error) {
       this.#messages.push({ id: randomUUID(), role: "system", text: agentRequestError(error, "Could not resume that conversation") });
     }
@@ -2116,6 +2425,9 @@ export class BrowserController {
       this.#setSessionId(config.session_info.session_id);
       this.#workspacePath = config.cwd.trim();
       await this.#refreshConversations();
+      this.#workChanges = initialWorkChangesState();
+      this.#workFiles = initialWorkFilesState();
+      await Promise.all([this.#refreshWorkChanges(), this.#refreshWorkFiles()]);
     } catch (error) {
       this.#messages.push({ id: randomUUID(), role: "system", text: agentRequestError(error, "Could not open that workspace") });
     }
@@ -2171,6 +2483,7 @@ export class BrowserController {
     if (!sessionId || sessionId === this.#sessionId) return;
     this.#grants.revokeSession(this.#sessionId);
     this.#sessionId = sessionId;
+    if (!this.#privateWindow) this.#database.setSetting(this.#profileId, "lastWorkSessionId", sessionId);
   }
 
   #answerPermission(requestId: string, decision: "allow" | "always" | "deny"): void {
@@ -2444,6 +2757,25 @@ function initialWorkModelState(): WorkModelState {
       models: provider.curatedModels.map((name) => ({ id: name, name })),
     })),
     message: "Loading model options…",
+  };
+}
+
+function initialWorkChangesState(): WorkChangesState {
+  return {
+    loading: false,
+    isRepository: false,
+    detached: false,
+    ahead: 0,
+    behind: 0,
+    files: [],
+  };
+}
+
+function initialWorkFilesState(): WorkFilesState {
+  return {
+    loading: false,
+    entries: [],
+    truncated: false,
   };
 }
 

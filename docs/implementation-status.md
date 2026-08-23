@@ -45,6 +45,14 @@ schedule, and orchestration surface from native Locus.
 - Durable local solo-agent conversations with new/resume actions, browser
   sidebar history, transcript restoration, streaming state, permission prompts,
   and immediate Stop feedback while cancellation reaches the runtime safely.
+- Runtime-backed Plan, Changes, Files, and Terminal surfaces: structured plan
+  approval/progress, live Git status and bounded per-file diffs, searchable
+  UTF-8 workspace previews, and a permission-aware agent tool timeline. The
+  file broker excludes secret-shaped paths, binary artifacts, dependency/cache
+  trees, path traversal, and symlink escapes before renderer exposure.
+- Automatic local-agent recovery with bounded backoff, a manual retry action,
+  profile-scoped active-session persistence, and exact conversation/workspace
+  restoration after either an agent crash or a full browser restart.
 - Native trusted-workspace selection bound to the local runtime session and
   preserved when starting or reopening a conversation.
 - Safe image attachments selected in the main process, checked by file size and
@@ -99,10 +107,8 @@ schedule, and orchestration surface from native Locus.
 - Load verified gallery extensions into profile sessions, add developer-mode
   UI, implement the supported MV3 shims, and ship compatibility/malware/update/
   rollback infrastructure.
-- Finish the useful solo adapters behind Plan, Changes, Files, and Terminal;
-  add end-to-end local-agent recovery. Team orchestration, schedules,
-  checkpoints, and a dedicated `AGENTS.md` panel are outside the initial
-  browser canary scope.
+- Team orchestration, schedules, checkpoints, and a dedicated `AGENTS.md`
+  panel remain outside the intentionally focused initial browser canary scope.
 - Bundle the Python runtime, implement signed component/app updates, add Forge
   packaging, hardened-runtime entitlements, signing/notarization, canary/beta
   channels, and schema rollback.

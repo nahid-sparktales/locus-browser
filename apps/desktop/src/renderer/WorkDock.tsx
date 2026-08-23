@@ -1,20 +1,24 @@
 import { useRef, useState } from "react";
 import {
+  AlertTriangle,
   Bot,
   Check,
   CheckCircle2,
   ChevronDown,
   CircleStop,
+  Clock3,
   ClipboardList,
   FileCode2,
   FileDiff,
   FolderOpen,
+  FolderTree,
   GitBranch,
   ImageIcon,
   KeyRound,
   LogOut,
   MessageSquareText,
   Paperclip,
+  Play,
   RotateCcw,
   RefreshCw,
   SendHorizontal,
@@ -24,6 +28,7 @@ import {
   Sparkles,
   SquarePen,
   TerminalSquare,
+  Trash2,
   UserRound,
   X,
 } from "lucide-react";
@@ -74,7 +79,7 @@ export function WorkDock() {
       <header className="dock-header">
         <div className="dock-title"><span className="locus-mark" aria-hidden="true">L</span><strong>Work</strong></div>
         <div className={`runtime-chip ${state.work.runtime}`}><span />{state.work.runtime === "online" ? "Ready" : state.work.runtime}</div>
-        <button className="dock-close" title="Hide Work Mode (⌘⌥L)" onClick={() => void command({ type: "toggle-work" })}><X size={16} /></button>
+        <button className="dock-close" type="button" title="Hide Work Mode (⌘⌥L)" onClick={() => void command({ type: "toggle-work" })}><X size={16} /></button>
       </header>
 
       <div className="dock-body">
@@ -93,7 +98,8 @@ export function WorkDock() {
             </div>
           </div>
 
-          {state.work.pendingPermission && <PermissionCard state={state} />}
+          {state.work.runtime !== "online" ? <RuntimeRecoveryBanner state={state} /> : null}
+          {state.work.pendingPermission ? <PermissionCard state={state} /> : null}
           {state.work.panel === "chat" ? <ChatPanel state={state} grantLevel={grant?.level} /> : <SurfacePanel panel={state.work.panel} state={state} />}
         </main>
 
@@ -237,14 +243,14 @@ function ChatPanel({ state, grantLevel }: { state: BrowserAppState; grantLevel: 
           <span>{grantLevel ? `Current tab · ${grantLevel}` : "Current tab is private to you"}</span>
         </div>
         <div className="share-wrap">
-          <button className={grantLevel ? "shared" : ""} onClick={() => setShareMenu((open) => !open)}>
+          <button className={grantLevel ? "shared" : ""} type="button" onClick={() => setShareMenu((open) => !open)}>
             {grantLevel ? <Shield size={13} /> : <Share2 size={13} />}{grantLevel ? "Shared" : "Share tab"}<ChevronDown size={11} />
           </button>
           {shareMenu && (
             <div className="share-menu">
-              <button onClick={() => { setShareMenu(false); void command({ type: "share-active-tab", level: "read" }); }}><span><strong>Read only</strong><small>Page text and screenshots</small></span>{grantLevel === "read" && <Check size={14} />}</button>
-              <button onClick={() => { setShareMenu(false); void command({ type: "share-active-tab", level: "interact" }); }}><span><strong>Allow interaction</strong><small>Click, type, scroll, and navigate</small></span>{grantLevel === "interact" && <Check size={14} />}</button>
-              {grantLevel && <button className="revoke" onClick={() => { setShareMenu(false); void command({ type: "revoke-active-tab" }); }}>Revoke access</button>}
+              <button type="button" onClick={() => { setShareMenu(false); void command({ type: "share-active-tab", level: "read" }); }}><span><strong>Read only</strong><small>Page text and screenshots</small></span>{grantLevel === "read" ? <Check size={14} /> : null}</button>
+              <button type="button" onClick={() => { setShareMenu(false); void command({ type: "share-active-tab", level: "interact" }); }}><span><strong>Allow interaction</strong><small>Click, type, scroll, and navigate</small></span>{grantLevel === "interact" ? <Check size={14} /> : null}</button>
+              {grantLevel ? <button className="revoke" type="button" onClick={() => { setShareMenu(false); void command({ type: "revoke-active-tab" }); }}>Revoke access</button> : null}
             </div>
           )}
         </div>
@@ -314,31 +320,123 @@ function PermissionCard({ state }: { state: BrowserAppState }) {
       <div className="permission-icon"><Shield size={17} /></div>
       <div className="permission-copy"><strong>{request.tool}</strong><p>{request.summary}</p></div>
       <div className="permission-actions">
-        <button onClick={() => void command({ type: "answer-permission", requestId: request.requestId, decision: "deny" })}>Deny</button>
-        <button onClick={() => void command({ type: "answer-permission", requestId: request.requestId, decision: "allow" })}>Allow once</button>
-        <button className="primary" onClick={() => void command({ type: "answer-permission", requestId: request.requestId, decision: "always" })}>Allow for run</button>
+        <button type="button" onClick={() => void command({ type: "answer-permission", requestId: request.requestId, decision: "deny" })}>Deny</button>
+        <button type="button" onClick={() => void command({ type: "answer-permission", requestId: request.requestId, decision: "allow" })}>Allow once</button>
+        <button className="primary" type="button" onClick={() => void command({ type: "answer-permission", requestId: request.requestId, decision: "always" })}>Allow for run</button>
       </div>
     </section>
   );
 }
 
-function SurfacePanel({ panel, state }: { panel: Exclude<WorkPanel, "chat">; state: BrowserAppState }) {
-  const workspaceName = state.work.workspace?.name;
-  const content: Record<Exclude<WorkPanel, "chat">, { title: string; text: string; icon: React.ReactNode; actions: string[] }> = {
-    plan: { title: "No plan yet", text: "Choose Plan mode and describe the outcome. Locus will present a decision-ready plan here for approval.", icon: <ClipboardList size={21} />, actions: ["Create a plan", "Review dependencies", "Approve before build"] },
-    changes: { title: "No workspace changes", text: "File diffs and hunk-level accept or revert actions appear as Locus edits your workspace.", icon: <FileDiff size={21} />, actions: ["Working tree clean", "Review each edit", "Git handoff ready"] },
-    files: { title: workspaceName ?? "Choose a workspace in Chat", text: state.work.workspace?.path ?? "Once a workspace is selected, browse files, inspect edits, and attach context without leaving the webpage.", icon: <FileCode2 size={21} />, actions: [workspaceName ? "Workspace ready" : "No workspace selected", "Search", "Image attachments"] },
-    terminal: { title: "Terminal is agent-owned", text: "Commands, dev servers, and their output stay isolated from webpages and stream here during a run.", icon: <TerminalSquare size={21} />, actions: [workspaceName ? `Workspace · ${workspaceName}` : "No workspace selected", "No dev server", "Shell access requires approval"] },
-  };
-  const item = content[panel];
+function RuntimeRecoveryBanner({ state }: { state: BrowserAppState }) {
   return (
-    <div className="surface-panel">
-      <div className="surface-hero"><span>{item.icon}</span><h2>{item.title}</h2><p>{item.text}</p></div>
-      <div className="surface-list">
-        {item.actions.map((action, index) => <div key={action}>{index === 0 ? <CheckCircle2 size={15} /> : index === 1 ? <GitBranch size={15} /> : <RotateCcw size={15} />}<span>{action}</span></div>)}
+    <section className={`runtime-recovery ${state.work.recovery.retrying ? "retrying" : ""}`} aria-live="assertive">
+      <AlertTriangle size={15} />
+      <span><strong>{state.work.recovery.retrying ? "Reconnecting local agent" : "Local agent is offline"}</strong><small>{state.work.runtimeMessage}</small></span>
+      {state.work.recovery.canRetry ? <button type="button" onClick={() => void command({ type: "restart-work-runtime" })}><RotateCcw size={12} />Reconnect</button> : null}
+    </section>
+  );
+}
+
+function SurfacePanel({ panel, state }: { panel: Exclude<WorkPanel, "chat">; state: BrowserAppState }) {
+  if (panel === "plan") return <PlanPanel state={state} />;
+  if (panel === "changes") return <ChangesPanel state={state} />;
+  if (panel === "files") return <FilesPanel state={state} />;
+  return <TerminalPanel state={state} />;
+}
+
+function PlanPanel({ state }: { state: BrowserAppState }) {
+  const plan = state.work.plan;
+  const disabled = state.work.busy || state.work.runtime !== "online";
+  if (!plan) {
+    return <EmptyWorkSurface icon={<ClipboardList size={22} />} title={state.work.busy && state.work.mode === "plan" ? "Planning…" : "No plan yet"} text="Ask the solo agent for a decision-ready plan, then approve it before any build work starts."><button type="button" disabled={disabled} onClick={() => void command({ type: "request-work-plan" })}><ClipboardList size={13} />Create a plan</button></EmptyWorkSurface>;
+  }
+  const completed = plan.steps.filter((step) => step.status === "completed").length;
+  return (
+    <div className="work-surface plan-surface">
+      <div className="work-surface-head">
+        <span><small>{plan.pendingApproval ? "READY FOR APPROVAL" : state.work.busy ? "IN PROGRESS" : "SAVED PLAN"}</small><strong>{plan.title}</strong></span>
+        <i>{completed}/{plan.steps.length}</i>
       </div>
+      {plan.summary ? <p className="plan-summary">{plan.summary}</p> : null}
+      <div className="plan-steps" role="list" aria-label="Plan steps">
+        {plan.steps.map((step, index) => <div key={`${index}-${step.content}`} role="listitem" className={step.status}>
+          <span>{step.status === "completed" ? <Check size={12} /> : step.status === "in_progress" ? <Clock3 size={12} /> : index + 1}</span>
+          <p>{step.content}</p>
+        </div>)}
+      </div>
+      {plan.tests.length ? <details className="plan-tests"><summary>Verification · {plan.tests.length}</summary>{plan.tests.map((test, index) => <p key={`${index}-${test}`}>{test}</p>)}</details> : null}
+      {plan.pendingApproval ? <div className="plan-decision"><button type="button" disabled={disabled} onClick={() => void command({ type: "revise-work-plan" })}>Keep planning</button><button type="button" className="primary" disabled={disabled} onClick={() => void command({ type: "approve-work-plan" })}><Play size={13} />Build this plan</button></div> : <button type="button" className="surface-secondary" disabled={disabled} onClick={() => void command({ type: "request-work-plan" })}>Create a new plan</button>}
     </div>
   );
+}
+
+function ChangesPanel({ state }: { state: BrowserAppState }) {
+  const changes = state.work.changes;
+  const selected = changes.files.find((file) => file.path === changes.selectedPath);
+  return (
+    <div className="work-surface changes-surface">
+      <div className="work-surface-head compact">
+        <span><small>{changes.isRepository ? changes.branch ?? "DETACHED HEAD" : "WORKSPACE"}</small><strong>{changes.loading ? "Refreshing changes…" : `${changes.files.length} changed ${changes.files.length === 1 ? "file" : "files"}`}</strong></span>
+        <button type="button" title="Refresh changes" aria-label="Refresh changes" disabled={changes.loading || state.work.runtime !== "online"} onClick={() => void command({ type: "refresh-work-changes" })}><RefreshCw size={13} /></button>
+      </div>
+      {changes.error ? <SurfaceNotice text={changes.error} /> : !changes.isRepository ? <EmptyWorkSurface icon={<GitBranch size={22} />} title="Git not detected" text="Choose a Git workspace to review the agent's edits here." /> : changes.files.length === 0 ? <EmptyWorkSurface icon={<CheckCircle2 size={22} />} title="Working tree clean" text="Edits made by the solo agent will appear here automatically." /> : <>
+        <div className="change-file-list">
+          {changes.files.map((file) => <button type="button" key={file.path} className={file.path === changes.selectedPath ? "selected" : ""} onClick={() => void command({ type: "select-work-change", path: file.path, staged: false })}>
+            <span className={`change-status ${file.status}`}>{file.status.slice(0, 1).toUpperCase()}</span><span><strong>{file.path}</strong><small>{file.staged ? "Staged" : file.untracked ? "Untracked" : file.status}{typeof file.additions === "number" ? ` · +${file.additions}` : ""}{typeof file.deletions === "number" ? ` −${file.deletions}` : ""}</small></span>
+          </button>)}
+        </div>
+        {selected ? <div className="diff-view">
+          <div className="diff-head"><strong>{selected.path}</strong>{selected.staged && selected.unstaged ? <span><button type="button" className={!changes.selectedStaged ? "active" : ""} onClick={() => void command({ type: "select-work-change", path: selected.path, staged: false })}>Working</button><button type="button" className={changes.selectedStaged ? "active" : ""} onClick={() => void command({ type: "select-work-change", path: selected.path, staged: true })}>Staged</button></span> : null}</div>
+          {changes.diffBinary ? <SurfaceNotice text="Binary file changed; no text diff is available." /> : changes.diff ? <pre>{changes.diff.split("\n").map((line, index) => <code key={index} className={line.startsWith("+") && !line.startsWith("+++") ? "added" : line.startsWith("-") && !line.startsWith("---") ? "removed" : line.startsWith("@@") ? "hunk" : ""}>{line || " "}{"\n"}</code>)}</pre> : <p className="surface-muted">Select a changed file to inspect its diff.</p>}
+          {changes.diffTruncated ? <small className="truncated-note">Diff preview was truncated for safety.</small> : null}
+        </div> : null}
+      </>}
+    </div>
+  );
+}
+
+function FilesPanel({ state }: { state: BrowserAppState }) {
+  const [query, setQuery] = useState("");
+  const files = state.work.files;
+  const visible = files.entries.filter((entry) => entry.path.toLowerCase().includes(query.trim().toLowerCase())).slice(0, 200);
+  return (
+    <div className="work-surface files-surface">
+      <div className="work-surface-head compact"><span><small>{state.work.workspace?.name ?? "WORKSPACE"}</small><strong>{files.loading ? "Loading files…" : `${files.entries.length} text files`}</strong></span><button type="button" title="Refresh files" aria-label="Refresh files" disabled={files.loading || !state.work.workspace} onClick={() => void command({ type: "refresh-work-files" })}><RefreshCw size={13} /></button></div>
+      {!state.work.workspace ? <EmptyWorkSurface icon={<FolderTree size={22} />} title="Choose a workspace" text="Select a trusted folder in Chat before browsing project files." /> : files.error ? <SurfaceNotice text={files.error} /> : <>
+        <label className="file-filter"><span>Filter files</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search paths" /></label>
+        <div className="workspace-file-list">
+          {visible.map((file) => <button type="button" key={file.path} className={file.path === files.selectedPath ? "selected" : ""} onClick={() => void command({ type: "select-work-file", path: file.path })}><FileCode2 size={13} /><span><strong>{file.path}</strong><small>{formatBytes(file.size)}</small></span></button>)}
+          {!visible.length ? <p className="surface-muted">No matching text files.</p> : null}
+        </div>
+        {files.selectedPath ? <div className="file-preview"><div><strong>{files.selectedPath}</strong></div>{files.content !== undefined ? <pre><code>{files.content}</code></pre> : <SurfaceNotice text={files.error ?? "Loading preview…"} />}{files.contentTruncated ? <small className="truncated-note">Preview limited to 512 KB.</small> : null}</div> : null}
+        {files.truncated ? <small className="truncated-note">File list limited to the first 600 safe text files.</small> : null}
+      </>}
+    </div>
+  );
+}
+
+function TerminalPanel({ state }: { state: BrowserAppState }) {
+  const entries = state.work.terminal;
+  return (
+    <div className="work-surface terminal-surface">
+      <div className="work-surface-head compact"><span><small>SOLO AGENT</small><strong>{entries.length ? `${entries.length} tool ${entries.length === 1 ? "run" : "runs"}` : "No tool activity"}</strong></span>{entries.length ? <button type="button" title="Clear activity" aria-label="Clear activity" onClick={() => void command({ type: "clear-work-terminal" })}><Trash2 size={13} /></button> : null}</div>
+      {!entries.length ? <EmptyWorkSurface icon={<TerminalSquare size={22} />} title="Agent activity appears here" text="Commands, dev servers, and tool output stream here while the solo agent works. Shell actions still require permission." /> : <div className="terminal-feed" aria-live="polite">
+        {entries.map((entry) => <article key={entry.id} className={entry.status}>
+          <header><span>{entry.status === "done" ? <Check size={11} /> : entry.status === "error" || entry.status === "denied" ? <X size={11} /> : <Clock3 size={11} />}</span><strong>{entry.tool}</strong><small>{entry.status}</small></header>
+          <p>{entry.summary}</p>{entry.detail ? <pre>{entry.detail}</pre> : null}{entry.result ? <pre className="result">{entry.result}</pre> : null}
+        </article>)}
+      </div>}
+    </div>
+  );
+}
+
+function EmptyWorkSurface({ icon, title, text, children }: { icon: React.ReactNode; title: string; text: string; children?: React.ReactNode }) {
+  return <div className="surface-empty"><span>{icon}</span><h2>{title}</h2><p>{text}</p>{children ? <div>{children}</div> : null}</div>;
+}
+
+function SurfaceNotice({ text }: { text: string }) {
+  return <p className="surface-notice"><AlertTriangle size={13} />{text}</p>;
 }
 
 async function command(value: BrowserCommand) {

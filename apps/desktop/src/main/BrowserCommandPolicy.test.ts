@@ -35,6 +35,10 @@ describe("browser command sender policy", () => {
     expect(requiresShellSender({ type: "select-work-model", providerId: "local", model: "qwen3.6:27b" })).toBe(false);
     expect(requiresShellSender({ type: "configure-work-provider", providerId: "openai-api", model: "gpt-5.6" })).toBe(false);
     expect(requiresShellSender({ type: "start-chatgpt-login" })).toBe(false);
+    expect(requiresShellSender({ type: "request-work-plan" })).toBe(false);
+    expect(requiresShellSender({ type: "select-work-change", path: "src/app.ts" })).toBe(false);
+    expect(requiresShellSender({ type: "select-work-file", path: "README.md" })).toBe(false);
+    expect(requiresShellSender({ type: "restart-work-runtime" })).toBe(false);
     expect(requiresShellSender({ type: "work-send", text: "Summarize this page" })).toBe(false);
   });
 });

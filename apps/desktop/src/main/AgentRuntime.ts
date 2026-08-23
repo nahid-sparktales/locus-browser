@@ -17,6 +17,8 @@ export class AgentRuntime extends EventEmitter {
   #token = "";
   #baseUrl = "";
   #stopping = false;
+  #generation = 0;
+  #reportedOfflineGeneration = 0;
 
   constructor(platformRoot: string, dataRoot: string) {
     super();
@@ -27,6 +29,8 @@ export class AgentRuntime extends EventEmitter {
   async start(): Promise<void> {
     if (this.#process || this.#socket) return;
     this.#stopping = false;
+    const generation = ++this.#generation;
+    this.#reportedOfflineGeneration = 0;
     this.#token = randomBytes(32).toString("base64url");
     const port = await availablePort();
     this.#baseUrl = `http://127.0.0.1:${port}`;
@@ -50,23 +54,27 @@ export class AgentRuntime extends EventEmitter {
     child.stdout.on("data", (chunk: Buffer) => this.emit("log", chunk.toString()));
     child.stderr.on("data", (chunk: Buffer) => this.emit("log", chunk.toString()));
     child.once("exit", (code) => {
+      if (generation !== this.#generation) return;
       this.#process = undefined;
       this.#socket = undefined;
-      if (!this.#stopping) {
-        this.emit("status", { status: "offline", message: `Local agent stopped (${code ?? "signal"})` });
-      }
+      this.#emitOffline(generation, `Local agent stopped (${code ?? "signal"})`);
     });
 
     try {
       await this.#waitForHealth(port);
-      await this.#connect(port);
+      if (generation !== this.#generation) return;
+      await this.#connect(port, generation);
     } catch (error) {
-      this.emit("status", {
-        status: "offline",
-        message: error instanceof Error ? error.message : "The local agent did not start",
-      });
-      this.stop();
+      if (generation === this.#generation) {
+        this.#emitOffline(generation, error instanceof Error ? error.message : "The local agent did not start");
+        this.stop();
+      }
     }
+  }
+
+  async restart(): Promise<void> {
+    this.stop();
+    await this.start();
   }
 
   send(message: Record<string, unknown>): boolean {
@@ -148,13 +156,25 @@ export class AgentRuntime extends EventEmitter {
     });
   }
 
+  async gitStatus(): Promise<unknown> {
+    return await this.#requestJson("/api/git/status?untracked=all");
+  }
+
+  async gitDiff(path: string, staged = false): Promise<unknown> {
+    const query = new URLSearchParams({ path, context: "3", max_bytes: "200000" });
+    if (staged) query.set("staged", "true");
+    return await this.#requestJson(`/api/git/diff?${query.toString()}`);
+  }
+
   stop(): void {
+    this.#generation += 1;
     this.#stopping = true;
     this.#socket?.close();
     this.#socket = undefined;
     this.#process?.kill("SIGTERM");
     this.#process = undefined;
     this.#baseUrl = "";
+    this.#token = "";
   }
 
   async #requestJson(path: string, init: RequestInit = {}): Promise<unknown> {
@@ -213,19 +233,25 @@ export class AgentRuntime extends EventEmitter {
     throw new Error("The local agent did not answer within 20 seconds");
   }
 
-  async #connect(port: number): Promise<void> {
+  async #connect(port: number, generation: number): Promise<void> {
     await new Promise<void>((resolvePromise, reject) => {
       const socket = new WebSocket(`ws://127.0.0.1:${port}/ws/chat`, {
         headers: { "X-Locus-Token": this.#token },
       });
       this.#socket = socket;
       socket.once("open", () => {
+        if (generation !== this.#generation) {
+          socket.close();
+          return;
+        }
         socket.send(JSON.stringify({ type: "set_browser_control", enabled: true }));
+        this.#reportedOfflineGeneration = 0;
         this.emit("status", { status: "online", message: "Local agent ready" });
         resolvePromise();
       });
-      socket.once("error", reject);
+      socket.once("error", (error) => generation === this.#generation ? reject(error) : resolvePromise());
       socket.on("message", (data) => {
+        if (generation !== this.#generation) return;
         try {
           this.emit("event", JSON.parse(data.toString()) as AgentEvent);
         } catch {
@@ -233,10 +259,17 @@ export class AgentRuntime extends EventEmitter {
         }
       });
       socket.on("close", () => {
+        if (generation !== this.#generation) return;
         this.#socket = undefined;
-        if (!this.#stopping) this.emit("status", { status: "offline", message: "Local agent disconnected" });
+        this.#emitOffline(generation, "Local agent disconnected");
       });
     });
+  }
+
+  #emitOffline(generation: number, message: string): void {
+    if (generation !== this.#generation || this.#stopping || this.#reportedOfflineGeneration === generation) return;
+    this.#reportedOfflineGeneration = generation;
+    this.emit("status", { status: "offline", message });
   }
 }
 

@@ -220,6 +220,82 @@ export interface PendingPermission {
   summary: string;
 }
 
+export interface WorkTodoState {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
+export interface WorkPlanState {
+  id: string;
+  title: string;
+  summary: string;
+  steps: WorkTodoState[];
+  tests: string[];
+  pendingApproval: boolean;
+}
+
+export interface WorkChangeFileState {
+  path: string;
+  originalPath?: string;
+  status: string;
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+  binary: boolean;
+  additions?: number;
+  deletions?: number;
+}
+
+export interface WorkChangesState {
+  loading: boolean;
+  isRepository: boolean;
+  branch?: string;
+  detached: boolean;
+  ahead: number;
+  behind: number;
+  files: WorkChangeFileState[];
+  selectedPath?: string;
+  selectedStaged?: boolean;
+  diff?: string;
+  diffBinary?: boolean;
+  diffTruncated?: boolean;
+  error?: string | undefined;
+}
+
+export interface WorkFileEntryState {
+  path: string;
+  name: string;
+  size: number;
+  modifiedAt: number;
+}
+
+export interface WorkFilesState {
+  loading: boolean;
+  entries: WorkFileEntryState[];
+  truncated: boolean;
+  selectedPath?: string;
+  content?: string | undefined;
+  contentTruncated?: boolean;
+  error?: string | undefined;
+}
+
+export interface WorkTerminalEntryState {
+  id: string;
+  tool: string;
+  summary: string;
+  detail: string;
+  status: "running" | "waiting" | "done" | "error" | "denied" | "interrupted";
+  result?: string;
+  startedAt: number;
+  finishedAt?: number;
+}
+
+export interface WorkRuntimeRecoveryState {
+  attempt: number;
+  retrying: boolean;
+  canRetry: boolean;
+}
+
 export interface WorkState {
   sessionId: string;
   mode: WorkMode;
@@ -231,6 +307,11 @@ export interface WorkState {
   conversations: WorkConversationState[];
   attachments: WorkAttachmentState[];
   model: WorkModelState;
+  plan?: WorkPlanState;
+  changes: WorkChangesState;
+  files: WorkFilesState;
+  terminal: WorkTerminalEntryState[];
+  recovery: WorkRuntimeRecoveryState;
   workspace?: WorkWorkspaceState;
   pendingPermission?: PendingPermission;
 }

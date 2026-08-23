@@ -130,6 +130,41 @@ const previewState: BrowserAppState = {
         { id: "local", name: "Local Models", detail: "Models installed in Ollama", mark: "L", configured: true, status: "ready", statusMessage: "2 installed", models: [{ id: "qwen3.6:27b", name: "qwen3.6:27b", detail: "27.8B" }, { id: "gemma3:12b", name: "gemma3:12b", detail: "12.2B" }] },
       ],
     },
+    plan: {
+      id: "preview-plan",
+      title: "Finish the solo browser workflow",
+      summary: "Connect the remaining Work panels to the local runtime and verify recovery.",
+      steps: [
+        { content: "Wire structured plan and change events", status: "completed" },
+        { content: "Add safe workspace file previews", status: "in_progress" },
+        { content: "Verify runtime recovery", status: "pending" },
+      ],
+      tests: ["Refresh a Git workspace", "Restart the local runtime"],
+      pendingApproval: false,
+    },
+    changes: {
+      loading: false,
+      isRepository: true,
+      branch: "main",
+      detached: false,
+      ahead: 0,
+      behind: 0,
+      files: [
+        { path: "apps/desktop/src/renderer/WorkDock.tsx", status: "modified", staged: false, unstaged: true, untracked: false, binary: false, additions: 42, deletions: 8 },
+      ],
+    },
+    files: {
+      loading: false,
+      truncated: false,
+      entries: [
+        { path: "README.md", name: "README.md", size: 5_120, modifiedAt: 1_787_408_000_000 },
+        { path: "apps/desktop/src/renderer/WorkDock.tsx", name: "WorkDock.tsx", size: 18_200, modifiedAt: 1_787_408_000_000 },
+      ],
+    },
+    terminal: [
+      { id: "preview-tool", tool: "bash", summary: "Run desktop tests", detail: "pnpm test", status: "done", result: "57 tests passed", startedAt: 1_787_408_000_000, finishedAt: 1_787_408_002_000 },
+    ],
+    recovery: { attempt: 0, retrying: false, canRetry: false },
   },
 };
 
@@ -183,6 +218,8 @@ function applyPreviewCommand(command: BrowserCommand): void {
       previewState.work.panel = "chat";
       previewState.work.messages = [{ id: `${id}-welcome`, role: "assistant", text: "Work Mode is ready. Share this tab when you want Locus to read or interact with it." }];
       previewState.work.attachments = [];
+      delete previewState.work.plan;
+      previewState.work.terminal = [];
       previewState.work.conversations = [
         { id, title: "New conversation", preview: "", updatedAt: Math.floor(Date.now() / 1_000), current: true },
         ...previewState.work.conversations.map((conversation) => ({ ...conversation, current: false })),
@@ -196,6 +233,40 @@ function applyPreviewCommand(command: BrowserCommand): void {
       break;
     case "choose-workspace":
       previewState.work.workspace = { name: "locus-browser", path: "/Users/nahid/Documents/locus-browser" };
+      break;
+    case "request-work-plan":
+      previewState.work.mode = "plan";
+      previewState.work.panel = "chat";
+      break;
+    case "approve-work-plan":
+      if (previewState.work.plan) previewState.work.plan.pendingApproval = false;
+      previewState.work.mode = "build";
+      previewState.work.panel = "chat";
+      break;
+    case "revise-work-plan":
+      if (previewState.work.plan) previewState.work.plan.pendingApproval = false;
+      previewState.work.mode = "plan";
+      previewState.work.panel = "chat";
+      break;
+    case "refresh-work-changes":
+    case "refresh-work-files":
+      break;
+    case "select-work-change":
+      previewState.work.changes.selectedPath = command.path;
+      previewState.work.changes.selectedStaged = command.staged ?? false;
+      previewState.work.changes.diff = "@@ -1,2 +1,3 @@\n import React from \"react\";\n+import { FileDiff } from \"lucide-react\";";
+      break;
+    case "select-work-file":
+      previewState.work.files.selectedPath = command.path;
+      previewState.work.files.content = command.path.endsWith("README.md") ? "# Locus Browser\n\nA browser-first sibling to Locus." : "export function WorkDock() {\n  return <div />;\n}";
+      break;
+    case "clear-work-terminal":
+      previewState.work.terminal = [];
+      break;
+    case "restart-work-runtime":
+      previewState.work.runtime = "online";
+      previewState.work.runtimeMessage = "Conversation recovered";
+      previewState.work.recovery = { attempt: 0, retrying: false, canRetry: false };
       break;
     case "choose-work-attachments":
       previewState.work.attachments = [...previewState.work.attachments, {

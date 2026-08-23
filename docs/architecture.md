@@ -45,6 +45,21 @@ receives only an opaque attachment ID, display name, media type, and size; the
 broker adds the verified payload only when sending to the authenticated local
 agent runtime.
 
+The secondary solo surfaces remain projections of privileged state rather
+than new authority boundaries. Plan and Terminal consume bounded agent events;
+Changes reads structured status and diffs through the authenticated runtime;
+Files accepts only a path already present in a main-process-generated workspace
+inventory. File reads re-check lexical and real-path containment, reject
+symlinks and secret-shaped or binary paths, and cap UTF-8 previews before any
+content reaches the renderer.
+
+The active agent session ID is stored per browser profile. An unexpected
+runtime exit clears pending execution UI, settles in-flight tool cards, retries
+with bounded backoff, and resumes that session over the new authenticated
+loopback connection. Stale process and socket callbacks are ignored through a
+runtime generation token, so a previous process cannot mark a replacement
+offline. The same restore path runs after a full browser restart.
+
 Site camera, microphone, location, notification, and clipboard requests are
 resolved by the main-process broker. Unknown decisions appear only in trusted
 browser chrome; allow/block choices are scoped to the active browser profile,
