@@ -5,6 +5,7 @@ import type { BrowserAppState } from "../shared/types.js";
 const previewParams = new URLSearchParams(window.location.search);
 const previewOnboarding = previewParams.has("onboarding");
 const previewCredential = previewParams.has("credential");
+const previewSync = previewParams.has("sync");
 
 const previewState: BrowserAppState = {
   windowId: "preview",
@@ -66,6 +67,10 @@ const previewState: BrowserAppState = {
   credentialSuggestions: [{ id: "demo-login", username: "nahid@example.com" }],
   savedCredentials: [{ id: "demo-login", origin: "https://github.com", username: "nahid@example.com", updatedAt: 1_787_408_000 }],
   passwordManagerAvailable: true,
+  sync: previewSync
+    ? { status: "connected", serviceUrl: "https://sync.locusbrowser.test", accountId: "account-preview", deviceId: "macbook-local", lastSyncedAt: 1_787_408_000, pendingRecords: 0 }
+    : { status: "disconnected", pendingRecords: 0 },
+  remoteTabs: previewSync ? [{ id: "ipad:tab-1", deviceId: "ipad-7d3e2a", title: "Locus protocol notes", url: "https://example.com/protocol", updatedAt: 1_787_408_000 }] : [],
   onboardingRequired: previewOnboarding,
   settings: { appearance: "system", searchEngine: "duckduckgo", sleepAfterMinutes: 30, downloadDirectory: "/Users/nahid/Downloads", onboardingComplete: !previewOnboarding },
   activePageBookmarked: true,
@@ -219,6 +224,18 @@ function applyPreviewCommand(command: BrowserCommand): void {
     case "delete-credential":
       previewState.savedCredentials = previewState.savedCredentials.filter((credential) => credential.id !== command.credentialId);
       previewState.credentialSuggestions = previewState.credentialSuggestions.filter((credential) => credential.id !== command.credentialId);
+      break;
+    case "begin-sync-registration":
+    case "begin-sync-sign-in":
+      previewState.sync = { status: "connecting", serviceUrl: command.serviceUrl, pendingRecords: 0 };
+      break;
+    case "sync-now":
+      if (previewState.sync.accountId) previewState.sync = { ...previewState.sync, status: "syncing" };
+      break;
+    case "disconnect-sync":
+    case "delete-sync-account":
+      previewState.sync = { status: "disconnected", pendingRecords: 0 };
+      previewState.remoteTabs = [];
       break;
     default:
       break;

@@ -37,6 +37,19 @@ selectable theme/download/sleep settings, profile-scoped OS-encrypted password
 save/autofill, media controls, and protected wake-on-select tab sleeping. Its
 light and dark surfaces use the same semantic palette as native Locus.
 
+Optional Locus encrypted sync now provides passkey accounts and client-side
+encrypted bookmarks, history, tab groups, ordinary web tabs, selected settings,
+and curated extension metadata. Sync keys stay protected by the operating
+system, and a newly generated recovery key is shown once in a native dialog.
+Passwords, cookies, downloads, workspaces, conversations, memory, provider
+credentials, and run records remain local. For local development, start the
+sync stack and point the desktop UI at it with `VITE_LOCUS_SYNC_URL`:
+
+```bash
+docker compose -f compose.sync.yaml up --build
+VITE_LOCUS_SYNC_URL=http://localhost:8787 pnpm dev:desktop
+```
+
 For renderer-only UI work, `pnpm --filter @locus/browser-desktop exec vite`
 opens a safe local preview with representative browser state. Production file
 builds never install that preview bridge; they require the sandboxed Electron

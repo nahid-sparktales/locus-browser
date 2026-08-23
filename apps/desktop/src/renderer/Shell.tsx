@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bookmark, Bot, Check, ChevronDown,
-  CircleAlert, Clock3, Download, EyeOff, FileDown, Globe2, History,
-  KeyRound, Layers3, LayoutList, LockKeyhole, Minus, Monitor, Moon, MoreHorizontal, PanelLeft,
+  CircleAlert, Clock3, Cloud, CloudOff, Download, EyeOff, FileDown, Globe2, History,
+  KeyRound, Laptop, Layers3, LayoutList, LockKeyhole, LogIn, LogOut, Minus, Monitor, Moon, MoreHorizontal, PanelLeft,
   Pause, Play, Plus, Printer, RefreshCw, Search, Settings, ShieldCheck,
   Sparkles, Square, Sun, UserRound, UsersRound, Volume2, VolumeX, X,
 } from "lucide-react";
@@ -16,6 +16,7 @@ const searchProviders: Array<{ id: SearchEngine; name: string; detail: string; m
   { id: "google", name: "Google", detail: "Familiar results", mark: "G" },
   { id: "bing", name: "Bing", detail: "Microsoft search", mark: "B" },
 ];
+const defaultSyncService = import.meta.env.VITE_LOCUS_SYNC_URL ?? "http://localhost:8787";
 
 export function Shell() {
   const state = useBrowserState();
@@ -494,6 +495,16 @@ function TabsPanel({ state }: { state: BrowserAppState }) {
         })}
         {ungrouped.map((tab) => <SidebarTabRow key={tab.id} state={state} tab={tab} />)}
       </div>
+      {state.remoteTabs.length > 0 && (
+        <section className="remote-tabs">
+          <div className="sidebar-heading"><span>Other devices</span><span>{state.remoteTabs.length}</span></div>
+          {state.remoteTabs.map((tab) => (
+            <button className="remote-tab-row" key={tab.id} onClick={() => void command({ type: "open-library-item", url: tab.url })}>
+              <Laptop size={13} /><span><strong>{tab.title}</strong><small>{safeHostname(tab.url)} · {shortDevice(tab.deviceId)}</small></span><ArrowRight size={11} />
+            </button>
+          ))}
+        </section>
+      )}
     </>
   );
 }
@@ -537,6 +548,7 @@ function SettingsPanel({ state }: { state: BrowserAppState }) {
       <SettingRow label="Downloads" detail={state.settings.downloadDirectory}>
         <button onClick={() => void command({ type: "choose-download-directory" })}>Choose folder…</button>
       </SettingRow>
+      {!state.privateWindow && <SyncSettings state={state} />}
       <div className="settings-subheading">Profiles</div>
       {state.profiles.map((profile) => (
         <div className="permission-setting" key={profile.id}>
@@ -562,6 +574,68 @@ function SettingsPanel({ state }: { state: BrowserAppState }) {
         </div>
       )) : <p className="settings-empty">Sites you allow or block will appear here.</p>}
     </div>
+  );
+}
+
+function SyncSettings({ state }: { state: BrowserAppState }) {
+  const [serviceUrl, setServiceUrl] = useState(state.sync.serviceUrl ?? defaultSyncService);
+  const [recoveryKey, setRecoveryKey] = useState("");
+  const [showSignIn, setShowSignIn] = useState(false);
+  const [formError, setFormError] = useState<string>();
+  const busy = state.sync.status === "connecting" || state.sync.status === "syncing";
+  const connected = Boolean(state.sync.accountId);
+  const run = async (action: () => Promise<unknown>) => {
+    setFormError(undefined);
+    try { await action(); } catch (error) { setFormError(error instanceof Error ? error.message : "Sync request failed"); }
+  };
+  const register = (event: React.FormEvent) => {
+    event.preventDefault();
+    void run(() => command({ type: "begin-sync-registration", displayName: state.currentProfile.name, serviceUrl }));
+  };
+  const signIn = (event: React.FormEvent) => {
+    event.preventDefault();
+    void run(() => command({ type: "begin-sync-sign-in", recoveryKey, serviceUrl }));
+  };
+  return (
+    <section className="sync-settings" aria-labelledby="sync-settings-title">
+      <div className="settings-subheading" id="sync-settings-title">Locus encrypted sync</div>
+      {connected ? (
+        <div className="sync-card">
+          <div className="sync-card-heading">
+            <span className={`sync-status-icon ${state.sync.status}`}><Cloud size={15} /></span>
+            <span><strong>{state.sync.status === "syncing" ? "Syncing…" : state.sync.status === "error" ? "Sync needs attention" : "End-to-end encrypted"}</strong>
+              <small>{state.sync.lastSyncedAt ? `Last synced ${formatTime(state.sync.lastSyncedAt)}` : "Ready for its first sync"}</small></span>
+          </div>
+          {state.sync.lastError && <p className="sync-error" role="alert">{state.sync.lastError}</p>}
+          <p className="sync-privacy">Bookmarks, history, tab groups, open web tabs, selected settings, and gallery extension metadata. Never passwords, cookies, downloads, workspaces, or Locus sessions.</p>
+          <div className="sync-actions">
+            <button className="primary" disabled={busy} onClick={() => void command({ type: "sync-now" })}><Cloud size={12} /> Sync now{state.sync.pendingRecords ? ` · ${state.sync.pendingRecords}` : ""}</button>
+            <button disabled={busy} onClick={() => disconnectSync()}><LogOut size={12} /> Disconnect</button>
+          </div>
+          <details className="sync-danger">
+            <summary>Cloud data controls</summary>
+            <p>Deleting cloud data keeps this Mac connected. Local data can upload again on a later sync.</p>
+            <div className="sync-actions">
+              <button disabled={busy} onClick={() => deleteSyncCloudData()}><CloudOff size={12} /> Delete cloud data</button>
+              <button className="danger" disabled={busy} onClick={() => deleteSyncAccount()}><X size={12} /> Delete account</button>
+            </div>
+          </details>
+        </div>
+      ) : (
+        <div className="sync-card">
+          <div className="sync-card-heading"><span className="sync-status-icon"><ShieldCheck size={15} /></span><span><strong>Optional and private</strong><small>A passkey protects your account. Locus cannot decrypt your browser data.</small></span></div>
+          <form className="sync-form" onSubmit={showSignIn ? signIn : register}>
+            <label><span>Sync service</span><input type="url" required value={serviceUrl} onChange={(event) => setServiceUrl(event.target.value)} placeholder="https://sync.example.com" /></label>
+            {showSignIn && <label><span>Recovery key</span><textarea required rows={3} value={recoveryKey} onChange={(event) => setRecoveryKey(event.target.value)} placeholder="LOCUS-…" autoComplete="off" spellCheck={false} /></label>}
+            {(formError || state.sync.lastError) && <p className="sync-error" role="alert">{formError ?? state.sync.lastError}</p>}
+            <button className="sync-connect primary" type="submit" disabled={busy}>{showSignIn ? <LogIn size={13} /> : <KeyRound size={13} />}{busy ? "Waiting for passkey…" : showSignIn ? "Sign in with passkey" : "Create sync account"}</button>
+          </form>
+          <button className="sync-switch" disabled={busy} onClick={() => { setShowSignIn((value) => !value); setFormError(undefined); }}>
+            {showSignIn ? "Create a new account" : "Already use Locus Sync? Sign in"}
+          </button>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -619,6 +693,22 @@ function navigateRadioGroup(event: React.KeyboardEvent<HTMLButtonElement>): void
 
 function safeHostname(origin: string): string {
   try { return new URL(origin).hostname || origin; } catch { return origin; }
+}
+
+function shortDevice(deviceId: string): string {
+  return `Device ${deviceId.slice(0, 6)}`;
+}
+
+function disconnectSync(): void {
+  if (window.confirm("Disconnect sync from this profile? Local browser data will stay on this Mac.")) void command({ type: "disconnect-sync" });
+}
+
+function deleteSyncCloudData(): void {
+  if (window.confirm("Delete all encrypted browser data stored in the cloud? It can upload again if this profile remains connected.")) void command({ type: "delete-sync-cloud-data" });
+}
+
+function deleteSyncAccount(): void {
+  if (window.confirm("Permanently delete this sync account, its devices, passkeys, and all encrypted cloud data? Local browser data will stay on this Mac.")) void command({ type: "delete-sync-account" });
 }
 
 function formatTime(timestamp: number): string {

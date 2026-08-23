@@ -6,6 +6,7 @@ import {
   BrowserWindow,
   WebContentsView,
   app,
+  clipboard,
   dialog,
   nativeTheme,
   session,
@@ -39,6 +40,7 @@ import { credentialAutofillInvocation, credentialObserverSource, parseCredential
 import { electronCredentialCipher } from "./ElectronCredentialCipher.js";
 import { TabAccessRegistry } from "./TabAccessRegistry.js";
 import { canSleepTab, shouldSleepTab } from "./TabSleepingPolicy.js";
+import { SyncAccountManager } from "./SyncAccountManager.js";
 
 const CHROME_HEIGHT = 92;
 const SIDEBAR_WIDTH = 248;
@@ -107,6 +109,7 @@ export class BrowserController {
   readonly #tabs = new Map<string, TabRecord>();
   readonly #groups = new Map<string, TabGroupState>();
   readonly #runtime: AgentRuntime;
+  readonly #sync: SyncAccountManager | undefined;
   readonly #permissionWaiters = new Map<string, BrowserPermissionWaiter>();
   readonly #sitePermissionWaiters = new Map<string, SitePermissionWaiter>();
   readonly #oneTimeSitePermissions = new Set<string>();
@@ -181,6 +184,16 @@ export class BrowserController {
     this.window.on("close", () => this.#persistNow());
     this.window.on("closed", () => this.dispose());
 
+    this.#sync = this.#privateWindow ? undefined : new SyncAccountManager({
+      database: this.#database,
+      cipher: electronCredentialCipher,
+      profileId: this.#profileId,
+      parent: this.window,
+      onChanged: () => this.#broadcast(),
+      onDataApplied: () => this.#applySyncedData(),
+      onRecoveryKey: (key) => void this.#showSyncRecoveryKey(key),
+    });
+
     this.#configureProfileSession();
     this.#restoreTabs();
     if (this.#privateWindow) {
@@ -231,6 +244,8 @@ export class BrowserController {
       credentialSuggestions,
       savedCredentials: this.#credentials.list(),
       passwordManagerAvailable: this.#credentials.available(),
+      sync: this.#sync?.state() ?? { status: "disconnected", pendingRecords: 0 },
+      remoteTabs: this.#sync?.remoteTabs() ?? [],
       onboardingRequired: !this.#privateWindow && !this.#settings.onboardingComplete,
       settings: this.#settings,
       activePageBookmarked: Boolean(!this.#privateWindow && activeUrl && this.#database.bookmarkForUrl(this.#profileId, activeUrl)),
@@ -477,6 +492,25 @@ export class BrowserController {
       case "delete-credential":
         this.#credentials.delete(command.credentialId, true);
         break;
+      case "begin-sync-registration":
+        this.#sync?.beginRegistration(command.displayName, command.serviceUrl);
+        break;
+      case "begin-sync-sign-in":
+        this.#sync?.beginSignIn(command.recoveryKey, command.serviceUrl);
+        break;
+      case "sync-now":
+        this.#persistNow();
+        this.#sync?.syncNow();
+        break;
+      case "disconnect-sync":
+        this.#sync?.disconnect();
+        break;
+      case "delete-sync-cloud-data":
+        await this.#sync?.deleteCloudData();
+        break;
+      case "delete-sync-account":
+        await this.#sync?.deleteAccount();
+        break;
       case "toggle-work":
         if (this.#privateWindow) break;
         this.#workOpen = !this.#workOpen;
@@ -526,6 +560,7 @@ export class BrowserController {
     clearInterval(this.#sleepTimer);
     this.#persistNow();
     this.#disposed = true;
+    this.#sync?.dispose();
     this.#runtime.stop();
     this.#grants.revokeSession(this.#sessionId);
     for (const download of this.#activeDownloads.values()) download.cancel();
@@ -956,7 +991,32 @@ export class BrowserController {
   #scheduleSave(): void {
     if (this.#disposed) return;
     clearTimeout(this.#saveTimer);
-    this.#saveTimer = setTimeout(() => this.#persistNow(), 150);
+    this.#saveTimer = setTimeout(() => {
+      this.#persistNow();
+      this.#sync?.scheduleSync();
+    }, 150);
+  }
+
+  #applySyncedData(): void {
+    this.#settings = this.#loadSettings();
+    this.window.setBackgroundColor(this.#surfaceBackground());
+    this.#workView?.setBackgroundColor(this.#surfaceBackground());
+    this.#sleepEligibleTabs();
+    this.#broadcast();
+  }
+
+  async #showSyncRecoveryKey(recoveryKey: string): Promise<void> {
+    const result = await dialog.showMessageBox(this.window, {
+      type: "info",
+      title: "Locus Sync recovery key",
+      message: "Save your recovery key",
+      detail: `${recoveryKey}\n\nThis is the only way to recover encrypted browser data when another approved device is unavailable. Locus shows it once.`,
+      buttons: ["Copy recovery key", "I saved it"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (result.response === 0) clipboard.writeText(recoveryKey);
   }
 
   #persistNow(): void {

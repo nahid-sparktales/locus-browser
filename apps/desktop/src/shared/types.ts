@@ -90,6 +90,25 @@ export interface PendingCredentialPrompt {
   action: "save" | "update";
 }
 
+export interface RemoteTabState {
+  id: string;
+  deviceId: string;
+  title: string;
+  url: string;
+  groupId?: string;
+  updatedAt: number;
+}
+
+export interface SyncAccountState {
+  status: "disconnected" | "connecting" | "connected" | "syncing" | "error";
+  serviceUrl?: string;
+  accountId?: string;
+  deviceId?: string;
+  lastSyncedAt?: number;
+  lastError?: string;
+  pendingRecords: number;
+}
+
 export interface BookmarkState {
   id: string;
   title: string;
@@ -170,6 +189,8 @@ export interface BrowserAppState {
   credentialSuggestions: CredentialSuggestionState[];
   savedCredentials: SavedCredentialState[];
   passwordManagerAvailable: boolean;
+  sync: SyncAccountState;
+  remoteTabs: RemoteTabState[];
   onboardingRequired: boolean;
   settings: BrowserSettingsState;
   activePageBookmarked: boolean;

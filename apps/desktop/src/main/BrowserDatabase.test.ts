@@ -148,4 +148,70 @@ describe("BrowserDatabase", () => {
     }]);
     database.close();
   });
+
+  it("queues only the permitted encrypted-sync collections and preserves the outbox across restarts", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "locus-sync-outbox-")), "browser.sqlite");
+    const database = new BrowserDatabase(path);
+    database.saveWindow({ id: "sync-window", profileId: "default", sidebarOpen: false, workOpen: false, workWidth: 420 }, [
+      { id: "web", windowId: "sync-window", profileId: "default", position: 0, url: "https://example.com", title: "Example", active: true, muted: false, pinned: false, private: false },
+      { id: "local", windowId: "sync-window", profileId: "default", position: 1, url: "file:///secret.txt", title: "Local", active: false, muted: false, pinned: false, private: false },
+    ], [{ id: "group", windowId: "sync-window", profileId: "default", name: "Research", color: "blue", collapsed: false, position: 0 }]);
+    database.addBookmark("default", "Example", "https://example.com");
+    database.recordVisit("default", "web", "https://example.com", "Example");
+    database.setSetting("default", "appearance", "dark");
+    database.setSetting("default", "downloadDirectory", "/private/downloads");
+    database.saveDownload("default", { id: "download", filename: "secret.pdf", url: "https://example.com/secret.pdf", path: "/private/secret.pdf", state: "completed", receivedBytes: 10, totalBytes: 10, agentInitiated: false, startedAt: 1 });
+    database.saveCredential("default", { id: "login", origin: "https://example.com", username: "person", encryptedPassword: Uint8Array.from([1, 2, 3]) });
+
+    let counter = 0;
+    expect(database.queueSyncSnapshot("default", "device-a", () => `1787408000000-${String(counter++).padStart(6, "0")}-device-a`)).toBeGreaterThan(0);
+    const records = database.syncOutbox("default");
+    expect(new Set(records.map((record) => record.collection))).toEqual(new Set(["bookmarks", "history", "tab-groups", "remote-tabs", "settings"]));
+    expect(records.filter((record) => record.collection === "remote-tabs")).toHaveLength(1);
+    expect(records.find((record) => record.collection === "settings")?.recordId).toBe("appearance");
+    expect(JSON.stringify(records)).not.toContain("secret.pdf");
+    expect(JSON.stringify(records)).not.toContain("person");
+    database.close();
+
+    const reopened = new BrowserDatabase(path);
+    expect(reopened.syncOutboxCount("default")).toBe(records.length);
+    reopened.close();
+  });
+
+  it("applies newer remote records, exposes remote tabs, and rejects stale replays", () => {
+    const database = new BrowserDatabase(join(mkdtempSync(join(tmpdir(), "locus-sync-pull-")), "browser.sqlite"));
+    const older = "1787408000000-000000-device-a";
+    const newer = "1787408000001-000000-device-b";
+    expect(database.applyPulledSyncRecord("default", {
+      collection: "settings", recordId: "appearance", clock: newer, tombstone: false, value: "dark", deviceId: "device-b",
+    })).toBe(true);
+    expect(database.setting("default", "appearance")).toBe("dark");
+    expect(database.applyPulledSyncRecord("default", {
+      collection: "settings", recordId: "appearance", clock: older, tombstone: false, value: "light", deviceId: "device-a",
+    })).toBe(false);
+    expect(database.setting("default", "appearance")).toBe("dark");
+
+    database.applyPulledSyncRecord("default", {
+      collection: "remote-tabs", recordId: "device-b:tab-1", clock: newer, tombstone: false,
+      value: { title: "Remote page", url: "https://remote.example", groupId: "research" }, deviceId: "device-b",
+    });
+    expect(database.listRemoteTabs("default", "device-a")).toMatchObject([{ title: "Remote page", url: "https://remote.example", deviceId: "device-b" }]);
+    expect(database.listRemoteTabs("default", "device-b")).toEqual([]);
+    database.close();
+  });
+
+  it("resets local sync metadata after cloud deletion so unchanged data is uploaded again", () => {
+    const database = new BrowserDatabase(join(mkdtempSync(join(tmpdir(), "locus-sync-reset-")), "browser.sqlite"));
+    database.addBookmark("default", "Example", "https://example.com");
+    let counter = 0;
+    const clock = () => `1787408000000-${String(counter++).padStart(6, "0")}-device-a`;
+    expect(database.queueSyncSnapshot("default", "device-a", clock)).toBe(1);
+    database.clearSyncOutbox("default", database.syncOutbox("default"));
+    expect(database.queueSyncSnapshot("default", "device-a", clock)).toBe(0);
+    database.setSyncProgress("default", 42, clock());
+    database.resetSyncData("default");
+    expect(database.syncProgress("default").cursor).toBe(0);
+    expect(database.queueSyncSnapshot("default", "device-a", clock)).toBe(1);
+    database.close();
+  });
 });

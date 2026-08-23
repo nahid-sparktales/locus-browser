@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
@@ -98,6 +98,39 @@ export interface StoredSitePermission {
   updatedAt: number;
 }
 
+export type BrowserSyncCollection = "bookmarks" | "history" | "tab-groups" | "remote-tabs" | "settings" | "extensions";
+
+export interface StoredSyncAccount {
+  profileId: string;
+  serviceUrl: string;
+  accountId: string;
+  deviceId: string;
+  devicePublicKey: string;
+  encryptedDevicePrivateKey: Uint8Array;
+  encryptedDeviceToken: Uint8Array;
+  encryptedAccountKey: Uint8Array;
+  status: "connected" | "syncing" | "error";
+  lastSyncedAt?: number;
+  lastError?: string;
+}
+
+export interface SyncQueueRecord {
+  collection: BrowserSyncCollection;
+  recordId: string;
+  clock: string;
+  tombstone: boolean;
+  value: unknown;
+}
+
+export interface StoredRemoteTab {
+  id: string;
+  deviceId: string;
+  title: string;
+  url: string;
+  groupId?: string;
+  updatedAt: number;
+}
+
 export class BrowserDatabase {
   readonly #database: DatabaseSyncType;
 
@@ -144,7 +177,10 @@ export class BrowserDatabase {
     if (id === "default") throw new Error("The default profile cannot be deleted");
     this.#database.exec("BEGIN IMMEDIATE");
     try {
-      for (const table of ["history_visits", "bookmarks", "downloads", "site_permissions", "browser_settings", "browser_credentials", "extension_installs"]) {
+      for (const table of [
+        "history_visits", "bookmarks", "downloads", "site_permissions", "browser_settings",
+        "browser_credentials", "extension_installs", "sync_local_records", "sync_outbox", "sync_inbox",
+      ]) {
         this.#database.prepare(`DELETE FROM ${table} WHERE profile_id = ?`).run(id);
       }
       this.#database.prepare("DELETE FROM browser_windows WHERE profile_id = ?").run(id);
@@ -416,6 +452,322 @@ export class BrowserDatabase {
     this.#database.prepare("DELETE FROM browser_credentials WHERE profile_id = ? AND id = ?").run(profileId, id);
   }
 
+  syncAccount(profileId: string): StoredSyncAccount | undefined {
+    return this.#database.prepare(`
+      SELECT profile_id AS profileId, service_url AS serviceUrl, account_id AS accountId,
+             device_id AS deviceId, device_public_key AS devicePublicKey,
+             encrypted_device_private_key AS encryptedDevicePrivateKey,
+             encrypted_device_token AS encryptedDeviceToken,
+             encrypted_account_key AS encryptedAccountKey, status,
+             last_synced_at AS lastSyncedAt, last_error AS lastError
+      FROM sync_accounts WHERE profile_id = ?
+    `).get(profileId) as unknown as StoredSyncAccount | undefined;
+  }
+
+  saveSyncAccount(account: StoredSyncAccount): void {
+    this.#database.prepare(`
+      INSERT INTO sync_accounts(
+        profile_id, service_url, account_id, device_id, device_public_key,
+        encrypted_device_private_key, encrypted_device_token, encrypted_account_key,
+        status, last_synced_at, last_error, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+      ON CONFLICT(profile_id) DO UPDATE SET
+        service_url=excluded.service_url, account_id=excluded.account_id,
+        device_id=excluded.device_id, device_public_key=excluded.device_public_key,
+        encrypted_device_private_key=excluded.encrypted_device_private_key,
+        encrypted_device_token=excluded.encrypted_device_token,
+        encrypted_account_key=excluded.encrypted_account_key,
+        status=excluded.status, last_synced_at=excluded.last_synced_at,
+        last_error=excluded.last_error, updated_at=excluded.updated_at
+    `).run(
+      account.profileId,
+      account.serviceUrl,
+      account.accountId,
+      account.deviceId,
+      account.devicePublicKey,
+      account.encryptedDevicePrivateKey,
+      account.encryptedDeviceToken,
+      account.encryptedAccountKey,
+      account.status,
+      account.lastSyncedAt ?? null,
+      account.lastError ?? null,
+    );
+  }
+
+  updateSyncAccountStatus(profileId: string, status: StoredSyncAccount["status"], lastError?: string, synced = false): void {
+    this.#database.prepare(`
+      UPDATE sync_accounts SET status=?, last_error=?,
+        last_synced_at=CASE WHEN ? THEN unixepoch() ELSE last_synced_at END,
+        updated_at=unixepoch() WHERE profile_id=?
+    `).run(status, lastError ?? null, Number(synced), profileId);
+  }
+
+  deleteSyncAccount(profileId: string): void {
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      for (const table of ["sync_accounts", "sync_local_records", "sync_outbox", "sync_inbox", "sync_profiles"]) {
+        this.#database.prepare(`DELETE FROM ${table} WHERE profile_id = ?`).run(profileId);
+      }
+      this.#database.exec("COMMIT");
+    } catch (error) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  resetSyncData(profileId: string): void {
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      for (const table of ["sync_local_records", "sync_outbox", "sync_inbox", "sync_profiles"]) {
+        this.#database.prepare(`DELETE FROM ${table} WHERE profile_id = ?`).run(profileId);
+      }
+      this.#database.exec("COMMIT");
+    } catch (error) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  queueSyncSnapshot(profileId: string, deviceId: string, nextClock: () => string): number {
+    const records = this.#syncSnapshot(profileId, deviceId);
+    const seen = new Set(records.map((record) => `${record.collection}:${record.recordId}`));
+    let queued = 0;
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      const shadow = this.#database.prepare(`
+        SELECT fingerprint, clock, tombstone FROM sync_local_records
+        WHERE profile_id=? AND collection=? AND record_id=?
+      `);
+      const upsertShadow = this.#database.prepare(`
+        INSERT INTO sync_local_records(profile_id, collection, record_id, fingerprint, clock, tombstone, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, unixepoch())
+        ON CONFLICT(profile_id, collection, record_id) DO UPDATE SET
+          fingerprint=excluded.fingerprint, clock=excluded.clock,
+          tombstone=excluded.tombstone, updated_at=excluded.updated_at
+      `);
+      const upsertOutbox = this.#database.prepare(`
+        INSERT INTO sync_outbox(profile_id, collection, record_id, clock, tombstone, payload_json, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, unixepoch())
+        ON CONFLICT(profile_id, collection, record_id) DO UPDATE SET
+          clock=excluded.clock, tombstone=excluded.tombstone,
+          payload_json=excluded.payload_json, updated_at=excluded.updated_at
+      `);
+      for (const record of records) {
+        const payloadJson = JSON.stringify(record.value);
+        const fingerprint = syncFingerprint(payloadJson, record.tombstone);
+        const existing = shadow.get(profileId, record.collection, record.recordId) as unknown as { fingerprint: string; tombstone: number } | undefined;
+        if (existing?.fingerprint === fingerprint && Boolean(existing.tombstone) === record.tombstone) continue;
+        const clock = nextClock();
+        upsertShadow.run(profileId, record.collection, record.recordId, fingerprint, clock, Number(record.tombstone));
+        upsertOutbox.run(profileId, record.collection, record.recordId, clock, Number(record.tombstone), payloadJson);
+        queued += 1;
+      }
+      const localRecords = this.#database.prepare(`
+        SELECT collection, record_id AS recordId, tombstone FROM sync_local_records WHERE profile_id=?
+      `).all(profileId) as unknown as Array<{ collection: BrowserSyncCollection; recordId: string; tombstone: number }>;
+      for (const existing of localRecords) {
+        if (existing.collection === "history" || existing.tombstone) continue;
+        if (existing.collection === "remote-tabs" && !existing.recordId.startsWith(`${deviceId}:`)) continue;
+        if (seen.has(`${existing.collection}:${existing.recordId}`)) continue;
+        const clock = nextClock();
+        const payloadJson = JSON.stringify({ deleted: true });
+        upsertShadow.run(profileId, existing.collection, existing.recordId, syncFingerprint(payloadJson, true), clock, 1);
+        upsertOutbox.run(profileId, existing.collection, existing.recordId, clock, 1, payloadJson);
+        queued += 1;
+      }
+      this.#database.exec("COMMIT");
+      return queued;
+    } catch (error) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  syncOutbox(profileId: string, limit = 500): SyncQueueRecord[] {
+    const rows = this.#database.prepare(`
+      SELECT collection, record_id AS recordId, clock, tombstone, payload_json AS payloadJson
+      FROM sync_outbox WHERE profile_id=? ORDER BY updated_at ASC LIMIT ?
+    `).all(profileId, Math.max(1, Math.min(limit, 500))) as unknown as Array<Omit<SyncQueueRecord, "value" | "tombstone"> & { tombstone: number; payloadJson: string }>;
+    return rows.map(({ payloadJson, tombstone, ...row }) => ({ ...row, tombstone: Boolean(tombstone), value: JSON.parse(payloadJson) }));
+  }
+
+  syncOutboxCount(profileId: string): number {
+    const row = this.#database.prepare("SELECT count(*) AS count FROM sync_outbox WHERE profile_id=?").get(profileId) as unknown as { count: number };
+    return row.count;
+  }
+
+  clearSyncOutbox(profileId: string, records: SyncQueueRecord[]): void {
+    const remove = this.#database.prepare(`
+      DELETE FROM sync_outbox WHERE profile_id=? AND collection=? AND record_id=? AND clock=?
+    `);
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      for (const record of records) remove.run(profileId, record.collection, record.recordId, record.clock);
+      this.#database.exec("COMMIT");
+    } catch (error) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  syncProgress(profileId: string): { cursor: number; lastClock?: string } {
+    const row = this.#database.prepare(`
+      SELECT cursor, last_clock AS lastClock FROM sync_profiles WHERE profile_id=?
+    `).get(profileId) as unknown as { cursor: number; lastClock?: string } | undefined;
+    return row ?? { cursor: 0 };
+  }
+
+  setSyncProgress(profileId: string, cursor: number, lastClock?: string): void {
+    this.#database.prepare(`
+      INSERT INTO sync_profiles(profile_id, cursor, last_clock, updated_at)
+      VALUES (?, ?, ?, unixepoch())
+      ON CONFLICT(profile_id) DO UPDATE SET cursor=excluded.cursor,
+        last_clock=COALESCE(excluded.last_clock, sync_profiles.last_clock), updated_at=excluded.updated_at
+    `).run(profileId, cursor, lastClock ?? null);
+  }
+
+  applyPulledSyncRecord(profileId: string, record: SyncQueueRecord & { deviceId: string }): boolean {
+    const existingInbox = this.#database.prepare(`
+      SELECT clock FROM sync_inbox WHERE profile_id=? AND collection=? AND record_id=?
+    `).get(profileId, record.collection, record.recordId) as unknown as { clock: string } | undefined;
+    if (existingInbox && existingInbox.clock >= record.clock) return false;
+    const payloadJson = JSON.stringify(record.value);
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      this.#database.prepare(`
+        INSERT INTO sync_inbox(profile_id, collection, record_id, device_id, clock, tombstone, payload_json, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
+        ON CONFLICT(profile_id, collection, record_id) DO UPDATE SET
+          device_id=excluded.device_id, clock=excluded.clock, tombstone=excluded.tombstone,
+          payload_json=excluded.payload_json, updated_at=excluded.updated_at
+      `).run(profileId, record.collection, record.recordId, record.deviceId, record.clock, Number(record.tombstone), payloadJson);
+      const appliedLocally = this.#applyPulledBrowserValue(profileId, record);
+      if (appliedLocally) {
+        this.#database.prepare(`
+          INSERT INTO sync_local_records(profile_id, collection, record_id, fingerprint, clock, tombstone, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, unixepoch())
+          ON CONFLICT(profile_id, collection, record_id) DO UPDATE SET
+            fingerprint=excluded.fingerprint, clock=excluded.clock,
+            tombstone=excluded.tombstone, updated_at=excluded.updated_at
+          WHERE sync_local_records.clock < excluded.clock
+        `).run(profileId, record.collection, record.recordId, syncFingerprint(payloadJson, record.tombstone), record.clock, Number(record.tombstone));
+      }
+      this.#database.exec("COMMIT");
+      return true;
+    } catch (error) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  listRemoteTabs(profileId: string, localDeviceId: string): StoredRemoteTab[] {
+    const rows = this.#database.prepare(`
+      SELECT record_id AS id, device_id AS deviceId, payload_json AS payloadJson, updated_at AS updatedAt
+      FROM sync_inbox WHERE profile_id=? AND collection='remote-tabs' AND tombstone=0 AND device_id<>?
+      ORDER BY updated_at DESC
+    `).all(profileId, localDeviceId) as unknown as Array<{ id: string; deviceId: string; payloadJson: string; updatedAt: number }>;
+    return rows.flatMap((row) => {
+      try {
+        const value = JSON.parse(row.payloadJson) as { title?: unknown; url?: unknown; groupId?: unknown };
+        if (typeof value.title !== "string" || typeof value.url !== "string") return [];
+        return [{ id: row.id, deviceId: row.deviceId, title: value.title, url: value.url, ...(typeof value.groupId === "string" ? { groupId: value.groupId } : {}), updatedAt: row.updatedAt }];
+      } catch { return []; }
+    });
+  }
+
+  cleanupExpiredSyncTombstones(profileId: string, nowSeconds = Math.floor(Date.now() / 1_000)): void {
+    const cutoff = nowSeconds - 90 * 24 * 60 * 60;
+    this.#database.prepare("DELETE FROM sync_inbox WHERE profile_id=? AND tombstone=1 AND updated_at<?").run(profileId, cutoff);
+    this.#database.prepare("DELETE FROM sync_local_records WHERE profile_id=? AND tombstone=1 AND updated_at<?").run(profileId, cutoff);
+    this.#database.prepare("DELETE FROM bookmarks WHERE profile_id=? AND tombstoned_at IS NOT NULL AND tombstoned_at<?").run(profileId, cutoff);
+  }
+
+  #syncSnapshot(profileId: string, deviceId: string): Array<{ collection: BrowserSyncCollection; recordId: string; tombstone: boolean; value: unknown }> {
+    const result: Array<{ collection: BrowserSyncCollection; recordId: string; tombstone: boolean; value: unknown }> = [];
+    const bookmarks = this.#database.prepare(`
+      SELECT id, position, title, url, created_at AS createdAt, updated_at AS updatedAt, tombstoned_at AS tombstonedAt
+      FROM bookmarks WHERE profile_id=?
+    `).all(profileId) as unknown as Array<{ id: string; position: string; title: string; url?: string; createdAt: number; updatedAt: number; tombstonedAt?: number }>;
+    for (const item of bookmarks) result.push({
+      collection: "bookmarks", recordId: item.id, tombstone: Boolean(item.tombstonedAt),
+      value: { position: item.position, title: item.title, url: item.url ?? null, createdAt: item.createdAt, updatedAt: item.updatedAt },
+    });
+    const history = this.#database.prepare(`
+      SELECT id, title, url, visited_at AS visitedAt FROM history_visits WHERE profile_id=?
+    `).all(profileId) as unknown as StoredHistoryEntry[];
+    for (const item of history) result.push({ collection: "history", recordId: item.id, tombstone: false, value: item });
+    const groups = this.#database.prepare(`
+      SELECT id, name, color, collapsed, position, updated_at AS updatedAt FROM tab_groups WHERE profile_id=?
+    `).all(profileId) as unknown as Array<{ id: string; name: string; color: string; collapsed: number; position: number; updatedAt: number }>;
+    for (const item of groups) result.push({ collection: "tab-groups", recordId: item.id, tombstone: false, value: { ...item, collapsed: Boolean(item.collapsed), deviceId } });
+    const tabs = this.#database.prepare(`
+      SELECT id, title, url, group_id AS groupId, updated_at AS updatedAt
+      FROM browser_tabs WHERE profile_id=? AND private=0 AND (url LIKE 'https://%' OR url LIKE 'http://%')
+    `).all(profileId) as unknown as Array<{ id: string; title: string; url: string; groupId?: string; updatedAt: number }>;
+    for (const item of tabs) result.push({ collection: "remote-tabs", recordId: `${deviceId}:${item.id}`, tombstone: false, value: { ...item, deviceId } });
+    const settings = this.#database.prepare(`
+      SELECT key, value_json AS valueJson FROM browser_settings
+      WHERE profile_id=? AND key IN ('appearance','searchEngine','sleepAfterMinutes')
+    `).all(profileId) as unknown as Array<{ key: string; valueJson: string }>;
+    for (const item of settings) result.push({ collection: "settings", recordId: item.key, tombstone: false, value: JSON.parse(item.valueJson) });
+    const extensions = this.#database.prepare(`
+      SELECT extension_id AS id, version, enabled, source FROM extension_installs WHERE profile_id=?
+    `).all(profileId) as unknown as Array<{ id: string; version: string; enabled: number; source: string }>;
+    for (const item of extensions) result.push({ collection: "extensions", recordId: item.id, tombstone: false, value: { ...item, enabled: Boolean(item.enabled) } });
+    return result;
+  }
+
+  #applyPulledBrowserValue(profileId: string, record: SyncQueueRecord): boolean {
+    const shadow = this.#database.prepare(`
+      SELECT clock FROM sync_local_records WHERE profile_id=? AND collection=? AND record_id=?
+    `).get(profileId, record.collection, record.recordId) as unknown as { clock: string } | undefined;
+    if (shadow && shadow.clock >= record.clock) return false;
+    if (record.collection === "bookmarks") {
+      if (record.tombstone) {
+        this.#database.prepare("UPDATE bookmarks SET tombstoned_at=unixepoch(), updated_at=unixepoch() WHERE profile_id=? AND id=?").run(profileId, record.recordId);
+      } else {
+        const value = record.value as { position?: unknown; title?: unknown; url?: unknown; createdAt?: unknown; updatedAt?: unknown };
+        if (typeof value.position !== "string" || typeof value.title !== "string" || typeof value.url !== "string") return false;
+        this.#database.prepare(`
+          INSERT INTO bookmarks(id, profile_id, position, title, url, created_at, updated_at, tombstoned_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+          ON CONFLICT(id) DO UPDATE SET profile_id=excluded.profile_id, position=excluded.position,
+            title=excluded.title, url=excluded.url, updated_at=excluded.updated_at, tombstoned_at=NULL
+        `).run(record.recordId, profileId, value.position, value.title, value.url, Number(value.createdAt) || Math.floor(Date.now() / 1_000), Number(value.updatedAt) || Math.floor(Date.now() / 1_000));
+      }
+      return true;
+    }
+    if (record.collection === "history" && !record.tombstone) {
+      const value = record.value as { title?: unknown; url?: unknown; visitedAt?: unknown };
+      if (typeof value.title !== "string" || typeof value.url !== "string" || typeof value.visitedAt !== "number") return false;
+      this.#database.prepare(`
+        INSERT OR IGNORE INTO history_visits(id, profile_id, tab_id, url, title, visited_at)
+        VALUES (?, ?, NULL, ?, ?, ?)
+      `).run(record.recordId, profileId, value.url, value.title, value.visitedAt);
+      return true;
+    }
+    if (record.collection === "settings" && !record.tombstone && ["appearance", "searchEngine", "sleepAfterMinutes"].includes(record.recordId)) {
+      this.setSetting(profileId, record.recordId, record.value);
+      return true;
+    }
+    if (record.collection === "extensions") {
+      if (record.tombstone) {
+        this.#database.prepare("DELETE FROM extension_installs WHERE profile_id=? AND extension_id=?").run(profileId, record.recordId);
+      } else {
+        const value = record.value as { version?: unknown; enabled?: unknown; source?: unknown };
+        if (typeof value.version !== "string" || typeof value.enabled !== "boolean" || typeof value.source !== "string") return false;
+        this.#database.prepare(`
+          INSERT INTO extension_installs(profile_id, extension_id, version, enabled, source, manifest_json, updated_at)
+          VALUES (?, ?, ?, ?, ?, '{}', unixepoch())
+          ON CONFLICT(profile_id, extension_id) DO UPDATE SET version=excluded.version,
+            enabled=excluded.enabled, source=excluded.source, updated_at=excluded.updated_at
+        `).run(profileId, record.recordId, value.version, Number(value.enabled), value.source);
+      }
+      return true;
+    }
+    return false;
+  }
+
   #migrate(): void {
     this.#database.exec(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -540,6 +892,59 @@ export class BrowserDatabase {
         clock TEXT,
         updated_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS sync_accounts (
+        profile_id TEXT PRIMARY KEY,
+        service_url TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        device_public_key TEXT NOT NULL,
+        encrypted_device_private_key BLOB NOT NULL,
+        encrypted_device_token BLOB NOT NULL,
+        encrypted_account_key BLOB NOT NULL,
+        status TEXT NOT NULL,
+        last_synced_at INTEGER,
+        last_error TEXT,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(profile_id) REFERENCES browser_profiles(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS sync_profiles (
+        profile_id TEXT PRIMARY KEY,
+        cursor INTEGER NOT NULL DEFAULT 0,
+        last_clock TEXT,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(profile_id) REFERENCES browser_profiles(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS sync_local_records (
+        profile_id TEXT NOT NULL,
+        collection TEXT NOT NULL,
+        record_id TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        clock TEXT NOT NULL,
+        tombstone INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(profile_id, collection, record_id)
+      );
+      CREATE TABLE IF NOT EXISTS sync_outbox (
+        profile_id TEXT NOT NULL,
+        collection TEXT NOT NULL,
+        record_id TEXT NOT NULL,
+        clock TEXT NOT NULL,
+        tombstone INTEGER NOT NULL DEFAULT 0,
+        payload_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(profile_id, collection, record_id)
+      );
+      CREATE TABLE IF NOT EXISTS sync_inbox (
+        profile_id TEXT NOT NULL,
+        collection TEXT NOT NULL,
+        record_id TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        clock TEXT NOT NULL,
+        tombstone INTEGER NOT NULL DEFAULT 0,
+        payload_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(profile_id, collection, record_id)
+      );
       INSERT OR IGNORE INTO browser_profiles(id, name, partition_name)
       VALUES ('default', 'Personal', 'persist:locus-profile-default');
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, unixepoch());
@@ -560,6 +965,7 @@ export class BrowserDatabase {
       CREATE INDEX IF NOT EXISTS browser_credentials_profile_origin ON browser_credentials(profile_id, origin);
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (2, unixepoch());
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (3, unixepoch());
+      INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (4, unixepoch());
     `);
   }
 
@@ -573,4 +979,8 @@ export class BrowserDatabase {
 
 function randomDatabaseId(): string {
   return randomUUID();
+}
+
+function syncFingerprint(payloadJson: string, tombstone: boolean): string {
+  return createHash("sha256").update(tombstone ? "1:" : "0:").update(payloadJson).digest("hex");
 }

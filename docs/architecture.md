@@ -10,8 +10,10 @@ Sandboxed remote tab views ───┘ (no IPC/preload)       ├─ local agen
                                                         ├─ safeStorage vault
                                                         └─ WAL browser database
 
-Local sync client ─ XChaCha20-Poly1305 ciphertext ─ sync service ─ PostgreSQL
-                                                └──── opaque objects ─ S3 API
+OS-protected account key ─ local sync client ─ XChaCha20-Poly1305 ciphertext
+                                           └─ passkey auth ─ sync service
+                                                            ├─ PostgreSQL
+                                                            └─ S3 API
 ```
 
 The visible shell is one trusted `BrowserWindow`. Each live webpage is a
@@ -61,3 +63,13 @@ library records, settings, tab groups, and permission decisions. Sleeping a
 background tab explicitly destroys its `webContents`; selecting the tab creates
 a fresh sandboxed view at the last committed URL. Tabs with audio, media,
 downloads, loading work, or agent access are excluded from sleeping.
+
+Sync registration and sign-in open a separate ephemeral, sandboxed passkey
+window restricted to the configured service origin and the private callback
+scheme. The account key, device private key, and device token are encrypted by
+the OS credential store before persistence. The trusted renderer receives only
+account status and collection metadata; a generated recovery key is displayed
+once by a native main-process dialog. A new device must decrypt the account's
+encrypted key-verifier record before it may upload any local data. Durable
+local outbox/inbox state permits offline retries without retaining plaintext
+payloads on the service.

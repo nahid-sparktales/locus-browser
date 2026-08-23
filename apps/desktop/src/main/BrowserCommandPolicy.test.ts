@@ -9,6 +9,12 @@ describe("browser command sender policy", () => {
     { type: "save-pending-credential" },
     { type: "dismiss-pending-credential" },
     { type: "delete-credential", credentialId: "login-1" },
+    { type: "begin-sync-registration", displayName: "Personal", serviceUrl: "https://sync.example.com" },
+    { type: "begin-sync-sign-in", recoveryKey: "LOCUS-AAAAA-BBBBB-CCCCC-DDDDD-EEEEE-FFFFF-GGGGG-HHHHH", serviceUrl: "https://sync.example.com" },
+    { type: "sync-now" },
+    { type: "disconnect-sync" },
+    { type: "delete-sync-cloud-data" },
+    { type: "delete-sync-account" },
   ])("keeps $type on the trusted browser-chrome sender", (command) => {
     expect(requiresShellSender(command)).toBe(true);
   });
