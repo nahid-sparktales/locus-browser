@@ -21,6 +21,12 @@ separate sandboxed `WebContentsView`; the resizable Work dock is a second
 trusted local view. This allows the dock to overlay narrow windows without
 ever placing a webpage above trusted approval controls.
 
+The Work renderer presents a focused solo-agent surface. The Electron broker
+starts the local Python runtime, communicates over an authenticated loopback
+channel, and uses its local session API to create, list, and resume durable
+conversations. Only normalized conversation metadata and display-safe message
+content cross into the trusted renderer.
+
 Site camera, microphone, location, notification, and clipboard requests are
 resolved by the main-process broker. Unknown decisions appear only in trusted
 browser chrome; allow/block choices are scoped to the active browser profile,
@@ -46,7 +52,9 @@ its grants without closing tabs.
 The sibling `locus-platform` repository owns the Python runtime, JSON Schema,
 OpenAPI description, TypeScript and Swift protocol clients, browser tool
 fixtures, the engine-neutral isolated-world DOM bridge, and the stable parity
-manifest. The original Swift app remains a separate native consumer.
+manifest. The original Swift app remains a separate native consumer. The
+shared protocol can describe the broader native product while Locus Browser's
+first canary exposes the smaller solo-agent subset documented above.
 
 ## Data boundaries
 

@@ -6,23 +6,19 @@ import {
   ChevronDown,
   CircleStop,
   ClipboardList,
-  Code2,
   FileCode2,
   FileDiff,
   GitBranch,
-  LayoutDashboard,
   MessageSquareText,
-  Milestone,
-  NotebookPen,
   Paperclip,
-  Play,
   RotateCcw,
   SendHorizontal,
   Share2,
   Shield,
   Sparkles,
+  SquarePen,
   TerminalSquare,
-  TimerReset,
+  UserRound,
   X,
 } from "lucide-react";
 import type { BrowserCommand } from "../shared/ipc.js";
@@ -31,20 +27,15 @@ import { useBrowserState } from "./useBrowserState.js";
 
 const panels: Array<{ id: WorkPanel; label: string; icon: React.ReactNode }> = [
   { id: "chat", label: "Chat", icon: <MessageSquareText size={17} /> },
-  { id: "overview", label: "Overview", icon: <LayoutDashboard size={17} /> },
   { id: "plan", label: "Plan", icon: <ClipboardList size={17} /> },
   { id: "changes", label: "Changes", icon: <FileDiff size={17} /> },
   { id: "files", label: "Files", icon: <FileCode2 size={17} /> },
   { id: "terminal", label: "Terminal", icon: <TerminalSquare size={17} /> },
-  { id: "checkpoints", label: "Checkpoints", icon: <Milestone size={17} /> },
-  { id: "runs", label: "Runs", icon: <TimerReset size={17} /> },
-  { id: "notes", label: "Notes", icon: <NotebookPen size={17} /> },
-  { id: "agents", label: "AGENTS.md", icon: <Bot size={17} /> },
 ];
 
 const modes: Array<{ id: WorkMode; label: string }> = [
   { id: "ask", label: "Ask" },
-  { id: "work", label: "Adaptive Work" },
+  { id: "work", label: "Work" },
   { id: "plan", label: "Plan" },
   { id: "build", label: "Build" },
 ];
@@ -80,23 +71,26 @@ export function WorkDock() {
       </header>
 
       <div className="dock-body">
+        <main className="work-content">
+          <div className="panel-toolbar">
+            <div><span className="panel-icon">{panel.icon}</span><strong>{panel.label}</strong></div>
+            <div className="panel-actions">
+              <span className="solo-chip"><UserRound size={11} />Solo</span>
+              <button className="new-conversation" type="button" title="New conversation" disabled={state.work.busy || state.work.runtime !== "online"} onClick={() => void command({ type: "new-work-conversation" })}><SquarePen size={14} /></button>
+            </div>
+          </div>
+
+          {state.work.pendingPermission && <PermissionCard state={state} />}
+          {state.work.panel === "chat" ? <ChatPanel state={state} grantLevel={grant?.level} /> : <SurfacePanel panel={state.work.panel} />}
+        </main>
+
         <nav className="work-rail" aria-label="Work surfaces">
           {panels.map((item) => (
-            <button key={item.id} className={item.id === state.work.panel ? "active" : ""} title={item.label} onClick={() => void command({ type: "set-work-panel", panel: item.id })}>
+            <button type="button" key={item.id} className={item.id === state.work.panel ? "active" : ""} title={item.label} aria-label={item.label} onClick={() => void command({ type: "set-work-panel", panel: item.id })}>
               {item.icon}<span>{item.label}</span>
             </button>
           ))}
         </nav>
-
-        <main className="work-content">
-          <div className="panel-toolbar">
-            <div><span className="panel-icon">{panel.icon}</span><strong>{panel.label}</strong></div>
-            <button className="model-picker"><span>Locus Auto</span><ChevronDown size={12} /></button>
-          </div>
-
-          {state.work.pendingPermission && <PermissionCard state={state} />}
-          {state.work.panel === "chat" ? <ChatPanel state={state} grantLevel={grant?.level} /> : <SurfacePanel panel={state.work.panel} state={state} />}
-        </main>
       </div>
     </div>
   );
@@ -145,7 +139,7 @@ function ChatPanel({ state, grantLevel }: { state: BrowserAppState; grantLevel: 
 
       <div className="composer-wrap">
         <div className="mode-picker" role="radiogroup" aria-label="Work mode">
-          {modes.map((mode) => <button key={mode.id} role="radio" aria-checked={state.work.mode === mode.id} className={state.work.mode === mode.id ? "active" : ""} onClick={() => void command({ type: "set-work-mode", mode: mode.id })}>{mode.label}</button>)}
+          {modes.map((mode) => <button key={mode.id} type="button" role="radio" aria-checked={state.work.mode === mode.id} className={state.work.mode === mode.id ? "active" : ""} onKeyDown={navigateModeRadio} onClick={() => void command({ type: "set-work-mode", mode: mode.id })}>{mode.label}</button>)}
         </div>
         <div className="composer">
           <textarea
@@ -159,15 +153,15 @@ function ChatPanel({ state, grantLevel }: { state: BrowserAppState; grantLevel: 
             }}
           />
           <div className="composer-actions">
-            <button title="Attach files"><Paperclip size={15} /></button>
+            <button type="button" title="Attach files"><Paperclip size={15} /></button>
             <div className="composer-spacer" />
             <span className="context-meter" title="Context window">8%</span>
             {state.work.busy
-              ? <button className="send-button stop" title="Stop" onClick={() => void command({ type: "stop-work" })}><CircleStop size={17} /></button>
-              : <button className="send-button" title="Send" disabled={!text.trim() || state.work.runtime !== "online"} onClick={submit}><SendHorizontal size={16} /></button>}
+              ? <button type="button" className="send-button stop" title="Stop" onClick={() => void command({ type: "stop-work" })}><CircleStop size={17} /></button>
+              : <button type="button" className="send-button" title="Send" disabled={!text.trim() || state.work.runtime !== "online"} onClick={submit}><SendHorizontal size={16} /></button>}
           </div>
         </div>
-        <div className="composer-foot"><span>{state.work.runtimeMessage}</span><span>⌘↵ send · ⇧↵ newline</span></div>
+        <div className="composer-foot"><span>{state.work.runtimeMessage}</span><span>↵ send · ⇧↵ newline</span></div>
       </div>
     </div>
   );
@@ -188,24 +182,19 @@ function PermissionCard({ state }: { state: BrowserAppState }) {
   );
 }
 
-function SurfacePanel({ panel, state }: { panel: WorkPanel; state: BrowserAppState }) {
+function SurfacePanel({ panel }: { panel: Exclude<WorkPanel, "chat"> }) {
   const content: Record<Exclude<WorkPanel, "chat">, { title: string; text: string; icon: React.ReactNode; actions: string[] }> = {
-    overview: { title: "Workspace overview", text: "Run status, evidence, model usage, and the current browser context appear here.", icon: <LayoutDashboard size={21} />, actions: ["Runtime connected", `${state.tabs.length} browser tabs`, "No active schedule"] },
     plan: { title: "No plan yet", text: "Choose Plan mode and describe the outcome. Locus will present a decision-ready plan here for approval.", icon: <ClipboardList size={21} />, actions: ["Create a plan", "Review dependencies", "Approve before build"] },
-    changes: { title: "No workspace changes", text: "File diffs and hunk-level accept or revert actions appear as Locus edits your workspace.", icon: <FileDiff size={21} />, actions: ["Working tree clean", "Checkpoints enabled", "Git handoff ready"] },
+    changes: { title: "No workspace changes", text: "File diffs and hunk-level accept or revert actions appear as Locus edits your workspace.", icon: <FileDiff size={21} />, actions: ["Working tree clean", "Review each edit", "Git handoff ready"] },
     files: { title: "Open a workspace in chat", text: "Once a workspace is selected, browse files, inspect edits, and attach context without leaving the webpage.", icon: <FileCode2 size={21} />, actions: ["Files", "Search", "Attachments"] },
     terminal: { title: "Terminal is agent-owned", text: "Commands, dev servers, and their output stay isolated from webpages and stream here during a run.", icon: <TerminalSquare size={21} />, actions: ["No running command", "No dev server", "Shell access requires approval"] },
-    checkpoints: { title: "No checkpoints yet", text: "Locus records recoverable workspace checkpoints before material changes.", icon: <Milestone size={21} />, actions: ["Automatic checkpoints", "Compare", "Restore"] },
-    runs: { title: "Runs are quiet", text: "Durable work, schedules, teams, recovery, and evidence will collect in this timeline.", icon: <TimerReset size={21} />, actions: ["No active run", "No approval waiting", "Recovery available"] },
-    notes: { title: "Notes", text: "Use this space for durable project notes. Notes remain local and are not part of browser sync.", icon: <NotebookPen size={21} />, actions: ["Project notes", "Evidence", "Decisions"] },
-    agents: { title: "AGENTS.md", text: "Workspace instructions are shown here when a folder is active. They remain authoritative for every work run.", icon: <Bot size={21} />, actions: ["No workspace selected", "Inheritance", "Per-folder guidance"] },
   };
-  const item = content[panel as Exclude<WorkPanel, "chat">];
+  const item = content[panel];
   return (
     <div className="surface-panel">
       <div className="surface-hero"><span>{item.icon}</span><h2>{item.title}</h2><p>{item.text}</p></div>
       <div className="surface-list">
-        {item.actions.map((action, index) => <div key={action}>{index === 0 ? <CheckCircle2 size={15} /> : index === 1 ? <GitBranch size={15} /> : <RotateCcw size={15} />}<span>{action}</span>{index === 0 && panel === "plan" ? <button><Play size={12} /> Start</button> : null}</div>)}
+        {item.actions.map((action, index) => <div key={action}>{index === 0 ? <CheckCircle2 size={15} /> : index === 1 ? <GitBranch size={15} /> : <RotateCcw size={15} />}<span>{action}</span></div>)}
       </div>
     </div>
   );
@@ -213,4 +202,19 @@ function SurfacePanel({ panel, state }: { panel: WorkPanel; state: BrowserAppSta
 
 async function command(value: BrowserCommand) {
   return await window.locusBrowser.command(value);
+}
+
+function navigateModeRadio(event: React.KeyboardEvent<HTMLButtonElement>): void {
+  const keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"];
+  if (!keys.includes(event.key)) return;
+  const buttons = Array.from(event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("button[role='radio']") ?? []);
+  if (!buttons.length) return;
+  event.preventDefault();
+  const current = Math.max(buttons.indexOf(event.currentTarget), 0);
+  const nextIndex = event.key === "Home" ? 0
+    : event.key === "End" ? buttons.length - 1
+    : event.key === "ArrowRight" || event.key === "ArrowDown" ? (current + 1) % buttons.length
+    : (current - 1 + buttons.length) % buttons.length;
+  buttons[nextIndex]?.focus();
+  buttons[nextIndex]?.click();
 }

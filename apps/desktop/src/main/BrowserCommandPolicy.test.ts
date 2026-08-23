@@ -28,6 +28,8 @@ describe("browser command sender policy", () => {
 
   it("allows ordinary browser and Work commands through their existing sender policy", () => {
     expect(requiresShellSender({ type: "toggle-work" })).toBe(false);
+    expect(requiresShellSender({ type: "new-work-conversation" })).toBe(false);
+    expect(requiresShellSender({ type: "select-work-conversation", sessionId: "session-1" })).toBe(false);
     expect(requiresShellSender({ type: "work-send", text: "Summarize this page" })).toBe(false);
   });
 });

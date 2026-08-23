@@ -1,10 +1,11 @@
 # Locus Browser
 
 A browser-first sibling to Locus: a secure Chromium browser with an explicit,
-resizable Locus work dock. The page remains the primary canvas and AI sessions
-can control only tabs the user shares or tabs the session creates.
+resizable Solo Work dock. The page remains the primary canvas and the local
+agent can control only tabs the user shares or tabs the current conversation
+creates.
 
-![Locus Browser showing a live GitHub page beside the Locus Work dock](docs/images/locus-browser.png)
+![Locus Browser showing Google beside the focused Solo Work dock](docs/images/locus-browser.png)
 
 This checkout is the executable engine proof and product foundation. See
 [`docs/implementation-status.md`](docs/implementation-status.md) for the exact
@@ -38,6 +39,13 @@ persistent profiles and tab groups, explicit site-permission prompts,
 selectable theme/download/sleep settings, profile-scoped OS-encrypted password
 save/autofill, media controls, and protected wake-on-select tab sleeping. Its
 light and dark surfaces use the same semantic palette as native Locus.
+
+Work Mode is intentionally focused on the solo-agent workflow. Its compact
+right-side rail keeps only Chat, Plan, Changes, Files, and Terminal. You can
+start a new local conversation or reopen a previous one from the browser
+sidebar; conversation transcripts stay on the device. Closing the dock does
+not stop an active run, while Stop returns the UI to idle immediately and
+interrupts the agent at its next safe boundary.
 
 Optional Locus encrypted sync now provides passkey accounts and client-side
 encrypted bookmarks, history, tab groups, ordinary web tabs, selected settings,

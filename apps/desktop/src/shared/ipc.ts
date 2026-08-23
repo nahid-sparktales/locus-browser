@@ -76,8 +76,10 @@ export const BrowserCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("set-work-mode"), mode: z.enum(["ask", "work", "plan", "build"]) }),
   z.object({
     type: z.literal("set-work-panel"),
-    panel: z.enum(["chat", "overview", "plan", "changes", "files", "terminal", "checkpoints", "runs", "notes", "agents"]),
+    panel: z.enum(["chat", "plan", "changes", "files", "terminal"]),
   }),
+  z.object({ type: z.literal("new-work-conversation") }),
+  z.object({ type: z.literal("select-work-conversation"), sessionId: z.string().trim().min(1).max(255) }),
   z.object({ type: z.literal("work-send"), text: z.string().trim().min(1).max(200_000) }),
   z.object({ type: z.literal("stop-work") }),
   z.object({ type: z.literal("answer-permission"), requestId: z.string().min(1), decision: z.enum(["allow", "always", "deny"]) }),

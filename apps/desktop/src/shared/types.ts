@@ -7,15 +7,10 @@ export type Appearance = "system" | "light" | "dark";
 export type SitePermissionDecision = "allow" | "deny";
 export type WorkPanel =
   | "chat"
-  | "overview"
   | "plan"
   | "changes"
   | "files"
-  | "terminal"
-  | "checkpoints"
-  | "runs"
-  | "notes"
-  | "agents";
+  | "terminal";
 
 export interface BrowserTabState {
   id: string;
@@ -169,6 +164,15 @@ export interface WorkMessage {
   streaming?: boolean;
 }
 
+export interface WorkConversationState {
+  id: string;
+  title: string;
+  preview: string;
+  updatedAt: number;
+  current: boolean;
+  cwd?: string;
+}
+
 export interface PendingPermission {
   requestId: string;
   tool: string;
@@ -183,6 +187,7 @@ export interface WorkState {
   runtimeMessage: string;
   busy: boolean;
   messages: WorkMessage[];
+  conversations: WorkConversationState[];
   pendingPermission?: PendingPermission;
 }
 

@@ -1,8 +1,9 @@
 # Implementation status
 
 This repository is an executable engine proof and product foundation, not a
-stable browser release. The stable gates in the product plan remain the source
-of truth.
+stable browser release. The browser canary is now intentionally scoped around
+excellent browsing and one local solo agent instead of reproducing every team,
+schedule, and orchestration surface from native Locus.
 
 ## Implemented in this baseline
 
@@ -30,8 +31,12 @@ of truth.
   ink typography, lime signal, olive actions, and semantic status colors,
   including Reduced Motion and Reduced Transparency alternatives.
 - Right Work dock with split/overlay layout, 360–720 px bounds, 60%/520 px
-  expansion limits, interruptible 340 ms resize, Reduced Motion handling,
-  pinned composer, modes, surfaces, progress, and approvals.
+  expansion limits, interruptible 340 ms resize, Reduced Motion handling, and
+  a pinned composer. The focused right-side rail keeps Chat, Plan, Changes,
+  Files, and Terminal; secondary native-Locus surfaces are deliberately absent.
+- Durable local solo-agent conversations with new/resume actions, browser
+  sidebar history, transcript restoration, streaming state, permission prompts,
+  and immediate Stop feedback while cancellation reaches the runtime safely.
 - Live local-agent connection and all existing browser tool wire names.
 - Explicit per-session tab grants, agent-created tabs, visible indicators,
   one-click revoke, protected URLs/fields, screenshot consent/masking,
@@ -81,8 +86,10 @@ of truth.
 - Load verified gallery extensions into profile sessions, add developer-mode
   UI, implement the supported MV3 shims, and ship compatibility/malware/update/
   rollback infrastructure.
-- Port the remaining native Locus panels and state adapters beyond their Work
-  surfaces, then make every parity-manifest entry executable in CI.
+- Finish the useful solo adapters behind Plan, Changes, Files, and Terminal;
+  add attachments, model/account selection, workspace selection, and end-to-end
+  local-agent recovery. Team orchestration, schedules, checkpoints, and a
+  dedicated `AGENTS.md` panel are outside the initial browser canary scope.
 - Bundle the Python runtime, implement signed component/app updates, add Forge
   packaging, hardened-runtime entitlements, signing/notarization, canary/beta
   channels, and schema rollback.

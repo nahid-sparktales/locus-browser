@@ -109,6 +109,10 @@ const previewState: BrowserAppState = {
       role: "assistant",
       text: "Work Mode is ready. Share this tab when you want Locus to read or interact with it.",
     }],
+    conversations: [
+      { id: "preview-session", title: "Research the current page", preview: "Research the current page", updatedAt: 1_787_408_000, current: true },
+      { id: "preview-session-2", title: "Plan a focused browser workflow", preview: "Plan a focused browser workflow", updatedAt: 1_787_321_600, current: false },
+    ],
   },
 };
 
@@ -149,6 +153,28 @@ function applyPreviewCommand(command: BrowserCommand): void {
       break;
     case "toggle-work":
       previewState.workOpen = !previewState.workOpen;
+      break;
+    case "set-work-panel":
+      previewState.work.panel = command.panel;
+      break;
+    case "set-work-mode":
+      previewState.work.mode = command.mode;
+      break;
+    case "new-work-conversation": {
+      const id = `preview-session-${previewState.work.conversations.length + 1}`;
+      previewState.work.sessionId = id;
+      previewState.work.panel = "chat";
+      previewState.work.messages = [{ id: `${id}-welcome`, role: "assistant", text: "Work Mode is ready. Share this tab when you want Locus to read or interact with it." }];
+      previewState.work.conversations = [
+        { id, title: "New conversation", preview: "", updatedAt: Math.floor(Date.now() / 1_000), current: true },
+        ...previewState.work.conversations.map((conversation) => ({ ...conversation, current: false })),
+      ];
+      break;
+    }
+    case "select-work-conversation":
+      previewState.work.sessionId = command.sessionId;
+      previewState.work.panel = "chat";
+      previewState.work.conversations = previewState.work.conversations.map((conversation) => ({ ...conversation, current: conversation.id === command.sessionId }));
       break;
     case "toggle-bookmark":
       previewState.activePageBookmarked = !previewState.activePageBookmarked;

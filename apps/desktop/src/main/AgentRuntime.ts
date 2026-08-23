@@ -15,6 +15,7 @@ export class AgentRuntime extends EventEmitter {
   #process: ChildProcessByStdio<null, Readable, Readable> | undefined;
   #socket: WebSocket | undefined;
   #token = "";
+  #baseUrl = "";
   #stopping = false;
 
   constructor(platformRoot: string, dataRoot: string) {
@@ -28,6 +29,7 @@ export class AgentRuntime extends EventEmitter {
     this.#stopping = false;
     this.#token = randomBytes(32).toString("base64url");
     const port = await availablePort();
+    this.#baseUrl = `http://127.0.0.1:${port}`;
     const agentRoot = join(this.#platformRoot, "agent");
     const python = this.#pythonExecutable(agentRoot);
     mkdirSync(this.#dataRoot, { recursive: true });
@@ -73,12 +75,53 @@ export class AgentRuntime extends EventEmitter {
     return true;
   }
 
+  async listSessions(): Promise<unknown> {
+    return await this.#requestJson("/api/sessions?limit=100");
+  }
+
+  async newSession(): Promise<unknown> {
+    return await this.#requestJson("/api/sessions/new", {
+      method: "POST",
+      body: JSON.stringify({ reason: "new_session" }),
+    });
+  }
+
+  async session(sessionId: string): Promise<unknown> {
+    return await this.#requestJson(`/api/sessions/${encodeURIComponent(sessionId)}`);
+  }
+
+  async resumeSession(sessionId: string): Promise<unknown> {
+    return await this.#requestJson(`/api/sessions/${encodeURIComponent(sessionId)}/resume`, {
+      method: "POST",
+      body: "{}",
+    });
+  }
+
   stop(): void {
     this.#stopping = true;
     this.#socket?.close();
     this.#socket = undefined;
     this.#process?.kill("SIGTERM");
     this.#process = undefined;
+    this.#baseUrl = "";
+  }
+
+  async #requestJson(path: string, init: RequestInit = {}): Promise<unknown> {
+    if (!this.#baseUrl || !this.#token) throw new Error("The local agent is offline");
+    const response = await fetch(`${this.#baseUrl}${path}`, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Locus-Token": this.#token,
+        ...init.headers,
+      },
+    });
+    const value = await response.json().catch(() => undefined) as Record<string, unknown> | undefined;
+    if (!response.ok) {
+      const detail = value?.detail ?? value?.message;
+      throw new Error(typeof detail === "string" && detail ? detail : `Local agent request failed (${response.status})`);
+    }
+    return value;
   }
 
   #pythonExecutable(agentRoot: string): string {
@@ -107,7 +150,7 @@ export class AgentRuntime extends EventEmitter {
         throw new Error("The local agent exited during startup");
       }
       try {
-        const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
+        const response = await fetch(`${this.#baseUrl}/api/health`, {
           headers: { "X-Locus-Token": this.#token },
         });
         if (response.ok) return;

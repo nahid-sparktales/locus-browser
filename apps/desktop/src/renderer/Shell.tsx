@@ -463,10 +463,22 @@ function SidebarContent({ state }: { state: BrowserAppState }) {
       </button>
     ))}</SidebarList>;
   }
-  return <SidebarList title={spaces ? "Spaces" : "Conversations"} count={0}>
-    <EmptyLibrary icon={spaces ? <UsersRound size={18} /> : <Clock3 size={18} />}
-      text={spaces ? "Profile spaces arrive with multi-profile support." : "Work conversations remain local to Work Mode."} />
-  </SidebarList>;
+  return (
+    <>
+      <div className="sidebar-heading with-button">
+        <span>Conversations</span><span>{state.work.conversations.length}</span>
+        <button type="button" title="New conversation" disabled={state.work.busy || state.work.runtime !== "online"} onClick={() => void command({ type: "new-work-conversation" })}><Plus size={13} /></button>
+      </div>
+      <div className="sidebar-list">
+        {state.work.conversations.length ? state.work.conversations.map((conversation) => (
+          <button type="button" className={`sidebar-row library-row conversation-row ${conversation.current ? "active" : ""}`} key={conversation.id} onClick={() => void command({ type: "select-work-conversation", sessionId: conversation.id })}>
+            <Clock3 size={13} />
+            <span><strong>{conversation.title}</strong><small>{conversation.current ? "Current conversation" : formatTime(conversation.updatedAt)}</small></span>
+          </button>
+        )) : <EmptyLibrary icon={<Clock3 size={18} />} text={state.work.runtime === "online" ? "Start a conversation in Work Mode." : "Conversation history appears when the local agent is ready."} />}
+      </div>
+    </>
+  );
 }
 
 function TabsPanel({ state }: { state: BrowserAppState }) {

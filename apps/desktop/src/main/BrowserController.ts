@@ -20,6 +20,7 @@ import {
   type BrowserActionResult,
 } from "@locus/protocol";
 import { bridgeInvocation, browserBridgeSource } from "@locus/browser-bridge";
+import { z } from "zod";
 import { ipcChannels } from "../shared/channels.js";
 import type { BrowserCommand } from "../shared/ipc.js";
 import type {
@@ -32,6 +33,7 @@ import type {
   SearchEngine,
   SidebarSection,
   TabGroupState,
+  WorkConversationState,
   WorkMessage,
 } from "../shared/types.js";
 import { AgentRuntime, type AgentEvent } from "./AgentRuntime.js";
@@ -57,6 +59,27 @@ const CREDENTIAL_PROMPT_HEIGHT = 46;
 const SLEEP_CHECK_INTERVAL = 60_000;
 const GROUP_COLORS = ["lime", "blue", "coral", "violet", "gold"];
 const ALLOWED_SITE_PERMISSIONS = new Set(["camera", "microphone", "media", "geolocation", "notifications", "clipboard-read"]);
+const AgentSessionsSchema = z.object({
+  sessions: z.array(z.object({
+    id: z.string().min(1).max(255),
+    preview: z.string().nullish().transform((value) => value ?? ""),
+    mtime: z.number().finite(),
+    cwd: z.string().nullish(),
+    title: z.string().nullish().transform((value) => value ?? ""),
+    archived: z.boolean().optional().default(false),
+  })),
+  current: z.string().optional().default(""),
+});
+const AgentSessionResultSchema = z.object({
+  messages: z.array(z.object({ role: z.string(), content: z.unknown() })).optional().default([]),
+  session_info: z.object({ session_id: z.string().min(1).max(255) }),
+});
+const AgentSessionTranscriptSchema = z.object({
+  messages: z.array(z.object({ role: z.string(), content: z.unknown() })).optional().default([]),
+});
+const AgentNewSessionSchema = z.object({
+  session_info: z.object({ session_id: z.string().min(1).max(255) }),
+});
 
 interface TabRecord {
   state: BrowserTabState;
@@ -133,13 +156,9 @@ export class BrowserController {
   #runtimeState: BrowserAppState["work"]["runtime"] = "starting";
   #runtimeMessage = "Starting the local agent…";
   #busy = false;
-  #messages: WorkMessage[] = [
-    {
-      id: randomUUID(),
-      role: "assistant",
-      text: "Work Mode is ready. Share this tab when you want Locus to read or interact with it.",
-    },
-  ];
+  #stopRequested = false;
+  #messages: WorkMessage[] = [welcomeWorkMessage()];
+  #conversations: WorkConversationState[] = [];
   #pendingPermission: PendingPermission | undefined;
   #pendingSitePermission: PendingSitePermission | undefined;
   #pendingCredential: PendingCredentialRecord | undefined;
@@ -265,6 +284,7 @@ export class BrowserController {
         runtimeMessage: this.#runtimeMessage,
         busy: this.#busy,
         messages: this.#messages,
+        conversations: this.#conversations,
         ...(this.#pendingPermission ? { pendingPermission: this.#pendingPermission } : {}),
       },
     };
@@ -564,11 +584,23 @@ export class BrowserController {
       case "set-work-panel":
         this.#workPanel = command.panel;
         break;
+      case "new-work-conversation":
+        await this.#newWorkConversation();
+        break;
+      case "select-work-conversation":
+        await this.#selectWorkConversation(command.sessionId);
+        break;
       case "work-send":
         this.#sendWorkMessage(command.text);
         break;
       case "stop-work":
+        this.#stopRequested = true;
         this.#runtime.send({ type: "interrupt" });
+        this.#busy = false;
+        this.#pendingPermission = undefined;
+        for (const message of this.#messages) {
+          if (message.streaming) message.streaming = false;
+        }
         break;
       case "answer-permission":
         this.#answerPermission(command.requestId, command.decision);
@@ -1425,6 +1457,7 @@ export class BrowserController {
     this.#runtime.on("status", (status: { status: BrowserAppState["work"]["runtime"]; message: string }) => {
       this.#runtimeState = status.status;
       this.#runtimeMessage = status.message;
+      if (status.status === "online") void this.#refreshConversations();
       this.#broadcast();
     });
     this.#runtime.on("event", (event: AgentEvent) => void this.#handleAgentEvent(event));
@@ -1432,12 +1465,28 @@ export class BrowserController {
 
   async #handleAgentEvent(event: AgentEvent): Promise<void> {
     const type = String(event.type ?? "");
+    if (type === "session_started") {
+      const sessionInfo = event.session_info && typeof event.session_info === "object"
+        ? event.session_info as Record<string, unknown>
+        : undefined;
+      const nextSessionId = String(sessionInfo?.session_id ?? event.session_id ?? "").trim();
+      if (nextSessionId) this.#setSessionId(nextSessionId);
+      this.#messages = [welcomeWorkMessage()];
+      this.#workPanel = "chat";
+      this.#pendingPermission = undefined;
+      this.#busy = false;
+      this.#stopRequested = false;
+      await this.#refreshConversations();
+      this.#broadcast();
+      return;
+    }
     if (type === "session_info") {
       const nextSessionId = String(event.session_id ?? event.id ?? "").trim();
-      if (nextSessionId && nextSessionId !== this.#sessionId) {
-        this.#grants.revokeSession(this.#sessionId);
-        this.#sessionId = nextSessionId;
+      if (nextSessionId) this.#setSessionId(nextSessionId);
+      if (nextSessionId && this.#messages.length === 1 && this.#messages[0]?.text === welcomeWorkMessageText) {
+        await this.#restoreCurrentTranscript(nextSessionId);
       }
+      await this.#refreshConversations();
       this.#broadcast();
       return;
     }
@@ -1457,27 +1506,33 @@ export class BrowserController {
       };
       this.#workOpen = true;
       this.#layout(true);
+    } else if (this.#stopRequested && (type === "message_start" || type === "token" || type === "text_delta" || type === "message_delta" || type === "assistant_delta")) {
+      return;
     } else if (type === "message_start") {
       this.#busy = true;
       this.#messages.push({ id: String(event.id ?? randomUUID()), role: "assistant", text: "", streaming: true });
     } else if (type === "token" || type === "text_delta" || type === "message_delta" || type === "assistant_delta") {
       const message = [...this.#messages].reverse().find((item) => item.role === "assistant" && item.streaming);
       if (message) message.text += String(event.text ?? event.delta ?? event.content ?? "");
-    } else if (type === "message_end" || type === "turn_end") {
+    } else if (type === "message_end" || type === "turn_end" || type === "turn_done") {
       this.#busy = false;
+      this.#stopRequested = false;
       const message = [...this.#messages].reverse().find((item) => item.streaming);
       if (message) {
         if (!message.text && event.content) message.text = String(event.content);
         message.streaming = false;
       }
+      void this.#refreshConversations();
     } else if (type === "error") {
       this.#busy = false;
+      this.#stopRequested = false;
       this.#messages.push({ id: randomUUID(), role: "system", text: String(event.message ?? event.error ?? "Agent error") });
     }
     this.#broadcast();
   }
 
   #sendWorkMessage(text: string): void {
+    this.#stopRequested = false;
     this.#messages.push({ id: randomUUID(), role: "user", text });
     const sent = this.#runtime.send({ type: "user_message", text, mode: this.#workMode });
     if (!sent) {
@@ -1487,6 +1542,83 @@ export class BrowserController {
     }
   }
 
+  async #newWorkConversation(): Promise<void> {
+    if (this.#busy || this.#runtimeState !== "online") return;
+    try {
+      const result = AgentNewSessionSchema.parse(await this.#runtime.newSession());
+      this.#setSessionId(result.session_info.session_id);
+      this.#messages = [welcomeWorkMessage()];
+      this.#pendingPermission = undefined;
+      this.#stopRequested = false;
+      this.#workPanel = "chat";
+      this.#workOpen = true;
+      this.#layout(true);
+      await this.#refreshConversations();
+    } catch (error) {
+      this.#messages.push({ id: randomUUID(), role: "system", text: agentRequestError(error, "Could not start a new conversation") });
+    }
+  }
+
+  async #selectWorkConversation(sessionId: string): Promise<void> {
+    if (this.#busy || this.#runtimeState !== "online") return;
+    if (sessionId === this.#sessionId) {
+      this.#workPanel = "chat";
+      this.#workOpen = true;
+      this.#layout(true);
+      return;
+    }
+    try {
+      const result = AgentSessionResultSchema.parse(await this.#runtime.resumeSession(sessionId));
+      this.#setSessionId(result.session_info.session_id);
+      const messages = result.messages.map(agentWorkMessage).filter((message): message is WorkMessage => Boolean(message));
+      this.#messages = messages.length ? messages : [welcomeWorkMessage()];
+      this.#pendingPermission = undefined;
+      this.#stopRequested = false;
+      this.#workPanel = "chat";
+      this.#workOpen = true;
+      this.#layout(true);
+      await this.#refreshConversations();
+    } catch (error) {
+      this.#messages.push({ id: randomUUID(), role: "system", text: agentRequestError(error, "Could not resume that conversation") });
+    }
+  }
+
+  async #refreshConversations(): Promise<void> {
+    if (this.#runtimeState !== "online" || this.#disposed) return;
+    try {
+      const result = AgentSessionsSchema.parse(await this.#runtime.listSessions());
+      this.#conversations = result.sessions
+        .filter((sessionItem) => !sessionItem.archived)
+        .map((sessionItem) => ({
+          id: sessionItem.id,
+          title: conversationTitle(sessionItem.title, sessionItem.preview),
+          preview: sessionItem.preview.trim(),
+          updatedAt: Math.floor(sessionItem.mtime),
+          current: sessionItem.id === (result.current || this.#sessionId),
+          ...(sessionItem.cwd ? { cwd: sessionItem.cwd } : {}),
+        }));
+      this.#broadcast();
+    } catch {
+      // Conversation history is secondary to the active WebSocket session.
+    }
+  }
+
+  async #restoreCurrentTranscript(sessionId: string): Promise<void> {
+    try {
+      const result = AgentSessionTranscriptSchema.parse(await this.#runtime.session(sessionId));
+      const messages = result.messages.map(agentWorkMessage).filter((message): message is WorkMessage => Boolean(message));
+      if (messages.length) this.#messages = messages;
+    } catch {
+      // A corrupt or oversized saved transcript must not block a fresh chat.
+    }
+  }
+
+  #setSessionId(sessionId: string): void {
+    if (!sessionId || sessionId === this.#sessionId) return;
+    this.#grants.revokeSession(this.#sessionId);
+    this.#sessionId = sessionId;
+  }
+
   #answerPermission(requestId: string, decision: "allow" | "always" | "deny"): void {
     const browserWaiter = this.#permissionWaiters.get(requestId);
     if (browserWaiter) {
@@ -1494,7 +1626,7 @@ export class BrowserController {
       this.#permissionWaiters.delete(requestId);
       if (decision === "always") this.#screenshotConsentForSession = true;
     } else {
-      this.#runtime.send({ type: "permission_decision", request_id: requestId, decision });
+      this.#runtime.send({ type: "permission_decision", request_id: requestId, decision: decision === "allow" ? "once" : decision });
     }
     this.#pendingPermission = undefined;
   }
@@ -1733,6 +1865,46 @@ export class BrowserController {
     this.#layout(true);
     return await new Promise((resolve) => this.#permissionWaiters.set(requestId, { resolve }));
   }
+}
+
+function welcomeWorkMessage(): WorkMessage {
+  return {
+    id: randomUUID(),
+    role: "assistant",
+    text: welcomeWorkMessageText,
+  };
+}
+
+const welcomeWorkMessageText = "Work Mode is ready. Share this tab when you want Locus to read or interact with it.";
+
+function agentWorkMessage(message: { role: string; content: unknown }): WorkMessage | undefined {
+  const role = message.role === "user" || message.role === "assistant" || message.role === "system"
+    ? message.role
+    : undefined;
+  if (!role) return undefined;
+  const text = agentContentText(message.content).trim();
+  if (!text) return undefined;
+  return { id: randomUUID(), role, text };
+}
+
+function agentContentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((part) => {
+    if (typeof part === "string") return part;
+    if (!part || typeof part !== "object") return "";
+    const value = part as Record<string, unknown>;
+    return typeof value.text === "string" ? value.text : typeof value.content === "string" ? value.content : "";
+  }).filter(Boolean).join("\n");
+}
+
+function conversationTitle(title: string, preview: string): string {
+  const value = (title || preview || "New conversation").replace(/\s+/g, " ").trim();
+  return value.length > 64 ? `${value.slice(0, 61)}…` : value;
+}
+
+function agentRequestError(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? `${fallback}: ${error.message}` : `${fallback}.`;
 }
 
 function trustedRendererPreferences(preloadPath: string): Electron.WebPreferences {
