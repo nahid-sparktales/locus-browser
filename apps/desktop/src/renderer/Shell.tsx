@@ -612,6 +612,15 @@ function ExtensionSettings({ state }: { state: BrowserAppState }) {
         <div className="extension-private-note"><EyeOff size={14} /><span><strong>Off in Private Windows</strong><small>Extensions cannot inspect or change private pages.</small></span></div>
       ) : (
         <>
+          <div className="extension-gallery-card">
+            <span className="extension-icon verified"><ShieldCheck size={15} /></span>
+            <span><strong>Signed Locus packages</strong><small>Publisher and gallery signatures are checked before anything is installed.</small></span>
+            <button
+              type="button"
+              disabled={Boolean(busy) || manager.loading || manager.trustedGalleryKeyCount === 0}
+              onClick={() => void run("install-signed", { type: "install-signed-extension" })}
+            >Install…</button>
+          </div>
           <div className="extension-developer-card">
             <span className="extension-icon"><Puzzle size={15} /></span>
             <span><strong>Developer Mode</strong><small>Load reviewed, unpacked MV3 extensions for this profile only.</small></span>
@@ -625,7 +634,7 @@ function ExtensionSettings({ state }: { state: BrowserAppState }) {
               onClick={() => void run("developer-mode", { type: "set-extension-developer-mode", enabled: !manager.developerMode })}
             ><span /></button>
           </div>
-          <p className="extension-contract">{manager.message} Locus accepts {manager.supportedApiCount} current engine-backed permission groups and rejects unsupported manifest capabilities or remote executable code.</p>
+          <p className="extension-contract">{manager.message} {manager.trustedGalleryKeyCount} trusted gallery key · {manager.supportedApiCount} current engine-backed permission groups. Unsupported capabilities and remote executable code are rejected.</p>
           {error ? <p className="extension-error" role="alert"><CircleAlert size={12} />{error}</p> : null}
           <button
             className="extension-load-button"
@@ -638,17 +647,19 @@ function ExtensionSettings({ state }: { state: BrowserAppState }) {
               {manager.installs.map((extension) => {
                 const attention = Boolean(extension.error);
                 const needsGalleryInstall = extension.source === "gallery" && !extension.installPath;
-                const status = needsGalleryInstall ? "Not on this Mac" : attention ? "Needs attention" : extension.loaded ? "Loaded" : extension.enabled && !manager.developerMode ? "Developer Mode off" : extension.enabled ? "Waiting" : "Disabled";
+                const status = needsGalleryInstall ? "Not on this Mac" : attention ? "Needs attention" : extension.loaded ? "Loaded" : extension.source === "developer" && extension.enabled && !manager.developerMode ? "Developer Mode off" : extension.enabled ? "Waiting" : "Disabled";
                 const disableToggle = Boolean(busy) || manager.loading || needsGalleryInstall || (extension.source === "developer" && !manager.developerMode);
                 const nextEnabled = attention ? true : !extension.enabled;
                 return (
                   <article className={`extension-card ${attention ? "attention" : ""}`} key={extension.id}>
                     <header><span className="extension-icon"><Puzzle size={14} /></span><span><strong>{extension.name}</strong><small>{extension.version} · {extension.source === "developer" ? "Unpacked" : "Gallery"}</small></span><i className={extension.loaded ? "loaded" : attention ? "attention" : ""}>{status}</i></header>
                     {extension.description ? <p>{extension.description}</p> : null}
-                    {extension.installPath ? <small className="extension-path" title={extension.installPath}>{extension.installPath}</small> : null}
+                    {extension.source === "developer" && extension.installPath ? <small className="extension-path" title={extension.installPath}>{extension.installPath}</small> : null}
+                    {extension.source === "gallery" && extension.galleryKeyName ? <div className="extension-verification"><ShieldCheck size={11} /><span>{extension.galleryKeyName}{extension.verifiedPublisher ? ` · Publisher ${extension.verifiedPublisher}` : ""}</span></div> : null}
                     <div className="extension-access"><span>APIs · {extension.permissions.length || "None"}</span><span>Sites · {extension.hostPermissions.length || "None"}</span></div>
                     {attention ? <p className="extension-card-error"><CircleAlert size={11} />{extension.error}</p> : null}
                     <footer>
+                      {extension.rollbackVersion ? <button type="button" disabled={Boolean(busy) || manager.loading} onClick={() => void run(`rollback-${extension.id}`, { type: "rollback-extension", extensionId: extension.id })}>Roll back to {extension.rollbackVersion}</button> : null}
                       <button type="button" disabled={disableToggle} onClick={() => void run(extension.id, { type: "set-extension-enabled", extensionId: extension.id, enabled: nextEnabled })}>{needsGalleryInstall ? "Gallery required" : attention ? "Review & enable" : extension.enabled ? "Disable" : "Enable"}</button>
                       <button type="button" className="danger" disabled={Boolean(busy)} onClick={() => void run(`remove-${extension.id}`, { type: "remove-extension", extensionId: extension.id })}>Remove</button>
                     </footer>

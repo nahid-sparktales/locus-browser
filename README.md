@@ -73,16 +73,24 @@ The app identity is the Locus lime tile with a single black **L**. The source
 assets live at `apps/desktop/assets/icon.png` and `icon.icns`; macOS installs
 the same icon for the application window and Dock while running locally.
 
-Extensions are profile scoped and disabled in Private Windows. Settings now
-offers an explicitly warned Developer Mode for local unpacked MV3 extensions,
-shows API and site access before first load or permission expansion, and lets
-the user enable, disable, or remove each install. The main process scans a
-bounded folder, rejects symlinks, unsafe resource paths, unsupported manifest
-capabilities, and remote executable code, then loads the extension into the
-profile session before restored pages open. Unpacked developer extensions and
-their local paths are never synced. The current engine-backed permission
-allowlist is deliberately narrow: `activeTab`, `scripting`, `storage`, `tabs`,
-and `webRequest`; broader gallery APIs remain future compatibility work.
+Extensions are profile scoped and disabled in Private Windows. Settings accepts
+signed `.locusx` packages through a native file and permission review, verifies
+both the publisher signature and a built-in Locus gallery countersignature,
+then extracts only inventoried files into profile-owned storage. Updates must
+keep the same publisher; the previous verified version remains available for a
+one-click rollback. Package versions, trust identities, enable state, restart
+loading, and removal are persisted without exposing managed paths to the UI.
+
+An explicitly warned Developer Mode remains available for local unpacked MV3
+extensions. Both install paths show API and site access before first load or
+permission expansion. The main process rejects symlinks, unsafe resource paths,
+unsupported manifest capabilities, remote executable code, archive bombs, and
+review-to-install changes. Only curated gallery metadata participates in sync;
+developer extensions, local paths, and extension storage never do. The current
+engine-backed permission allowlist is deliberately narrow: `activeTab`,
+`scripting`, `storage`, `tabs`, and `webRequest`; broader gallery APIs remain
+future compatibility work. The versioned package contract is documented in
+[`docs/locusx-format.md`](docs/locusx-format.md).
 
 Optional Locus encrypted sync now provides passkey accounts and client-side
 encrypted bookmarks, history, tab groups, ordinary web tabs, selected settings,
@@ -107,7 +115,9 @@ preload and main-process schema validation.
 
 The harmless unpacked fixture at `fixtures/extensions/reading-notes` can be
 used to verify Developer Mode and content-script loading against
-`https://example.com` in an isolated profile.
+`https://example.com` in an isolated profile. Signed-package tests create
+ephemeral publisher and gallery keys so no production signing secret is kept
+in this repository.
 
 ## Verify
 

@@ -72,6 +72,9 @@ importers:
       electron:
         specifier: 43.4.1
         version: 43.4.1(supports-color@8.1.1)
+      fflate:
+        specifier: 0.8.2
+        version: 0.8.2
       tsup:
         specifier: 8.5.1
         version: 8.5.1(postcss@8.5.26)(supports-color@8.1.1)(tsx@4.20.6)(typescript@7.0.2)

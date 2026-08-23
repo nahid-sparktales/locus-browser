@@ -20,7 +20,11 @@ import {
   type BrowserActionResult,
 } from "@locus/protocol";
 import { bridgeInvocation, browserBridgeSource } from "@locus/browser-bridge";
-import { extensionContentScriptMatches } from "@locus/extensions";
+import {
+  extensionContentScriptMatches,
+  trustedGalleryFingerprints,
+  trustedGalleryKeys,
+} from "@locus/extensions";
 import { z } from "zod";
 import { ipcChannels } from "../shared/channels.js";
 import type { BrowserCommand } from "../shared/ipc.js";
@@ -51,6 +55,7 @@ import { CredentialVault } from "./CredentialVault.js";
 import { credentialAutofillInvocation, credentialObserverSource, parseCredentialCandidate, type PageCredentialCandidate } from "./CredentialPageBridge.js";
 import { electronCredentialCipher } from "./ElectronCredentialCipher.js";
 import { ExtensionManager, type ExtensionPermissionReview } from "./ExtensionManager.js";
+import { GalleryExtensionStore } from "./GalleryExtensionStore.js";
 import { TabAccessRegistry } from "./TabAccessRegistry.js";
 import { canSleepTab, shouldSleepTab } from "./TabSleepingPolicy.js";
 import { SyncAccountManager } from "./SyncAccountManager.js";
@@ -356,7 +361,15 @@ export class BrowserController {
     });
 
     const profileSession = this.#configureProfileSession();
-    this.#extensions = this.#privateWindow ? undefined : new ExtensionManager(this.#database, this.#profileId, profileSession.extensions);
+    this.#extensions = this.#privateWindow ? undefined : new ExtensionManager(
+      this.#database,
+      this.#profileId,
+      profileSession.extensions,
+      new GalleryExtensionStore(
+        join(app.getPath("userData"), "Extension Packages", this.#profileId),
+        trustedGalleryFingerprints,
+      ),
+    );
     if (this.#privateWindow) {
       this.#restoreTabs();
       this.#runtimeState = "offline";
@@ -412,6 +425,7 @@ export class BrowserController {
         loading: false,
         installs: [],
         supportedApiCount: 0,
+        trustedGalleryKeyCount: 0,
         message: "Extensions are disabled in Private Windows.",
       },
       sync: this.#sync?.state() ?? { status: "disconnected", pendingRecords: 0, devices: [] },
@@ -642,8 +656,14 @@ export class BrowserController {
       case "install-unpacked-extension":
         await this.#installUnpackedExtension();
         break;
+      case "install-signed-extension":
+        await this.#installSignedExtension();
+        break;
       case "set-extension-enabled":
         await this.#setExtensionEnabled(command.extensionId, command.enabled);
+        break;
+      case "rollback-extension":
+        await this.#rollbackExtension(command.extensionId);
         break;
       case "remove-extension":
         await this.#removeExtension(command.extensionId);
@@ -1383,6 +1403,22 @@ export class BrowserController {
     await this.#extensions.installUnpacked(review);
   }
 
+  async #installSignedExtension(): Promise<void> {
+    if (!this.#extensions) return;
+    const result = await dialog.showOpenDialog(this.window, {
+      title: "Choose Signed Locus Extension",
+      properties: ["openFile"],
+      filters: [{ name: "Signed Locus extensions", extensions: ["locusx"] }],
+    });
+    const path = result.filePaths[0];
+    if (result.canceled || !path) return;
+    const review = await this.#extensions.inspectGallery(path);
+    const existing = this.#extensions.state().installs.find((extension) => extension.id === ("id" in review.inspection ? review.inspection.id : ""));
+    const action = existing ? "Verify and Update" : "Verify and Install";
+    if (!await this.#confirmExtensionPermissions(review, action)) return;
+    await this.#extensions.installGallery(review);
+  }
+
   async #setExtensionEnabled(id: string, enabled: boolean): Promise<void> {
     if (!this.#extensions) return;
     if (!enabled) {
@@ -1404,17 +1440,25 @@ export class BrowserController {
       message: "Remove this extension from the current browser profile?",
       detail: extension.source === "developer"
         ? "Locus Browser will unload the extension and forget it. The original developer folder will not be deleted."
-        : "Locus Browser will unload this extension from the current profile.",
+        : "Locus Browser will unload this extension and delete its managed package versions from the current profile.",
       buttons: ["Remove", "Cancel"],
       defaultId: 1,
       cancelId: 1,
       noLink: true,
     });
-    if (result.response === 0) this.#extensions.remove(id);
+    if (result.response === 0) await this.#extensions.remove(id);
+  }
+
+  async #rollbackExtension(id: string): Promise<void> {
+    if (!this.#extensions) return;
+    const review = await this.#extensions.prepareRollback(id);
+    if (!await this.#confirmExtensionPermissions(review, `Roll Back to ${review.inspection.manifest.version}`)) return;
+    await this.#extensions.rollback(id, review);
   }
 
   async #confirmExtensionPermissions(review: ExtensionPermissionReview, action: string): Promise<boolean> {
     const manifest = review.inspection.manifest;
+    const signedInspection = "publisherFingerprint" in review.inspection ? review.inspection : undefined;
     const apiPermissions = [
       ...manifest.permissions,
       ...manifest.optional_permissions.map((permission) => `${permission} (optional)`),
@@ -1429,10 +1473,14 @@ export class BrowserController {
     ];
     const detail = [
       manifest.description || "No description provided.",
+      ...(signedInspection ? [
+        `Verified publisher: ${signedInspection.publisherFingerprint.slice(0, 16)}`,
+        `Gallery key: ${trustedGalleryKeys.find((key) => key.fingerprint === signedInspection.galleryFingerprint)?.name ?? "Trusted Locus gallery"}`,
+      ] : []),
       `API access: ${apiPermissions.length ? apiPermissions.join(", ") : "None"}`,
       `Site access: ${hosts.length ? hosts.join(", ") : "None"}`,
       ...(review.expansion.length ? [`New access: ${review.expansion.join(", ")}`] : []),
-      `${review.inspection.fileCount} files · ${(review.inspection.totalBytes / 1_048_576).toFixed(2)} MB · Files stay in ${review.inspection.path}`,
+      `${review.inspection.fileCount} files · ${(review.inspection.totalBytes / 1_048_576).toFixed(2)} MB · ${review.source === "developer" ? `Files stay in ${review.inspection.path}` : "Locus stores a verified private copy for this profile"}`,
     ].join("\n\n");
     const result = await dialog.showMessageBox(this.window, {
       type: review.expansion.length ? "warning" : "info",

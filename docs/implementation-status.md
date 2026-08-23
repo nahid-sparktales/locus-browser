@@ -67,8 +67,13 @@ schedule, and orchestration surface from native Locus.
   page's private isolated world and the main process; trusted renderers, Work
   Mode, browser state, and agent APIs receive metadata only. Private windows
   never capture or save credentials.
-- Signed `.locusx` verifier, API/permission registry, permission-expansion
-  checks, inventory validation, remote-code rules, and dual signatures.
+- Signed `.locusx` install/update/rollback flow with stable signed IDs, strict
+  Ed25519 publisher and trusted-gallery signatures, bounded archive expansion,
+  duplicate/path/inventory checks, review-to-install verification, canonical
+  profile-owned extraction, managed-copy integrity checks, publisher continuity,
+  persisted package history, native permission review, restart restoration,
+  and safe removal. The visible trust identity is tied to a canary gallery key
+  that must be replaced before beta.
 - Profile-scoped unpacked-extension Developer Mode with a native risk warning,
   native API/host permission review, bounded real-path inventory, symlink and
   remote-code rejection, fingerprinted review-to-load consistency, Electron
@@ -113,10 +118,10 @@ schedule, and orchestration surface from native Locus.
 - Add S3-backed large opaque envelopes, broader offline/failure simulations,
   production-scale key-rotation migrations, fuzzing, and an external sync
   cryptography review.
-- Extract and load verified `.locusx` gallery packages through an official
-  signing-key allowlist and gallery UI; add action/commands/context-menu and
-  other planned MV3 shims, then ship per-API native compatibility fixtures,
-  malware review, permission-expanding updates, and rollback infrastructure.
+- Replace the canary gallery key with an offline production key ceremony and
+  network gallery/update service; add action/commands/context-menu and other
+  planned MV3 shims, then ship per-API native compatibility fixtures, malware
+  review, publisher onboarding, key rotation, and update rollout policy.
 - Team orchestration, schedules, checkpoints, and a dedicated `AGENTS.md`
   panel remain outside the intentionally focused initial browser canary scope.
 - Bundle the Python runtime, implement signed component/app updates, add Forge

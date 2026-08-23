@@ -74,16 +74,23 @@ state or any Work/agent protocol.
 
 Extension management is also a trusted-shell operation. Each normal profile's
 persistent Chromium session has a profile-scoped extension manager; Private
-Windows use a separate in-memory partition and never receive extensions. Before
-Electron sees an unpacked directory, the main process resolves its real path,
-bounds file count and bytes, rejects every symlink, validates the MV3 manifest
-against the versioned Locus registry, checks content-script resource paths, and
-scans executable text for dynamic or remote code. A second fingerprinted scan
-immediately before load prevents files from changing between the native access
-review and installation. Enabled extensions are restored before saved webpages
-open. New permissions block automatic startup until the user reviews them;
-disabling unloads the runtime extension, and removal forgets only the profile
-record without deleting the developer's source folder.
+Windows use a separate in-memory partition and never receive extensions. A
+signed `.locusx` archive is verified against the versioned package contract,
+its Ed25519 publisher signature, and the compiled-in gallery key allowlist.
+Archive, expanded-byte, entry-count, individual-file, path, inventory, and
+remote-code limits run before any package file enters managed storage. The
+reviewed archive is fingerprinted and verified again immediately before an
+atomic extraction into a canonical profile-owned directory. Existing managed
+copies are byte-for-byte integrity checked before reuse.
+
+Gallery updates are keyed by the signed stable extension ID and must preserve
+publisher identity. SQLite retains each verified package version and the active
+path, allowing the manager to unload, replace, restore after failure, and roll
+back without trusting a newly supplied archive. Removal deletes only those
+canonical managed copies. Unpacked Developer Mode follows a separate flow: the
+main process resolves the real path, bounds and scans the directory, and never
+deletes the developer's source folder. Enabled extensions are restored before
+saved webpages open, while new permissions block startup until user review.
 
 Only gallery extension ID/version/enabled/source metadata participates in
 encrypted sync. Developer installs and filesystem paths are excluded at the

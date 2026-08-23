@@ -81,6 +81,9 @@ export interface ExtensionInstallState {
   installPath?: string;
   permissions: string[];
   hostPermissions: string[];
+  verifiedPublisher?: string;
+  galleryKeyName?: string;
+  rollbackVersion?: string;
   error?: string;
   updatedAt: number;
 }
@@ -90,6 +93,7 @@ export interface ExtensionManagerState {
   loading: boolean;
   installs: ExtensionInstallState[];
   supportedApiCount: number;
+  trustedGalleryKeyCount: number;
   message: string;
 }
 

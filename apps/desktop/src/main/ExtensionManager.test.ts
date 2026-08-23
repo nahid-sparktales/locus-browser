@@ -1,9 +1,12 @@
+import { generateKeyPairSync } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { BrowserDatabase } from "./BrowserDatabase.js";
 import { ExtensionManager, type ExtensionRuntime, type LoadedExtension } from "./ExtensionManager.js";
+import { GalleryExtensionStore } from "./GalleryExtensionStore.js";
+import { writeSignedExtensionFixture } from "./SignedExtensionTestFixture.js";
 
 class FakeExtensionRuntime implements ExtensionRuntime {
   readonly loaded = new Map<string, LoadedExtension>();
@@ -48,7 +51,7 @@ describe("ExtensionManager", () => {
     await manager.setEnabled(id, false);
     expect(manager.state().installs[0]).toMatchObject({ enabled: false, loaded: false });
     expect(runtime.loaded.size).toBe(0);
-    manager.remove(id);
+    await manager.remove(id);
     expect(manager.state().installs).toEqual([]);
     expect(existsSync(extensionPath)).toBe(true);
     database.close();
@@ -89,6 +92,76 @@ describe("ExtensionManager", () => {
 
     await expect(manager.installUnpacked(review)).rejects.toThrow("changed while permissions were being reviewed");
     expect(manager.state().installs).toEqual([]);
+    database.close();
+  });
+
+  it("installs, updates, rolls back, and removes trusted gallery packages", async () => {
+    const root = mkdtempSync(join(tmpdir(), "locus-gallery-manager-"));
+    const database = new BrowserDatabase(join(root, "browser.sqlite"));
+    const runtime = new FakeExtensionRuntime();
+    const gallery = generateKeyPairSync("ed25519");
+    const publisher = generateKeyPairSync("ed25519");
+    const firstPackage = join(root, "notes-1.0.0.locusx");
+    const fingerprint = writeSignedExtensionFixture(firstPackage, { gallery, publisher });
+    const store = new GalleryExtensionStore(join(root, "managed"), new Set([fingerprint]));
+    const manager = new ExtensionManager(database, "default", runtime, store);
+
+    const firstReview = await manager.inspectGallery(firstPackage);
+    await manager.installGallery(firstReview);
+    expect(manager.state()).toMatchObject({
+      trustedGalleryKeyCount: 1,
+      installs: [{ source: "gallery", version: "1.0.0", loaded: true, galleryKeyName: "Trusted Locus gallery" }],
+    });
+    const loadCallsAfterFirstInstall = runtime.loadCalls;
+    await manager.installGallery(await manager.inspectGallery(firstPackage));
+    expect(runtime.loadCalls).toBe(loadCallsAfterFirstInstall + 1);
+
+    const updatePackage = join(root, "notes-1.1.0.locusx");
+    writeSignedExtensionFixture(updatePackage, {
+      gallery,
+      publisher,
+      manifest: { ...firstReview.inspection.manifest, version: "1.1.0" },
+    });
+    await manager.installGallery(await manager.inspectGallery(updatePackage));
+    expect(manager.state().installs[0]).toMatchObject({ version: "1.1.0", rollbackVersion: "1.0.0", loaded: true });
+
+    const rollbackReview = await manager.prepareRollback("dev.locus.reading-notes");
+    await manager.rollback("dev.locus.reading-notes", rollbackReview);
+    expect(manager.state().installs[0]).toMatchObject({ version: "1.0.0", rollbackVersion: "1.1.0", loaded: true });
+
+    const installedPaths = database.listExtensionPackages("default", "dev.locus.reading-notes").map((item) => item.installPath);
+    await manager.remove("dev.locus.reading-notes");
+    expect(manager.state().installs).toEqual([]);
+    expect(installedPaths.every((path) => !existsSync(path))).toBe(true);
+    database.close();
+  });
+
+  it("rejects a gallery update that changes the verified publisher", async () => {
+    const root = mkdtempSync(join(tmpdir(), "locus-gallery-publisher-"));
+    const database = new BrowserDatabase(join(root, "browser.sqlite"));
+    const runtime = new FakeExtensionRuntime();
+    const gallery = generateKeyPairSync("ed25519");
+    const publisher = generateKeyPairSync("ed25519");
+    const replacementPublisher = generateKeyPairSync("ed25519");
+    const firstPackage = join(root, "notes-1.0.0.locusx");
+    const fingerprint = writeSignedExtensionFixture(firstPackage, { gallery, publisher });
+    const manager = new ExtensionManager(
+      database,
+      "default",
+      runtime,
+      new GalleryExtensionStore(join(root, "managed"), new Set([fingerprint])),
+    );
+    const firstReview = await manager.inspectGallery(firstPackage);
+    await manager.installGallery(firstReview);
+
+    const updatePackage = join(root, "notes-1.1.0.locusx");
+    writeSignedExtensionFixture(updatePackage, {
+      gallery,
+      publisher: replacementPublisher,
+      manifest: { ...firstReview.inspection.manifest, version: "1.1.0" },
+    });
+    await expect(manager.installGallery(await manager.inspectGallery(updatePackage))).rejects.toThrow("same verified publisher");
+    expect(manager.state().installs[0]?.version).toBe("1.0.0");
     database.close();
   });
 });

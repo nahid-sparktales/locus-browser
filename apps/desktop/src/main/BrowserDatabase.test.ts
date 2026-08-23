@@ -137,6 +137,42 @@ describe("BrowserDatabase", () => {
     database.close();
   });
 
+  it("keeps verified gallery package versions available for rollback", () => {
+    const database = new BrowserDatabase(join(mkdtempSync(join(tmpdir(), "locus-extension-packages-")), "browser.sqlite"));
+    database.saveExtensionInstall("default", {
+      id: "dev.locus.notes",
+      name: "Notes",
+      version: "1.1.0",
+      enabled: true,
+      source: "gallery",
+      installPath: "/managed/notes/1.1.0",
+      manifestJson: JSON.stringify({ manifest_version: 3, name: "Notes", version: "1.1.0" }),
+    });
+    database.saveExtensionPackage("default", {
+      extensionId: "dev.locus.notes",
+      version: "1.0.0",
+      installPath: "/managed/notes/1.0.0",
+      packageFingerprint: "package-v1",
+      publisherFingerprint: "publisher",
+      galleryFingerprint: "gallery",
+      installedAt: 1,
+    });
+    database.saveExtensionPackage("default", {
+      extensionId: "dev.locus.notes",
+      version: "1.1.0",
+      installPath: "/managed/notes/1.1.0",
+      packageFingerprint: "package-v2",
+      publisherFingerprint: "publisher",
+      galleryFingerprint: "gallery",
+      installedAt: 2,
+    });
+
+    expect(database.listExtensionPackages("default", "dev.locus.notes").map((item) => item.version)).toEqual(["1.1.0", "1.0.0"]);
+    database.deleteExtensionPackages("default", "dev.locus.notes");
+    expect(database.listExtensionPackages("default", "dev.locus.notes")).toEqual([]);
+    database.close();
+  });
+
   it("round-trips tab groups with their tab membership", () => {
     const database = new BrowserDatabase(join(mkdtempSync(join(tmpdir(), "locus-groups-")), "browser.sqlite"));
     database.saveWindow({ id: "group-window", profileId: "default", sidebarOpen: true, workOpen: false, workWidth: 420 }, [{

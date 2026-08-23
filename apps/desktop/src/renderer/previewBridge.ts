@@ -73,18 +73,22 @@ const previewState: BrowserAppState = {
     developerMode: previewExtensions,
     loading: false,
     supportedApiCount: 5,
+    trustedGalleryKeyCount: 1,
     message: previewExtensions ? "Developer Mode is on. Unpacked extensions can inspect granted sites." : "Developer Mode is off. Unpacked extensions are not loaded.",
     installs: previewExtensions ? [{
-      id: "preview-extension",
+      id: "dev.locus.reading-notes",
       name: "Reading Notes",
-      version: "1.0.0",
+      version: "1.1.0",
       description: "Save selected passages to your local reading notes.",
       enabled: true,
       loaded: true,
-      source: "developer",
-      installPath: "/Users/nahid/Developer/reading-notes",
+      source: "gallery",
+      installPath: "/Users/nahid/Library/Application Support/Locus Browser/Extension Packages/default/dev.locus.reading-notes/1.1.0",
       permissions: ["storage"],
       hostPermissions: ["https://*.example.com/*"],
+      verifiedPublisher: "4f0d27ac918e",
+      galleryKeyName: "Locus Canary Gallery",
+      rollbackVersion: "1.0.0",
       updatedAt: 1_787_408_000,
     }] : [],
   },
@@ -410,14 +414,26 @@ function applyPreviewCommand(command: BrowserCommand): void {
       previewState.extensions.installs = previewState.extensions.installs.map((extension) => ({ ...extension, loaded: command.enabled && extension.enabled }));
       break;
     case "install-unpacked-extension":
-      previewState.extensions.installs = [{
+      previewState.extensions.installs = [...previewState.extensions.installs, {
         id: "preview-extension", name: "Reading Notes", version: "1.0.0", description: "Save selected passages to your local reading notes.",
         enabled: true, loaded: true, source: "developer", installPath: "/Users/nahid/Developer/reading-notes",
         permissions: ["storage"], hostPermissions: ["https://*.example.com/*"], updatedAt: Math.floor(Date.now() / 1_000),
       }];
       break;
+    case "install-signed-extension":
+      previewState.extensions.installs = [{
+        id: "dev.locus.reading-notes", name: "Reading Notes", version: "1.1.0", description: "Save selected passages to your local reading notes.",
+        enabled: true, loaded: true, source: "gallery", installPath: "/managed/dev.locus.reading-notes/1.1.0", permissions: ["storage"], hostPermissions: ["https://*.example.com/*"],
+        verifiedPublisher: "4f0d27ac918e", galleryKeyName: "Locus Canary Gallery", rollbackVersion: "1.0.0", updatedAt: Math.floor(Date.now() / 1_000),
+      }];
+      break;
     case "set-extension-enabled":
       previewState.extensions.installs = previewState.extensions.installs.map((extension) => extension.id === command.extensionId ? { ...extension, enabled: command.enabled, loaded: command.enabled } : extension);
+      break;
+    case "rollback-extension":
+      previewState.extensions.installs = previewState.extensions.installs.map((extension) => extension.id === command.extensionId
+        ? { ...extension, version: extension.rollbackVersion ?? extension.version, rollbackVersion: extension.version }
+        : extension);
       break;
     case "remove-extension":
       previewState.extensions.installs = previewState.extensions.installs.filter((extension) => extension.id !== command.extensionId);

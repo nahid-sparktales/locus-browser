@@ -41,7 +41,9 @@ describe("extension management commands", () => {
   it.each([
     { type: "set-extension-developer-mode", enabled: true },
     { type: "install-unpacked-extension" },
+    { type: "install-signed-extension" },
     { type: "set-extension-enabled", extensionId: "extension-1", enabled: false },
+    { type: "rollback-extension", extensionId: "extension-1" },
     { type: "remove-extension", extensionId: "extension-1" },
   ])("accepts and bounds $type", (command) => {
     expect(BrowserCommandSchema.safeParse(command).success).toBe(true);

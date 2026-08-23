@@ -111,6 +111,16 @@ export interface StoredExtensionInstall {
   updatedAt?: number;
 }
 
+export interface StoredExtensionPackage {
+  extensionId: string;
+  version: string;
+  installPath: string;
+  packageFingerprint: string;
+  publisherFingerprint: string;
+  galleryFingerprint: string;
+  installedAt: number;
+}
+
 export type BrowserSyncCollection = "bookmarks" | "history" | "tab-groups" | "remote-tabs" | "settings" | "extensions";
 
 export interface StoredSyncAccount {
@@ -193,7 +203,7 @@ export class BrowserDatabase {
     try {
       for (const table of [
         "history_visits", "bookmarks", "downloads", "site_permissions", "browser_settings",
-        "browser_credentials", "extension_installs", "sync_local_records", "sync_outbox", "sync_inbox",
+        "browser_credentials", "extension_packages", "extension_installs", "sync_local_records", "sync_outbox", "sync_inbox",
       ]) {
         this.#database.prepare(`DELETE FROM ${table} WHERE profile_id = ?`).run(id);
       }
@@ -483,6 +493,43 @@ export class BrowserDatabase {
 
   deleteExtensionInstall(profileId: string, id: string): void {
     this.#database.prepare("DELETE FROM extension_installs WHERE profile_id=? AND extension_id=?").run(profileId, id);
+  }
+
+  listExtensionPackages(profileId: string, extensionId: string): StoredExtensionPackage[] {
+    return this.#database.prepare(`
+      SELECT extension_id AS extensionId, version, install_path AS installPath,
+             package_fingerprint AS packageFingerprint,
+             publisher_fingerprint AS publisherFingerprint,
+             gallery_fingerprint AS galleryFingerprint, installed_at AS installedAt
+      FROM extension_packages WHERE profile_id=? AND extension_id=?
+      ORDER BY installed_at DESC, version DESC
+    `).all(profileId, extensionId) as unknown as StoredExtensionPackage[];
+  }
+
+  saveExtensionPackage(profileId: string, extensionPackage: StoredExtensionPackage): void {
+    this.#database.prepare(`
+      INSERT INTO extension_packages(
+        profile_id, extension_id, version, install_path, package_fingerprint,
+        publisher_fingerprint, gallery_fingerprint, installed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(profile_id, extension_id, package_fingerprint) DO UPDATE SET
+        version=excluded.version, install_path=excluded.install_path,
+        publisher_fingerprint=excluded.publisher_fingerprint,
+        gallery_fingerprint=excluded.gallery_fingerprint
+    `).run(
+      profileId,
+      extensionPackage.extensionId,
+      extensionPackage.version,
+      extensionPackage.installPath,
+      extensionPackage.packageFingerprint,
+      extensionPackage.publisherFingerprint,
+      extensionPackage.galleryFingerprint,
+      extensionPackage.installedAt,
+    );
+  }
+
+  deleteExtensionPackages(profileId: string, extensionId: string): void {
+    this.#database.prepare("DELETE FROM extension_packages WHERE profile_id=? AND extension_id=?").run(profileId, extensionId);
   }
 
   saveCredential(profileId: string, credential: StoredCredential): void {
@@ -830,7 +877,8 @@ export class BrowserDatabase {
         this.#database.prepare(`
           INSERT INTO extension_installs(profile_id, extension_id, version, enabled, source, manifest_json, updated_at)
           VALUES (?, ?, ?, ?, ?, '{}', unixepoch())
-          ON CONFLICT(profile_id, extension_id) DO UPDATE SET version=excluded.version,
+          ON CONFLICT(profile_id, extension_id) DO UPDATE SET
+            version=CASE WHEN extension_installs.install_path IS NULL THEN excluded.version ELSE extension_installs.version END,
             enabled=excluded.enabled, source=excluded.source, updated_at=excluded.updated_at
           WHERE extension_installs.source='gallery'
         `).run(profileId, record.recordId, value.version, Number(value.enabled), value.source);
@@ -958,6 +1006,18 @@ export class BrowserDatabase {
         updated_at INTEGER NOT NULL,
         PRIMARY KEY(profile_id, extension_id)
       );
+      CREATE TABLE IF NOT EXISTS extension_packages (
+        profile_id TEXT NOT NULL,
+        extension_id TEXT NOT NULL,
+        version TEXT NOT NULL,
+        install_path TEXT NOT NULL,
+        package_fingerprint TEXT NOT NULL,
+        publisher_fingerprint TEXT NOT NULL,
+        gallery_fingerprint TEXT NOT NULL,
+        installed_at INTEGER NOT NULL,
+        PRIMARY KEY(profile_id, extension_id, package_fingerprint),
+        FOREIGN KEY(profile_id, extension_id) REFERENCES extension_installs(profile_id, extension_id) ON DELETE CASCADE
+      );
       CREATE TABLE IF NOT EXISTS sync_state (
         collection TEXT PRIMARY KEY,
         cursor TEXT,
@@ -1046,6 +1106,7 @@ export class BrowserDatabase {
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (4, unixepoch());
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (5, unixepoch());
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (6, unixepoch());
+      INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (7, unixepoch());
     `);
   }
 

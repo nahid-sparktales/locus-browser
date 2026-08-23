@@ -22,6 +22,13 @@ Locus Browser treats every webpage and extension as hostile content.
   and native permission review. Their folders are bounded and revalidated for
   symlinks, path escapes, unsupported capabilities, remote code, and changes
   between review and load. They never run in Private Windows or enter sync.
+- Signed `.locusx` packages require an Ed25519 publisher signature and a
+  countersignature from a compiled-in gallery key. The archive is bounded
+  before extraction, every path and SHA-256 inventory entry is checked, and
+  only reviewed files are written with private permissions to profile-owned
+  storage. Updates preserve publisher identity and a verified prior version is
+  retained for rollback. The included key is canary-only and must be rotated
+  before beta distribution.
 - Sync encryption happens before upload. The service receives ciphertext and
   routing metadata only; passwords, cookies, site storage, AI sessions,
   credentials, and workspace/run data have no sync collection.

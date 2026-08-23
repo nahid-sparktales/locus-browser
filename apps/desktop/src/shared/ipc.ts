@@ -47,7 +47,9 @@ export const BrowserCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("choose-download-directory") }),
   z.object({ type: z.literal("set-extension-developer-mode"), enabled: z.boolean() }),
   z.object({ type: z.literal("install-unpacked-extension") }),
+  z.object({ type: z.literal("install-signed-extension") }),
   z.object({ type: z.literal("set-extension-enabled"), extensionId: z.string().min(1).max(255), enabled: z.boolean() }),
+  z.object({ type: z.literal("rollback-extension"), extensionId: z.string().min(1).max(255) }),
   z.object({ type: z.literal("remove-extension"), extensionId: z.string().min(1).max(255) }),
   z.object({
     type: z.literal("complete-onboarding"),

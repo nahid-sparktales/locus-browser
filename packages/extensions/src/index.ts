@@ -1,13 +1,22 @@
-import { createHash, verify } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
 import { strFromU8, unzipSync } from "fflate";
 import { z } from "zod";
+
+export const locusxContractVersion = 2;
+
+export const trustedGalleryKeys = [{
+  id: "locus-canary-2026-08",
+  name: "Locus Canary Gallery",
+  channel: "canary",
+  fingerprint: "52064709bc12f9096b378a96a8d266e67c6a42b0c7b2accb4133686b768c09b4",
+}] as const;
 
 export const capabilityRegistry = {
   contractVersion: 2,
   manifestVersion: 3,
   supportedManifestKeys: [
     "manifest_version", "name", "version", "description", "icons", "author",
-    "short_name", "default_locale", "minimum_chrome_version", "content_scripts",
+    "short_name", "default_locale", "minimum_chrome_version", "key", "content_scripts",
     "permissions", "host_permissions", "optional_permissions", "optional_host_permissions",
   ],
   permissions: [
@@ -35,6 +44,7 @@ const ManifestSchema = z.object({
   short_name: z.string().trim().min(1).max(40).optional(),
   default_locale: z.string().regex(/^[A-Za-z0-9_-]{2,20}$/).optional(),
   minimum_chrome_version: z.string().regex(/^\d+(?:\.\d+){0,3}$/).optional(),
+  key: z.string().regex(/^[A-Za-z0-9+/]+={0,2}$/).max(8_192).optional(),
   content_scripts: ContentScriptsSchema.default([]),
   permissions: z.array(z.string()).max(200).default([]),
   optional_permissions: z.array(z.string()).max(200).default([]),
@@ -47,13 +57,27 @@ const InventorySchema = z.object({
     path: z.string().min(1),
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
     size: z.number().int().nonnegative().max(25 * 1024 * 1024),
-  })).min(1).max(5_000),
+  }).strict()).min(1).max(5_000),
+}).strict().superRefine((inventory, context) => {
+  const paths = new Set<string>();
+  for (const file of inventory.files) {
+    if (paths.has(file.path)) context.addIssue({ code: "custom", message: `Duplicate inventory path: ${file.path}` });
+    paths.add(file.path);
+  }
 });
 
 const SignaturesSchema = z.object({
-  publisher: z.object({ publicKeyPem: z.string().min(1), signature: z.string().min(1) }),
-  gallery: z.object({ publicKeyPem: z.string().min(1), signature: z.string().min(1) }),
-});
+  contractVersion: z.literal(locusxContractVersion),
+  extensionId: z.string().regex(/^[a-z0-9](?:[a-z0-9.-]{1,126}[a-z0-9])?$/),
+  publisher: z.object({
+    publicKeyPem: z.string().min(1).max(8_192),
+    signature: z.string().regex(/^[A-Za-z0-9+/]+={0,2}$/).max(512),
+  }).strict(),
+  gallery: z.object({
+    publicKeyPem: z.string().min(1).max(8_192),
+    signature: z.string().regex(/^[A-Za-z0-9+/]+={0,2}$/).max(512),
+  }).strict(),
+}).strict();
 
 export type LocusExtensionManifest = z.infer<typeof ManifestSchema>;
 
@@ -64,6 +88,8 @@ export interface VerifiedLocusExtension {
   publisherFingerprint: string;
   galleryFingerprint: string;
 }
+
+export const trustedGalleryFingerprints = new Set(trustedGalleryKeys.map((key) => key.fingerprint));
 
 export function validateManifest(raw: unknown): LocusExtensionManifest {
   const parsed = ManifestSchema.parse(raw);
@@ -94,8 +120,20 @@ export function validateManifest(raw: unknown): LocusExtensionManifest {
 
 export function verifyLocusx(archive: Uint8Array, trustedGalleryFingerprints: ReadonlySet<string>): VerifiedLocusExtension {
   if (archive.byteLength > 50 * 1024 * 1024) throw new Error("Extension archive exceeds 50 MB");
-  const files = new Map(Object.entries(unzipSync(archive)));
-  for (const path of files.keys()) validateArchivePath(path);
+  let expandedBytes = 0;
+  let entryCount = 0;
+  const entryPaths = new Set<string>();
+  const files = new Map(Object.entries(unzipSync(archive, { filter: (file) => {
+    validateArchivePath(file.name);
+    if (entryPaths.has(file.name)) throw new Error(`Duplicate extension archive path: ${file.name}`);
+    entryPaths.add(file.name);
+    entryCount += 1;
+    if (entryCount > 5_002) throw new Error("Extension archive contains too many files");
+    if (file.originalSize > 25 * 1024 * 1024) throw new Error(`Extension file exceeds 25 MB: ${file.name}`);
+    expandedBytes += file.originalSize;
+    if (expandedBytes > 50 * 1024 * 1024) throw new Error("Expanded extension archive exceeds 50 MB");
+    return true;
+  } })));
 
   const manifestBytes = required(files, "manifest.json");
   const inventoryBytes = required(files, "inventory.json");
@@ -119,23 +157,39 @@ export function verifyLocusx(archive: Uint8Array, trustedGalleryFingerprints: Re
   }
   for (const path of extensionLocalResources(manifest)) required(files, path);
 
-  const signedMessage = Buffer.from(`${sha256(manifestBytes)}:${sha256(inventoryBytes)}`, "utf8");
-  if (!verify(null, signedMessage, signatures.publisher.publicKeyPem, Buffer.from(signatures.publisher.signature, "base64"))) {
+  const publisherFingerprint = publicKeyFingerprint(signatures.publisher.publicKeyPem);
+  const publisherSignature = Buffer.from(signatures.publisher.signature, "base64");
+  const publisherMessage = locusxPublisherMessage(signatures.extensionId, manifestBytes, inventoryBytes);
+  if (!verify(null, publisherMessage, signatures.publisher.publicKeyPem, publisherSignature)) {
     throw new Error("Invalid publisher signature");
   }
-  if (!verify(null, signedMessage, signatures.gallery.publicKeyPem, Buffer.from(signatures.gallery.signature, "base64"))) {
+  const expectedManifestKey = createPublicKey(signatures.publisher.publicKeyPem)
+    .export({ format: "der", type: "spki" })
+    .toString("base64");
+  if (manifest.key !== expectedManifestKey) {
+    throw new Error("Signed extension manifest key must match the verified publisher key");
+  }
+  const galleryMessage = locusxGalleryMessage(publisherMessage, publisherFingerprint, publisherSignature);
+  if (!verify(null, galleryMessage, signatures.gallery.publicKeyPem, Buffer.from(signatures.gallery.signature, "base64"))) {
     throw new Error("Invalid gallery countersignature");
   }
-  const galleryFingerprint = fingerprint(signatures.gallery.publicKeyPem);
+  const galleryFingerprint = publicKeyFingerprint(signatures.gallery.publicKeyPem);
   if (!trustedGalleryFingerprints.has(galleryFingerprint)) throw new Error("Gallery signing key is not trusted");
-  const publisherFingerprint = fingerprint(signatures.publisher.publicKeyPem);
   return {
-    id: sha256(Buffer.from(publisherFingerprint)).slice(0, 32),
+    id: signatures.extensionId,
     manifest,
     files,
     publisherFingerprint,
     galleryFingerprint,
   };
+}
+
+export function locusxPublisherMessage(extensionId: string, manifestBytes: Uint8Array, inventoryBytes: Uint8Array): Uint8Array {
+  return Buffer.from(`${locusxContractVersion}:${extensionId}:${sha256(manifestBytes)}:${sha256(inventoryBytes)}`, "utf8");
+}
+
+export function locusxGalleryMessage(publisherMessage: Uint8Array, publisherFingerprint: string, publisherSignature: Uint8Array): Uint8Array {
+  return Buffer.from(`${sha256(publisherMessage)}:${publisherFingerprint}:${sha256(publisherSignature)}`, "utf8");
 }
 
 export function permissionExpansion(previous: LocusExtensionManifest, next: LocusExtensionManifest): string[] {
@@ -173,7 +227,8 @@ function required(files: ReadonlyMap<string, Uint8Array>, path: string): Uint8Ar
 }
 
 function validateArchivePath(path: string): void {
-  if (!path || path.startsWith("/") || path.includes("\\") || path.split("/").includes("..")) {
+  const segments = path.split("/");
+  if (!path || path.startsWith("/") || path.includes("\\") || path.includes("\0") || segments.some((segment) => !segment || segment === "." || segment === "..")) {
     throw new Error(`Unsafe extension path: ${path}`);
   }
 }
@@ -204,6 +259,6 @@ function sha256(value: Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function fingerprint(publicKeyPem: string): string {
+export function publicKeyFingerprint(publicKeyPem: string): string {
   return sha256(Buffer.from(publicKeyPem.replace(/\s+/g, "")));
 }

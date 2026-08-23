@@ -1,7 +1,17 @@
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import { strToU8, zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
-import { extensionContentScriptMatches, permissionExpansion, validateExtensionFile, validateManifest, verifyLocusx } from "./index.js";
+import {
+  extensionContentScriptMatches,
+  locusxContractVersion,
+  locusxGalleryMessage,
+  locusxPublisherMessage,
+  permissionExpansion,
+  publicKeyFingerprint,
+  validateExtensionFile,
+  validateManifest,
+  verifyLocusx,
+} from "./index.js";
 
 describe("Locus extension contract", () => {
   it("rejects unsupported manifest keys and permissions", () => {
@@ -35,24 +45,32 @@ describe("Locus extension contract", () => {
   });
 
   it("verifies both signatures and every inventoried file", () => {
-    const manifest = strToU8(JSON.stringify({ manifest_version: 3, name: "Notes", version: "1.0.0", permissions: ["storage"] }));
-    const script = strToU8("chrome.runtime.onInstalled.addListener(() => {});");
-    const inventory = strToU8(JSON.stringify({ files: [
-      { path: "manifest.json", sha256: digest(manifest), size: manifest.byteLength },
-      { path: "worker.js", sha256: digest(script), size: script.byteLength },
-    ] }));
     const publisher = generateKeyPairSync("ed25519");
     const gallery = generateKeyPairSync("ed25519");
-    const message = Buffer.from(`${digest(manifest)}:${digest(inventory)}`);
-    const signatures = strToU8(JSON.stringify({
-      publisher: { publicKeyPem: publisher.publicKey.export({ format: "pem", type: "spki" }).toString(), signature: sign(null, message, publisher.privateKey).toString("base64") },
-      gallery: { publicKeyPem: gallery.publicKey.export({ format: "pem", type: "spki" }).toString(), signature: sign(null, message, gallery.privateKey).toString("base64") },
-    }));
-    const galleryPem = gallery.publicKey.export({ format: "pem", type: "spki" }).toString();
-    const trusted = new Set([digest(Buffer.from(galleryPem.replace(/\s+/g, "")))]);
-    const verified = verifyLocusx(zipSync({ "manifest.json": manifest, "worker.js": script, "inventory.json": inventory, "signatures.json": signatures }), trusted);
+    const publisherManifestKey = publisher.publicKey.export({ format: "der", type: "spki" }).toString("base64");
+    const { archive, trusted } = signedArchive({
+      manifest_version: 3,
+      name: "Notes",
+      version: "1.0.0",
+      permissions: ["storage"],
+      key: publisherManifestKey,
+    }, publisher, gallery);
+    const verified = verifyLocusx(archive, trusted);
+    expect(verified.id).toBe("dev.locus.notes");
     expect(verified.manifest.name).toBe("Notes");
     expect(verified.files.has("worker.js")).toBe(true);
+  });
+
+  it("rejects a validly signed package whose manifest key is not bound to its publisher", () => {
+    const publisher = generateKeyPairSync("ed25519");
+    const gallery = generateKeyPairSync("ed25519");
+    const { archive, trusted } = signedArchive({
+      manifest_version: 3,
+      name: "Unbound",
+      version: "1.0.0",
+      permissions: ["storage"],
+    }, publisher, gallery);
+    expect(() => verifyLocusx(archive, trusted)).toThrow("manifest key must match");
   });
 
   it("rejects remote scripts and dynamic code in unpacked extension files", () => {
@@ -65,4 +83,32 @@ describe("Locus extension contract", () => {
 
 function digest(value: Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function signedArchive(
+  manifestValue: Record<string, unknown>,
+  publisher: { publicKey: KeyObject; privateKey: KeyObject },
+  gallery: { publicKey: KeyObject; privateKey: KeyObject },
+): { archive: Uint8Array; trusted: Set<string> } {
+  const manifest = strToU8(JSON.stringify(manifestValue));
+  const script = strToU8("chrome.runtime.onInstalled.addListener(() => {});");
+  const inventory = strToU8(JSON.stringify({ files: [
+    { path: "manifest.json", sha256: digest(manifest), size: manifest.byteLength },
+    { path: "worker.js", sha256: digest(script), size: script.byteLength },
+  ] }));
+  const publisherMessage = locusxPublisherMessage("dev.locus.notes", manifest, inventory);
+  const publisherSignature = sign(null, publisherMessage, publisher.privateKey);
+  const publisherPem = publisher.publicKey.export({ format: "pem", type: "spki" }).toString();
+  const galleryPem = gallery.publicKey.export({ format: "pem", type: "spki" }).toString();
+  const galleryMessage = locusxGalleryMessage(publisherMessage, publicKeyFingerprint(publisherPem), publisherSignature);
+  const signatures = strToU8(JSON.stringify({
+    contractVersion: locusxContractVersion,
+    extensionId: "dev.locus.notes",
+    publisher: { publicKeyPem: publisherPem, signature: publisherSignature.toString("base64") },
+    gallery: { publicKeyPem: galleryPem, signature: sign(null, galleryMessage, gallery.privateKey).toString("base64") },
+  }));
+  return {
+    archive: zipSync({ "manifest.json": manifest, "worker.js": script, "inventory.json": inventory, "signatures.json": signatures }),
+    trusted: new Set([publicKeyFingerprint(galleryPem)]),
+  };
 }
