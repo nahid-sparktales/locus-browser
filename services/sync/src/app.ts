@@ -23,10 +23,19 @@ const RecordSchema = z.object({
   ciphertext: z.string().min(1).max(2_800_000),
   tombstone: z.boolean().default(false),
 });
-const PushSchema = z.object({ records: z.array(RecordSchema).max(500) });
+const PushSchema = z.object({ keyVersion: z.number().int().positive(), records: z.array(RecordSchema).max(500) });
 const DeviceIdentitySchema = z.object({
   deviceId: z.string().min(8).max(128),
+  deviceName: z.string().trim().min(1).max(80),
   devicePublicKey: z.string().min(32).max(512),
+});
+const AccountKeyWrapSchema = z.object({
+  deviceId: z.string().min(8).max(128),
+  wrappedAccountKey: z.string().min(32).max(1_024),
+});
+const EnrollmentClaimSchema = z.object({
+  enrollmentId: z.string().uuid(),
+  approvalCode: z.string().min(20).max(128),
 });
 const PasskeyResponseSchema = z.object({
   id: z.string().min(1).max(2_048),
@@ -70,6 +79,7 @@ export function createSyncApp(repository: SyncRepository, options: SyncAppOption
 
   server.addHook("preHandler", async (request, reply) => {
     if (request.url === "/health"
+      || (request.method === "POST" && request.url === "/v1/devices/enrollments")
       || request.url.startsWith("/v1/devices/enrollments/claim")
       || request.url.startsWith("/v1/auth/passkeys/")) return;
     const token = bearerToken(request);
@@ -82,12 +92,9 @@ export function createSyncApp(repository: SyncRepository, options: SyncAppOption
   server.post("/v1/sync/push", async (request, reply) => {
     const body = PushSchema.parse(request.body);
     const device = request.device!;
-    const records: OpaqueSyncRecord[] = body.records.map((record) => ({
-      ...record,
-      size: Buffer.byteLength(record.ciphertext, "base64url"),
-    }));
+    const records = syncRecords(body.records);
     if (records.some((record) => record.size > 2 * 1024 * 1024)) return reply.code(413).send({ error: "A record exceeds 2 MB" });
-    const result = await repository.push(device, records);
+    const result = await repository.push(device, body.keyVersion, records);
     await repository.cleanupExpired(Date.now());
     return result;
   });
@@ -117,6 +124,7 @@ export function createSyncApp(repository: SyncRepository, options: SyncAppOption
       challenge: registrationOptions.challenge,
       optionsJson: JSON.stringify(registrationOptions),
       deviceId: body.deviceId,
+      deviceName: body.deviceName,
       devicePublicKey: body.devicePublicKey,
       expiresAt: Date.now() + 5 * 60_000,
     });
@@ -134,6 +142,7 @@ export function createSyncApp(repository: SyncRepository, options: SyncAppOption
       challenge: authenticationOptions.challenge,
       optionsJson: JSON.stringify(authenticationOptions),
       deviceId: body.deviceId,
+      deviceName: body.deviceName,
       devicePublicKey: body.devicePublicKey,
       expiresAt: Date.now() + 5 * 60_000,
     });
@@ -200,8 +209,12 @@ export function createSyncApp(repository: SyncRepository, options: SyncAppOption
       }, {
         accountId,
         deviceId: ceremony.deviceId,
+        name: ceremony.deviceName,
         publicKey: ceremony.devicePublicKey,
         tokenHash: hashToken(deviceToken),
+        keyVersion: 0,
+        createdAt: Date.now(),
+        lastSeenAt: Date.now(),
       });
     } else {
       const passkey = await repository.passkey(body.credential.id);
@@ -217,8 +230,12 @@ export function createSyncApp(repository: SyncRepository, options: SyncAppOption
       await repository.authenticateWithPasskey(passkey.credentialId, verification.newCounter, {
         accountId,
         deviceId: ceremony.deviceId,
+        name: ceremony.deviceName,
         publicKey: ceremony.devicePublicKey,
         tokenHash: hashToken(deviceToken),
+        keyVersion: 0,
+        createdAt: Date.now(),
+        lastSeenAt: Date.now(),
       });
     }
 
@@ -244,13 +261,18 @@ export function createSyncApp(repository: SyncRepository, options: SyncAppOption
   });
 
   server.post("/v1/devices/enrollments", async (request) => {
-    const body = z.object({ deviceId: z.string().min(1).max(128), publicKey: z.string().min(32).max(512) }).parse(request.body);
+    await repository.cleanupExpired(Date.now());
+    const body = z.object({
+      deviceId: z.string().min(8).max(128),
+      deviceName: z.string().trim().min(1).max(80),
+      publicKey: z.string().min(32).max(512),
+    }).parse(request.body);
     const id = randomUUID();
     const code = randomBytes(18).toString("base64url");
     await repository.createEnrollment({
       id,
-      accountId: request.device!.accountId,
       deviceId: body.deviceId,
+      deviceName: body.deviceName,
       publicKey: body.publicKey,
       codeHash: hashToken(code),
       expiresAt: Date.now() + 10 * 60_000,
@@ -258,23 +280,88 @@ export function createSyncApp(repository: SyncRepository, options: SyncAppOption
     return { enrollmentId: id, approvalCode: code, expiresInSeconds: 600 };
   });
 
+  server.post("/v1/devices/enrollments/:id/details", async (request, reply) => {
+    const parameters = z.object({ id: z.string().uuid() }).parse(request.params);
+    const body = z.object({ approvalCode: z.string().min(20).max(128) }).parse(request.body);
+    const details = await repository.enrollmentDetails(parameters.id, hashToken(body.approvalCode));
+    return details ? details : reply.code(404).send({ error: "Enrollment is unavailable" });
+  });
+
   server.post("/v1/devices/enrollments/:id/approve", async (request) => {
     const parameters = z.object({ id: z.string().uuid() }).parse(request.params);
-    const body = z.object({ wrappedAccountKey: z.string().min(32).max(1_024) }).parse(request.body);
+    const body = z.object({
+      approvalCode: z.string().min(20).max(128),
+      wrappedAccountKey: z.string().min(32).max(1_024),
+    }).parse(request.body);
     const deviceToken = randomBytes(32).toString("base64url");
-    await repository.approveEnrollment(request.device!.accountId, parameters.id, body.wrappedAccountKey, deviceToken, hashToken(deviceToken));
+    await repository.approveEnrollment(
+      request.device!.accountId,
+      parameters.id,
+      hashToken(body.approvalCode),
+      body.wrappedAccountKey,
+      deviceToken,
+      hashToken(deviceToken),
+    );
     return { approved: true };
   });
 
   server.post("/v1/devices/enrollments/claim", async (request, reply) => {
-    const body = z.object({ enrollmentId: z.string().uuid(), approvalCode: z.string().min(20).max(128) }).parse(request.body);
+    const body = EnrollmentClaimSchema.parse(request.body);
     const delivery = await repository.takeEnrollment(body.enrollmentId, hashToken(body.approvalCode));
     if (!delivery) return reply.code(404).send({ error: "Enrollment is not approved or has expired" });
     return delivery;
   });
 
-  server.delete("/v1/devices/:id", async (request) => {
+  server.get("/v1/devices", async (request) => ({
+    devices: (await repository.listDevices(request.device!.accountId)).map((device) => ({
+      ...device,
+      current: device.deviceId === request.device!.deviceId,
+    })),
+  }));
+
+  server.get("/v1/account/key", async (request) => await repository.accountKeyState(request.device!.accountId, request.device!.deviceId));
+
+  server.put("/v1/account/key", async (request) => {
+    const body = z.object({
+      expectedVersion: z.literal(0),
+      version: z.literal(1),
+      wraps: z.array(AccountKeyWrapSchema).min(1).max(100),
+    }).parse(request.body);
+    await repository.initializeAccountKey(request.device!.accountId, body.expectedVersion, body.version, body.wraps);
+    return { version: body.version };
+  });
+
+  server.put("/v1/devices/self/key", async (request) => {
+    const body = z.object({ version: z.number().int().positive(), wrappedAccountKey: z.string().min(32).max(1_024) }).parse(request.body);
+    await repository.setDeviceWrappedKey(
+      request.device!.accountId,
+      request.device!.deviceId,
+      body.version,
+      body.wrappedAccountKey,
+    );
+    return { version: body.version };
+  });
+
+  server.post("/v1/account/key/rotate", async (request, reply) => {
+    const body = z.object({
+      expectedVersion: z.number().int().positive(),
+      version: z.number().int().min(2),
+      wraps: z.array(AccountKeyWrapSchema).min(1).max(100),
+      records: z.array(RecordSchema).min(1).max(500),
+    }).parse(request.body);
+    const records = syncRecords(body.records);
+    if (records.some((record) => record.size > 2 * 1024 * 1024)) return reply.code(413).send({ error: "A record exceeds 2 MB" });
+    return await repository.rotateAccountKey(request.device!, body.expectedVersion, body.version, body.wraps, records);
+  });
+
+  server.delete("/v1/devices/self", async (request) => {
+    await repository.revokeDevice(request.device!.accountId, request.device!.deviceId);
+    return { revoked: true };
+  });
+
+  server.delete("/v1/devices/:id", async (request, reply) => {
     const parameters = z.object({ id: z.string().min(1).max(128) }).parse(request.params);
+    if (parameters.id === request.device!.deviceId) return reply.code(400).send({ error: "Disconnect this device from Locus Browser instead" });
     await repository.revokeDevice(request.device!.accountId, parameters.id);
     return { revoked: true };
   });
@@ -304,4 +391,11 @@ export function hashToken(token: string): string {
 function bearerToken(request: FastifyRequest): string {
   const match = /^Bearer ([A-Za-z0-9_-]{20,})$/.exec(request.headers.authorization ?? "");
   return match?.[1] ?? "";
+}
+
+function syncRecords(records: z.infer<typeof RecordSchema>[]): OpaqueSyncRecord[] {
+  return records.map((record) => ({
+    ...record,
+    size: Buffer.byteLength(record.ciphertext, "base64url"),
+  }));
 }

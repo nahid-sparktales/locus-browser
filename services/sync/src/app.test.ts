@@ -6,7 +6,10 @@ import {
   decryptRecord,
   encryptRecord,
   generateAccountKey,
+  generateDeviceKeyPair,
   recoverAccountKey,
+  unwrapAccountKey,
+  wrapAccountKey,
 } from "@locus/sync-crypto";
 import { createSyncApp, hashToken } from "./app.js";
 import { MemorySyncRepository } from "./memoryRepository.js";
@@ -60,7 +63,7 @@ describe("opaque sync service", () => {
     const authorization = { authorization: `Bearer ${token}` };
     const push = await app.inject({
       method: "POST", url: "/v1/sync/push", headers: authorization,
-      payload: { records: [{
+      payload: { keyVersion: 1, records: [{
         accountId: "account-a", deviceId: "device-a", collection: "bookmarks", recordId: "record-a",
         clock: "1700000000000-000000-device-a", nonce: "abcdefghijklmnopqrstuvwxyz012345", ciphertext: "aGVsbG8td29ybGQ", tombstone: false,
       }] },
@@ -74,7 +77,7 @@ describe("opaque sync service", () => {
   it("rejects records from another device", async () => {
     const response = await fixture().inject({
       method: "POST", url: "/v1/sync/push", headers: { authorization: `Bearer ${token}` },
-      payload: { records: [{
+      payload: { keyVersion: 1, records: [{
         accountId: "account-a", deviceId: "device-b", collection: "history", recordId: "record-a",
         clock: "1700000000000-000000-device-b", nonce: "abcdefghijklmnopqrstuvwxyz012345", ciphertext: "aGVsbG8td29ybGQ", tombstone: false,
       }] },
@@ -87,7 +90,7 @@ describe("opaque sync service", () => {
     const started = await app.inject({
       method: "POST",
       url: "/v1/auth/passkeys/register/options",
-      payload: { displayName: "Personal", deviceId: "new-device", devicePublicKey: "device-public-key-that-is-long-enough" },
+      payload: { displayName: "Personal", deviceId: "new-device", deviceName: "New Mac", devicePublicKey: "device-public-key-that-is-long-enough" },
     });
     expect(started.statusCode).toBe(200);
     const { ceremonyId, authUrl } = started.json();
@@ -135,7 +138,7 @@ describe("opaque sync service", () => {
     const app = fixture({ passkeys: true });
     const registration = await app.inject({
       method: "POST", url: "/v1/auth/passkeys/register/options",
-      payload: { displayName: "Personal", deviceId: "first-device", devicePublicKey: "first-device-public-key-is-long-enough" },
+      payload: { displayName: "Personal", deviceId: "first-device", deviceName: "First Mac", devicePublicKey: "first-device-public-key-is-long-enough" },
     });
     await app.inject({
       method: "POST",
@@ -145,7 +148,7 @@ describe("opaque sync service", () => {
 
     const authentication = await app.inject({
       method: "POST", url: "/v1/auth/passkeys/authenticate/options",
-      payload: { deviceId: "second-device", devicePublicKey: "second-device-public-key-is-long-enough" },
+      payload: { deviceId: "second-device", deviceName: "Second Mac", devicePublicKey: "second-device-public-key-is-long-enough" },
     });
     const verified = await app.inject({
       method: "POST",
@@ -162,7 +165,7 @@ describe("opaque sync service", () => {
       const start = await app.inject({
         method: "POST",
         url: kind === "register" ? "/v1/auth/passkeys/register/options" : "/v1/auth/passkeys/authenticate/options",
-        payload: { ...(kind === "register" ? { displayName: "Personal" } : {}), deviceId, devicePublicKey: `${deviceId}-public-key-that-is-long-enough` },
+        payload: { ...(kind === "register" ? { displayName: "Personal" } : {}), deviceId, deviceName: deviceId, devicePublicKey: `${deviceId}-public-key-that-is-long-enough` },
       });
       const verified = await app.inject({
         method: "POST",
@@ -179,21 +182,51 @@ describe("opaque sync service", () => {
     };
 
     const deviceA = await claimDevice("register", "device-a-secure");
-    const deviceB = await claimDevice("authenticate", "device-b-secure");
-    expect(deviceB.accountId).toBe(deviceA.accountId);
     const accountKey = await generateAccountKey();
     const recoveredKey = recoverAccountKey(createRecoveryKey(accountKey));
+    const initialized = await app.inject({
+      method: "PUT", url: "/v1/account/key", headers: { authorization: `Bearer ${deviceA.deviceToken}` },
+      payload: { expectedVersion: 0, version: 1, wraps: [{ deviceId: deviceA.deviceId, wrappedAccountKey: "wrapped-account-key-for-device-a-secure" }] },
+    });
+    expect(initialized.statusCode).toBe(200);
+    const deviceBKeys = await generateDeviceKeyPair();
+    const enrollment = await app.inject({
+      method: "POST", url: "/v1/devices/enrollments",
+      payload: { deviceId: "device-b-secure", deviceName: "Second Mac", publicKey: deviceBKeys.publicKey },
+    });
+    expect(enrollment.statusCode).toBe(200);
+    const enrollmentDetails = await app.inject({
+      method: "POST", url: `/v1/devices/enrollments/${enrollment.json().enrollmentId}/details`,
+      headers: { authorization: `Bearer ${deviceA.deviceToken}` },
+      payload: { approvalCode: enrollment.json().approvalCode },
+    });
+    expect(enrollmentDetails.json()).toMatchObject({ deviceId: "device-b-secure", deviceName: "Second Mac", publicKey: deviceBKeys.publicKey });
+    const wrappedForB = await wrapAccountKey(accountKey, deviceBKeys.publicKey);
+    expect((await app.inject({
+      method: "POST", url: `/v1/devices/enrollments/${enrollment.json().enrollmentId}/approve`,
+      headers: { authorization: `Bearer ${deviceA.deviceToken}` },
+      payload: { approvalCode: enrollment.json().approvalCode, wrappedAccountKey: wrappedForB },
+    })).statusCode).toBe(200);
+    const claimedB = await app.inject({
+      method: "POST", url: "/v1/devices/enrollments/claim",
+      payload: { enrollmentId: enrollment.json().enrollmentId, approvalCode: enrollment.json().approvalCode },
+    });
+    const deviceB = claimedB.json() as { accountId: string; deviceId: string; deviceToken: string; wrappedAccountKey: string; keyVersion: number };
+    expect(deviceB).toMatchObject({ accountId: deviceA.accountId, deviceId: "device-b-secure", keyVersion: 1 });
+    expect(await unwrapAccountKey(deviceB.wrappedAccountKey, deviceBKeys)).toBe(accountKey);
+    const devices = await app.inject({ method: "GET", url: "/v1/devices", headers: { authorization: `Bearer ${deviceA.deviceToken}` } });
+    expect(devices.json().devices).toHaveLength(2);
     const clockA = new HybridLogicalClock(deviceA.deviceId);
     const original = await encryptRecord(accountKey, {
       accountId: deviceA.accountId, deviceId: deviceA.deviceId, collection: "bookmarks", recordId: "shared-bookmark", clock: clockA.tick(1_787_408_000_000),
     }, { title: "Original", url: "https://example.com" });
     const pushedA = await app.inject({
-      method: "POST", url: "/v1/sync/push", headers: { authorization: `Bearer ${deviceA.deviceToken}` }, payload: { records: [original] },
+      method: "POST", url: "/v1/sync/push", headers: { authorization: `Bearer ${deviceA.deviceToken}` }, payload: { keyVersion: 1, records: [original] },
     });
     expect(pushedA.statusCode).toBe(200);
     expect(pushedA.json().accepted).toBe(1);
     const replayedA = await app.inject({
-      method: "POST", url: "/v1/sync/push", headers: { authorization: `Bearer ${deviceA.deviceToken}` }, payload: { records: [original] },
+      method: "POST", url: "/v1/sync/push", headers: { authorization: `Bearer ${deviceA.deviceToken}` }, payload: { keyVersion: 1, records: [original] },
     });
     expect(replayedA.json()).toMatchObject({ accepted: 0, cursor: pushedA.json().cursor });
 
@@ -210,13 +243,47 @@ describe("opaque sync service", () => {
       accountId: deviceB.accountId, deviceId: deviceB.deviceId, collection: "bookmarks", recordId: "shared-bookmark", clock: clockB.tick(1_787_408_000_001),
     }, { title: "Edited on B", url: "https://example.com" });
     expect((await app.inject({
-      method: "POST", url: "/v1/sync/push", headers: { authorization: `Bearer ${deviceB.deviceToken}` }, payload: { records: [edited] },
+      method: "POST", url: "/v1/sync/push", headers: { authorization: `Bearer ${deviceB.deviceToken}` }, payload: { keyVersion: 1, records: [edited] },
     })).statusCode).toBe(200);
     const converged = await app.inject({
       method: "GET", url: `/v1/sync/pull?cursor=${pulledB.json().cursor}`, headers: { authorization: `Bearer ${deviceA.deviceToken}` },
     });
     const fromB = EncryptedRecordSchema.parse(converged.json().records[0]);
     expect(await decryptRecord(accountKey, fromB)).toEqual({ title: "Edited on B", url: "https://example.com" });
+
+    const rotatedKey = await generateAccountKey();
+    const rotationClock = new HybridLogicalClock(deviceA.deviceId);
+    rotationClock.observe(fromB.clock, 1_787_408_000_001);
+    const rotated = await encryptRecord(rotatedKey, {
+      accountId: deviceA.accountId,
+      deviceId: deviceA.deviceId,
+      collection: fromB.collection,
+      recordId: fromB.recordId,
+      clock: rotationClock.tick(1_787_408_000_002),
+    }, await decryptRecord(accountKey, fromB));
+    const rotation = await app.inject({
+      method: "POST", url: "/v1/account/key/rotate", headers: { authorization: `Bearer ${deviceA.deviceToken}` },
+      payload: {
+        expectedVersion: 1,
+        version: 2,
+        wraps: [
+          { deviceId: deviceA.deviceId, wrappedAccountKey: "version-two-wrapped-key-for-device-a" },
+          { deviceId: deviceB.deviceId, wrappedAccountKey: "version-two-wrapped-key-for-device-b" },
+        ],
+        records: [rotated],
+      },
+    });
+    expect(rotation.statusCode).toBe(200);
+    const keyForB = await app.inject({ method: "GET", url: "/v1/account/key", headers: { authorization: `Bearer ${deviceB.deviceToken}` } });
+    expect(keyForB.json()).toEqual({ version: 2, wrappedAccountKey: "version-two-wrapped-key-for-device-b" });
+    expect((await app.inject({
+      method: "POST", url: "/v1/sync/push", headers: { authorization: `Bearer ${deviceB.deviceToken}` },
+      payload: { keyVersion: 1, records: [edited] },
+    })).statusCode).toBe(400);
+    const afterRotation = await app.inject({
+      method: "GET", url: "/v1/sync/pull?cursor=0", headers: { authorization: `Bearer ${deviceA.deviceToken}` },
+    });
+    expect(await decryptRecord(rotatedKey, EncryptedRecordSchema.parse(afterRotation.json().records[0]))).toEqual({ title: "Edited on B", url: "https://example.com" });
 
     const corruptedCiphertext = `${fromB.ciphertext[0] === "A" ? "B" : "A"}${fromB.ciphertext.slice(1)}`;
     await expect(decryptRecord(accountKey, { ...fromB, ciphertext: corruptedCiphertext })).rejects.toThrow();

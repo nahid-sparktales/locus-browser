@@ -4,6 +4,8 @@ A browser-first sibling to Locus: a secure Chromium browser with an explicit,
 resizable Locus work dock. The page remains the primary canvas and AI sessions
 can control only tabs the user shares or tabs the session creates.
 
+![Locus Browser showing a live GitHub page beside the Locus Work dock](docs/images/locus-browser.png)
+
 This checkout is the executable engine proof and product foundation. See
 [`docs/implementation-status.md`](docs/implementation-status.md) for the exact
 canary work that remains; it does not claim stable-release parity yet.
@@ -17,7 +19,7 @@ canary work that remains; it does not claim stable-release parity yet.
 - `services/sync` — opaque-record PostgreSQL sync service.
 
 Shared agent and browser-wire contracts come from the sibling
-[`locus-platform`](../locus-platform) repository.
+[`locus-platform`](https://github.com/nahid-sparktales/locus-platform) repository.
 
 ## Run the desktop app
 
@@ -40,7 +42,10 @@ light and dark surfaces use the same semantic palette as native Locus.
 Optional Locus encrypted sync now provides passkey accounts and client-side
 encrypted bookmarks, history, tab groups, ordinary web tabs, selected settings,
 and curated extension metadata. Sync keys stay protected by the operating
-system, and a newly generated recovery key is shown once in a native dialog.
+system. Connected devices can approve a new Mac without exposing the account
+key to the service, revoke other devices, and rotate the recovery key across
+the entire encrypted replica in one versioned operation. A newly generated or
+rotated recovery key is shown once in a native dialog.
 Passwords, cookies, downloads, workspaces, conversations, memory, provider
 credentials, and run records remain local. For local development, start the
 sync stack and point the desktop UI at it with `VITE_LOCUS_SYNC_URL`:

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import {
   BrowserWindow,
@@ -188,6 +189,7 @@ export class BrowserController {
       database: this.#database,
       cipher: electronCredentialCipher,
       profileId: this.#profileId,
+      deviceName: `${hostname().split(".")[0] || "This Mac"} · ${profile.name}`,
       parent: this.window,
       onChanged: () => this.#broadcast(),
       onDataApplied: () => this.#applySyncedData(),
@@ -244,7 +246,7 @@ export class BrowserController {
       credentialSuggestions,
       savedCredentials: this.#credentials.list(),
       passwordManagerAvailable: this.#credentials.available(),
-      sync: this.#sync?.state() ?? { status: "disconnected", pendingRecords: 0 },
+      sync: this.#sync?.state() ?? { status: "disconnected", pendingRecords: 0, devices: [] },
       remoteTabs: this.#sync?.remoteTabs() ?? [],
       onboardingRequired: !this.#privateWindow && !this.#settings.onboardingComplete,
       settings: this.#settings,
@@ -497,6 +499,29 @@ export class BrowserController {
         break;
       case "begin-sync-sign-in":
         this.#sync?.beginSignIn(command.recoveryKey, command.serviceUrl);
+        break;
+      case "begin-sync-device-enrollment":
+        await this.#sync?.beginDeviceEnrollment(command.serviceUrl);
+        break;
+      case "check-sync-device-enrollment":
+        this.#sync?.checkDeviceEnrollment();
+        break;
+      case "cancel-sync-device-enrollment":
+        this.#sync?.cancelDeviceEnrollment();
+        break;
+      case "copy-sync-pairing-code": {
+        const pairingCode = this.#sync?.state().pendingEnrollment?.pairingCode;
+        if (pairingCode) clipboard.writeText(pairingCode);
+        break;
+      }
+      case "approve-sync-device":
+        await this.#sync?.approveDevice(command.pairingCode);
+        break;
+      case "revoke-sync-device":
+        await this.#sync?.revokeDevice(command.deviceId);
+        break;
+      case "rotate-sync-recovery-key":
+        await this.#sync?.rotateRecoveryKey();
         break;
       case "sync-now":
         this.#persistNow();
@@ -925,7 +950,9 @@ export class BrowserController {
       : availableWidth;
     const chromeHeight = this.#chromeHeight();
     const pageBounds = { x: left, y: chromeHeight, width: pageWidth, height: Math.max(height - chromeHeight, 1) };
-    this.#active()?.view?.setBounds(pageBounds);
+    const activeView = this.#active()?.view;
+    activeView?.setBounds(pageBounds);
+    activeView?.setVisible(true);
 
     const openBounds = {
       x: width - targetWork,

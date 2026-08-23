@@ -109,6 +109,7 @@ export interface StoredSyncAccount {
   encryptedDevicePrivateKey: Uint8Array;
   encryptedDeviceToken: Uint8Array;
   encryptedAccountKey: Uint8Array;
+  keyVersion: number;
   status: "connected" | "syncing" | "error";
   lastSyncedAt?: number;
   lastError?: string;
@@ -458,7 +459,7 @@ export class BrowserDatabase {
              device_id AS deviceId, device_public_key AS devicePublicKey,
              encrypted_device_private_key AS encryptedDevicePrivateKey,
              encrypted_device_token AS encryptedDeviceToken,
-             encrypted_account_key AS encryptedAccountKey, status,
+             encrypted_account_key AS encryptedAccountKey, key_version AS keyVersion, status,
              last_synced_at AS lastSyncedAt, last_error AS lastError
       FROM sync_accounts WHERE profile_id = ?
     `).get(profileId) as unknown as StoredSyncAccount | undefined;
@@ -469,14 +470,15 @@ export class BrowserDatabase {
       INSERT INTO sync_accounts(
         profile_id, service_url, account_id, device_id, device_public_key,
         encrypted_device_private_key, encrypted_device_token, encrypted_account_key,
-        status, last_synced_at, last_error, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+        key_version, status, last_synced_at, last_error, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
       ON CONFLICT(profile_id) DO UPDATE SET
         service_url=excluded.service_url, account_id=excluded.account_id,
         device_id=excluded.device_id, device_public_key=excluded.device_public_key,
         encrypted_device_private_key=excluded.encrypted_device_private_key,
         encrypted_device_token=excluded.encrypted_device_token,
         encrypted_account_key=excluded.encrypted_account_key,
+        key_version=excluded.key_version,
         status=excluded.status, last_synced_at=excluded.last_synced_at,
         last_error=excluded.last_error, updated_at=excluded.updated_at
     `).run(
@@ -488,6 +490,7 @@ export class BrowserDatabase {
       account.encryptedDevicePrivateKey,
       account.encryptedDeviceToken,
       account.encryptedAccountKey,
+      account.keyVersion,
       account.status,
       account.lastSyncedAt ?? null,
       account.lastError ?? null,
@@ -500,6 +503,13 @@ export class BrowserDatabase {
         last_synced_at=CASE WHEN ? THEN unixepoch() ELSE last_synced_at END,
         updated_at=unixepoch() WHERE profile_id=?
     `).run(status, lastError ?? null, Number(synced), profileId);
+  }
+
+  updateSyncAccountKey(profileId: string, encryptedAccountKey: Uint8Array, keyVersion: number): void {
+    this.#database.prepare(`
+      UPDATE sync_accounts SET encrypted_account_key=?, key_version=?, last_error=NULL,
+        status='connected', updated_at=unixepoch() WHERE profile_id=?
+    `).run(encryptedAccountKey, keyVersion, profileId);
   }
 
   deleteSyncAccount(profileId: string): void {
@@ -901,6 +911,7 @@ export class BrowserDatabase {
         encrypted_device_private_key BLOB NOT NULL,
         encrypted_device_token BLOB NOT NULL,
         encrypted_account_key BLOB NOT NULL,
+        key_version INTEGER NOT NULL DEFAULT 1,
         status TEXT NOT NULL,
         last_synced_at INTEGER,
         last_error TEXT,
@@ -958,6 +969,7 @@ export class BrowserDatabase {
     this.#ensureColumn("bookmarks", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
     this.#ensureColumn("downloads", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
     this.#ensureColumn("browser_credentials", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
+    this.#ensureColumn("sync_accounts", "key_version", "INTEGER NOT NULL DEFAULT 1");
     this.#database.exec(`
       CREATE INDEX IF NOT EXISTS history_visits_profile_time ON history_visits(profile_id, visited_at DESC);
       CREATE INDEX IF NOT EXISTS bookmarks_profile_position ON bookmarks(profile_id, position ASC);
@@ -966,6 +978,7 @@ export class BrowserDatabase {
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (2, unixepoch());
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (3, unixepoch());
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (4, unixepoch());
+      INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (5, unixepoch());
     `);
   }
 

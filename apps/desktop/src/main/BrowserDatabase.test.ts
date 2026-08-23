@@ -214,4 +214,25 @@ describe("BrowserDatabase", () => {
     expect(database.queueSyncSnapshot("default", "device-a", clock)).toBe(1);
     database.close();
   });
+
+  it("persists and atomically advances the OS-encrypted account-key version", () => {
+    const database = new BrowserDatabase(join(mkdtempSync(join(tmpdir(), "locus-sync-key-version-")), "browser.sqlite"));
+    database.saveSyncAccount({
+      profileId: "default",
+      serviceUrl: "https://sync.example.com",
+      accountId: "account-a",
+      deviceId: "device-a",
+      devicePublicKey: "public-key",
+      encryptedDevicePrivateKey: new Uint8Array([1]),
+      encryptedDeviceToken: new Uint8Array([2]),
+      encryptedAccountKey: new Uint8Array([3]),
+      keyVersion: 1,
+      status: "connected",
+    });
+    expect(database.syncAccount("default")?.keyVersion).toBe(1);
+    database.updateSyncAccountKey("default", new Uint8Array([4, 5]), 2);
+    expect(database.syncAccount("default")).toMatchObject({ keyVersion: 2, status: "connected", lastError: null });
+    expect([...database.syncAccount("default")!.encryptedAccountKey]).toEqual([4, 5]);
+    database.close();
+  });
 });

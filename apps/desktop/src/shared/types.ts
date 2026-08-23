@@ -100,13 +100,30 @@ export interface RemoteTabState {
 }
 
 export interface SyncAccountState {
-  status: "disconnected" | "connecting" | "connected" | "syncing" | "error";
+  status: "disconnected" | "connecting" | "waiting-for-approval" | "connected" | "syncing" | "error";
   serviceUrl?: string;
   accountId?: string;
   deviceId?: string;
+  keyVersion?: number;
   lastSyncedAt?: number;
   lastError?: string;
   pendingRecords: number;
+  devices: SyncDeviceState[];
+  pendingEnrollment?: PendingDeviceEnrollmentState;
+}
+
+export interface SyncDeviceState {
+  deviceId: string;
+  name: string;
+  current: boolean;
+  keyVersion: number;
+  createdAt: number;
+  lastSeenAt: number;
+}
+
+export interface PendingDeviceEnrollmentState {
+  pairingCode: string;
+  expiresAt: number;
 }
 
 export interface BookmarkState {

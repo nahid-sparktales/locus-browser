@@ -31,9 +31,17 @@ The service exposes:
 - `GET /v1/sync/pull?cursor=`
 - passkey registration/authentication options, hosted ceremonies, and one-use
   claim exchange under `/v1/auth/passkeys`
-- device enrollment, approval, one-time claim, and revocation
+- device listing plus enrollment creation, approval, one-time wrapped-key
+  claim, self-cleanup, and remote-device revocation under `/v1/devices`
+- account-key initialization, per-device wrapping, and transactional full-
+  replica key rotation under `/v1/account/key`
 - `DELETE /v1/sync/cloud-data`
 - `DELETE /v1/account`
+
+Every encrypted write carries the current account-key version. Rotation locks
+the account, requires a complete replacement set of records and a wrapped key
+for every active device, and advances that version atomically; stale writers
+must fetch and unwrap the new device-specific key before retrying.
 
 The service stores opaque ciphertext and routing metadata only. Passwords,
 cookies, site storage, provider credentials, workspace data, Locus sessions,

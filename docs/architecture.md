@@ -72,4 +72,8 @@ account status and collection metadata; a generated recovery key is displayed
 once by a native main-process dialog. A new device must decrypt the account's
 encrypted key-verifier record before it may upload any local data. Durable
 local outbox/inbox state permits offline retries without retaining plaintext
-payloads on the service.
+payloads on the service. Existing devices approve newcomers by wrapping the
+account key to the new device's X25519 public key. Recovery-key rotation
+re-encrypts the complete replica and advances its account-key version in the
+same transaction that replaces every active device wrap, preventing a stale
+client from writing mixed-key ciphertext.

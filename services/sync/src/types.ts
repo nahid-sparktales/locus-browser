@@ -22,8 +22,9 @@ export interface CursorRecord extends OpaqueSyncRecord {
 
 export interface Enrollment {
   id: string;
-  accountId: string;
+  accountId?: string;
   deviceId: string;
+  deviceName: string;
   publicKey: string;
   codeHash: string;
   expiresAt: number;
@@ -40,6 +41,7 @@ export interface PasskeyCeremony {
   challenge: string;
   optionsJson: string;
   deviceId: string;
+  deviceName: string;
   devicePublicKey: string;
   expiresAt: number;
 }
@@ -67,17 +69,37 @@ export interface PasskeyClaim {
 export interface RegisteredDevice {
   accountId: string;
   deviceId: string;
+  name: string;
   publicKey: string;
   tokenHash: string;
+  wrappedAccountKey?: string;
+  keyVersion: number;
+  createdAt: number;
+  lastSeenAt: number;
+}
+
+export interface SyncDevice {
+  deviceId: string;
+  name: string;
+  publicKey: string;
+  keyVersion: number;
+  createdAt: number;
+  lastSeenAt: number;
+}
+
+export interface AccountKeyWrap {
+  deviceId: string;
+  wrappedAccountKey: string;
 }
 
 export interface SyncRepository {
   authenticate(tokenHash: string): Promise<AuthenticatedDevice | undefined>;
-  push(device: AuthenticatedDevice, records: OpaqueSyncRecord[]): Promise<{ cursor: number; accepted: number }>;
+  push(device: AuthenticatedDevice, keyVersion: number, records: OpaqueSyncRecord[]): Promise<{ cursor: number; accepted: number }>;
   pull(accountId: string, cursor: number, limit: number): Promise<{ records: CursorRecord[]; cursor: number; hasMore: boolean }>;
   createEnrollment(enrollment: Enrollment): Promise<void>;
-  approveEnrollment(accountId: string, enrollmentId: string, wrappedAccountKey: string, deviceToken: string, tokenHash: string): Promise<void>;
-  takeEnrollment(enrollmentId: string, codeHash: string): Promise<{ wrappedAccountKey: string; deviceToken: string } | undefined>;
+  enrollmentDetails(enrollmentId: string, codeHash: string): Promise<Pick<Enrollment, "deviceId" | "deviceName" | "publicKey" | "expiresAt"> | undefined>;
+  approveEnrollment(accountId: string, enrollmentId: string, codeHash: string, wrappedAccountKey: string, deviceToken: string, tokenHash: string): Promise<void>;
+  takeEnrollment(enrollmentId: string, codeHash: string): Promise<{ accountId: string; deviceId: string; wrappedAccountKey: string; deviceToken: string; keyVersion: number } | undefined>;
   createPasskeyCeremony(ceremony: PasskeyCeremony): Promise<void>;
   passkeyCeremony(id: string): Promise<PasskeyCeremony | undefined>;
   consumePasskeyCeremony(id: string, kind: PasskeyCeremony["kind"]): Promise<PasskeyCeremony | undefined>;
@@ -86,6 +108,11 @@ export interface SyncRepository {
   authenticateWithPasskey(credentialId: string, counter: number, device: RegisteredDevice): Promise<void>;
   createPasskeyClaim(claim: PasskeyClaim): Promise<void>;
   takePasskeyClaim(id: string, codeHash: string): Promise<{ accountId: string; deviceId: string; deviceToken: string } | undefined>;
+  listDevices(accountId: string): Promise<SyncDevice[]>;
+  accountKeyState(accountId: string, deviceId: string): Promise<{ version: number; wrappedAccountKey?: string }>;
+  initializeAccountKey(accountId: string, expectedVersion: number, version: number, wraps: AccountKeyWrap[]): Promise<void>;
+  setDeviceWrappedKey(accountId: string, deviceId: string, version: number, wrappedAccountKey: string): Promise<void>;
+  rotateAccountKey(device: AuthenticatedDevice, expectedVersion: number, version: number, wraps: AccountKeyWrap[], records: OpaqueSyncRecord[]): Promise<{ cursor: number }>;
   cleanupExpired(now: number): Promise<void>;
   revokeDevice(accountId: string, deviceId: string): Promise<void>;
   deleteCloudData(accountId: string): Promise<void>;

@@ -6,6 +6,7 @@ const previewParams = new URLSearchParams(window.location.search);
 const previewOnboarding = previewParams.has("onboarding");
 const previewCredential = previewParams.has("credential");
 const previewSync = previewParams.has("sync");
+const previewPairing = previewParams.has("pairing");
 
 const previewState: BrowserAppState = {
   windowId: "preview",
@@ -68,8 +69,24 @@ const previewState: BrowserAppState = {
   savedCredentials: [{ id: "demo-login", origin: "https://github.com", username: "nahid@example.com", updatedAt: 1_787_408_000 }],
   passwordManagerAvailable: true,
   sync: previewSync
-    ? { status: "connected", serviceUrl: "https://sync.locusbrowser.test", accountId: "account-preview", deviceId: "macbook-local", lastSyncedAt: 1_787_408_000, pendingRecords: 0 }
-    : { status: "disconnected", pendingRecords: 0 },
+    ? {
+        status: "connected", serviceUrl: "https://sync.locusbrowser.test", accountId: "account-preview", deviceId: "macbook-local",
+        keyVersion: 2, lastSyncedAt: 1_787_408_000, pendingRecords: 0,
+        devices: [
+          { deviceId: "macbook-local", name: "Nahid’s MacBook · Personal", current: true, keyVersion: 2, createdAt: 1_786_716_000, lastSeenAt: 1_787_408_000 },
+          { deviceId: "ipad-7d3e2a", name: "iPad Pro", current: false, keyVersion: 2, createdAt: 1_786_802_400, lastSeenAt: 1_787_404_400 },
+          { deviceId: "studio-19a6", name: "Studio Mac · Work", current: false, keyVersion: 2, createdAt: 1_786_975_200, lastSeenAt: 1_787_322_000 },
+        ],
+      }
+    : previewPairing
+      ? {
+          status: "waiting-for-approval", serviceUrl: "https://sync.locusbrowser.test", pendingRecords: 0, devices: [],
+          pendingEnrollment: {
+            pairingCode: "LOCUS-DEVICE:8c44d3a0-68ab-4df7-8a6a-874099243345:Xz7x1Sf-P8gF3dWm2Jk5cQ0n",
+            expiresAt: 1_787_408_600,
+          },
+        }
+      : { status: "disconnected", pendingRecords: 0, devices: [] },
   remoteTabs: previewSync ? [{ id: "ipad:tab-1", deviceId: "ipad-7d3e2a", title: "Locus protocol notes", url: "https://example.com/protocol", updatedAt: 1_787_408_000 }] : [],
   onboardingRequired: previewOnboarding,
   settings: { appearance: "system", searchEngine: "duckduckgo", sleepAfterMinutes: 30, downloadDirectory: "/Users/nahid/Downloads", onboardingComplete: !previewOnboarding },
@@ -227,14 +244,48 @@ function applyPreviewCommand(command: BrowserCommand): void {
       break;
     case "begin-sync-registration":
     case "begin-sync-sign-in":
-      previewState.sync = { status: "connecting", serviceUrl: command.serviceUrl, pendingRecords: 0 };
+      previewState.sync = { status: "connecting", serviceUrl: command.serviceUrl, pendingRecords: 0, devices: [] };
       break;
+    case "begin-sync-device-enrollment":
+      previewState.sync = {
+        status: "waiting-for-approval", serviceUrl: command.serviceUrl, pendingRecords: 0, devices: [],
+        pendingEnrollment: {
+          pairingCode: "LOCUS-DEVICE:8c44d3a0-68ab-4df7-8a6a-874099243345:Xz7x1Sf-P8gF3dWm2Jk5cQ0n",
+          expiresAt: Math.floor(Date.now() / 1_000) + 600,
+        },
+      };
+      break;
+    case "cancel-sync-device-enrollment":
+      previewState.sync = { status: "disconnected", pendingRecords: 0, devices: [] };
+      break;
+    case "revoke-sync-device":
+      previewState.sync.devices = previewState.sync.devices.filter((device) => device.deviceId !== command.deviceId);
+      break;
+    case "approve-sync-device":
+      previewState.sync.devices = [...previewState.sync.devices, {
+        deviceId: "new-device-preview",
+        name: "New Mac · Personal",
+        current: false,
+        keyVersion: previewState.sync.keyVersion ?? 1,
+        createdAt: Math.floor(Date.now() / 1_000),
+        lastSeenAt: Math.floor(Date.now() / 1_000),
+      }];
+      break;
+    case "rotate-sync-recovery-key": {
+      const keyVersion = (previewState.sync.keyVersion ?? 1) + 1;
+      previewState.sync = {
+        ...previewState.sync,
+        keyVersion,
+        devices: previewState.sync.devices.map((device) => ({ ...device, keyVersion })),
+      };
+      break;
+    }
     case "sync-now":
       if (previewState.sync.accountId) previewState.sync = { ...previewState.sync, status: "syncing" };
       break;
     case "disconnect-sync":
     case "delete-sync-account":
-      previewState.sync = { status: "disconnected", pendingRecords: 0 };
+      previewState.sync = { status: "disconnected", pendingRecords: 0, devices: [] };
       previewState.remoteTabs = [];
       break;
     default:

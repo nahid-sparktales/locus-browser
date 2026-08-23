@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { BrowserWindow } from "electron";
+import { BrowserWindow, dialog } from "electron";
 import {
   EncryptedRecordSchema,
   HybridLogicalClock,
@@ -10,16 +10,43 @@ import {
   generateDeviceKeyPair,
   randomDeviceId,
   recoverAccountKey,
+  unwrapAccountKey,
+  wrapAccountKey,
   type DeviceKeyPair,
+  type EncryptedRecord,
 } from "@locus/sync-crypto";
 import { z } from "zod";
-import type { RemoteTabState, SyncAccountState } from "../shared/types.js";
+import type { RemoteTabState, SyncAccountState, SyncDeviceState } from "../shared/types.js";
 import type { BrowserDatabase, StoredSyncAccount, SyncQueueRecord } from "./BrowserDatabase.js";
 import type { CredentialCipher } from "./CredentialVault.js";
 import { assertSyncKeyVerifier, createSyncKeyVerifier, SYNC_KEY_VERIFIER_RECORD_ID } from "./SyncKeyVerifier.js";
 
 const StartCeremonySchema = z.object({ ceremonyId: z.string().uuid(), authUrl: z.string().url() });
 const ClaimSchema = z.object({ accountId: z.string().min(1), deviceId: z.string().min(1), deviceToken: z.string().min(32) });
+const KeyStateSchema = z.object({ version: z.number().int().nonnegative(), wrappedAccountKey: z.string().optional() });
+const EnrollmentStartSchema = z.object({ enrollmentId: z.string().uuid(), approvalCode: z.string().min(20), expiresInSeconds: z.number().int().positive() });
+const EnrollmentClaimSchema = z.object({
+  accountId: z.string().min(1),
+  deviceId: z.string().min(1),
+  deviceToken: z.string().min(32),
+  wrappedAccountKey: z.string().min(32),
+  keyVersion: z.number().int().positive(),
+});
+const EnrollmentDetailsSchema = z.object({
+  deviceId: z.string().min(1),
+  deviceName: z.string().min(1),
+  publicKey: z.string().min(32),
+  expiresAt: z.number().int().positive(),
+});
+const DevicesSchema = z.object({ devices: z.array(z.object({
+  deviceId: z.string().min(1),
+  name: z.string().min(1),
+  publicKey: z.string().min(1),
+  keyVersion: z.number().int().nonnegative(),
+  createdAt: z.number().int().nonnegative(),
+  lastSeenAt: z.number().int().nonnegative(),
+  current: z.boolean(),
+})).max(100) });
 const PushResponseSchema = z.object({ accepted: z.number().int().nonnegative(), cursor: z.number().int().nonnegative() });
 const PullResponseSchema = z.object({
   records: z.array(z.object({
@@ -46,10 +73,22 @@ interface PendingCeremony {
   recoveryKey?: string;
 }
 
+interface PendingEnrollment {
+  serviceUrl: string;
+  enrollmentId: string;
+  approvalCode: string;
+  deviceId: string;
+  device: DeviceKeyPair;
+  expiresAt: number;
+}
+
+type ServiceDevice = z.infer<typeof DevicesSchema>["devices"][number];
+
 export class SyncAccountManager {
   readonly #database: BrowserDatabase;
   readonly #cipher: CredentialCipher;
   readonly #profileId: string;
+  readonly #deviceName: string;
   readonly #parent: BrowserWindow;
   readonly #onChanged: () => void;
   readonly #onDataApplied: () => void;
@@ -58,6 +97,10 @@ export class SyncAccountManager {
   #transientServiceUrl: string | undefined;
   #lastError: string | undefined;
   #ceremonyWindow: BrowserWindow | undefined;
+  #pendingEnrollment: PendingEnrollment | undefined;
+  #enrollmentTimer: NodeJS.Timeout | undefined;
+  #enrollmentClaimPromise: Promise<void> | undefined;
+  #devices: ServiceDevice[] = [];
   #syncPromise: Promise<void> | undefined;
   #syncTimer: NodeJS.Timeout | undefined;
   #pollTimer: NodeJS.Timeout;
@@ -67,6 +110,7 @@ export class SyncAccountManager {
     database: BrowserDatabase;
     cipher: CredentialCipher;
     profileId: string;
+    deviceName: string;
     parent: BrowserWindow;
     onChanged: () => void;
     onDataApplied: () => void;
@@ -75,6 +119,7 @@ export class SyncAccountManager {
     this.#database = options.database;
     this.#cipher = options.cipher;
     this.#profileId = options.profileId;
+    this.#deviceName = options.deviceName;
     this.#parent = options.parent;
     this.#onChanged = options.onChanged;
     this.#onDataApplied = options.onDataApplied;
@@ -82,7 +127,10 @@ export class SyncAccountManager {
     const account = this.#database.syncAccount(this.#profileId);
     if (account?.status === "syncing") this.#database.updateSyncAccountStatus(this.#profileId, "connected");
     this.#pollTimer = setInterval(() => this.scheduleSync(), 5 * 60 * 1_000);
-    if (account) this.scheduleSync();
+    if (account) {
+      this.scheduleSync();
+      void this.#refreshDevices().catch((error) => this.#handleError(error));
+    }
   }
 
   state(): SyncAccountState {
@@ -92,10 +140,17 @@ export class SyncAccountManager {
     return {
       status: this.#transientStatus ?? account?.status ?? "disconnected",
       ...(serviceUrl ? { serviceUrl } : {}),
-      ...(account ? { accountId: account.accountId, deviceId: account.deviceId } : {}),
+      ...(account ? { accountId: account.accountId, deviceId: account.deviceId, keyVersion: account.keyVersion } : {}),
       ...(account?.lastSyncedAt ? { lastSyncedAt: account.lastSyncedAt } : {}),
       ...(lastError ? { lastError } : {}),
       pendingRecords: account ? this.#database.syncOutboxCount(this.#profileId) : 0,
+      devices: this.#deviceStates(),
+      ...(this.#pendingEnrollment ? {
+        pendingEnrollment: {
+          pairingCode: formatPairingCode(this.#pendingEnrollment.enrollmentId, this.#pendingEnrollment.approvalCode),
+          expiresAt: Math.floor(this.#pendingEnrollment.expiresAt / 1_000),
+        },
+      } : {}),
     };
   }
 
@@ -113,6 +168,159 @@ export class SyncAccountManager {
     if (this.#database.syncAccount(this.#profileId)) throw new Error("This profile is already connected to sync");
     const accountKey = recoverAccountKey(recoveryKey);
     this.#begin("authenticate", rawServiceUrl, undefined, accountKey);
+  }
+
+  async beginDeviceEnrollment(rawServiceUrl: string): Promise<void> {
+    if (this.#database.syncAccount(this.#profileId)) throw new Error("This profile is already connected to sync");
+    if (!this.#cipher.available()) throw new Error("OS-backed sync-key encryption is unavailable");
+    this.cancelDeviceEnrollment();
+    const serviceUrl = normalizeServiceUrl(rawServiceUrl);
+    const device = await generateDeviceKeyPair();
+    const deviceId = randomDeviceId();
+    const started = EnrollmentStartSchema.parse(await this.#request(serviceUrl, "/v1/devices/enrollments", {
+      method: "POST",
+      body: JSON.stringify({ deviceId, deviceName: this.#deviceName, publicKey: device.publicKey }),
+    }));
+    this.#pendingEnrollment = {
+      serviceUrl,
+      enrollmentId: started.enrollmentId,
+      approvalCode: started.approvalCode,
+      deviceId,
+      device,
+      expiresAt: Date.now() + started.expiresInSeconds * 1_000,
+    };
+    this.#transientStatus = "waiting-for-approval";
+    this.#transientServiceUrl = serviceUrl;
+    this.#lastError = undefined;
+    this.#changed();
+    this.#scheduleEnrollmentCheck();
+  }
+
+  checkDeviceEnrollment(): void {
+    if (!this.#pendingEnrollment || this.#disposed || this.#enrollmentClaimPromise) return;
+    if (this.#enrollmentTimer) clearTimeout(this.#enrollmentTimer);
+    this.#enrollmentTimer = undefined;
+    this.#enrollmentClaimPromise = this.#claimDeviceEnrollment()
+      .catch((error) => this.#handleError(error))
+      .finally(() => { this.#enrollmentClaimPromise = undefined; });
+  }
+
+  cancelDeviceEnrollment(): void {
+    if (this.#enrollmentTimer) clearTimeout(this.#enrollmentTimer);
+    this.#enrollmentTimer = undefined;
+    this.#pendingEnrollment = undefined;
+    if (!this.#database.syncAccount(this.#profileId)) {
+      this.#transientStatus = undefined;
+      this.#transientServiceUrl = undefined;
+      this.#lastError = undefined;
+    }
+    this.#changed();
+  }
+
+  async approveDevice(pairingCode: string): Promise<void> {
+    const account = this.#requireAccount();
+    const { enrollmentId, approvalCode } = parsePairingCode(pairingCode);
+    const { token, accountKey } = this.#secrets(account);
+    const details = EnrollmentDetailsSchema.parse(await this.#request(
+      account.serviceUrl,
+      `/v1/devices/enrollments/${encodeURIComponent(enrollmentId)}/details`,
+      { method: "POST", body: JSON.stringify({ approvalCode }) },
+      token,
+    ));
+    const confirmation = await dialog.showMessageBox(this.#parent, {
+      type: "question",
+      title: "Approve sync device",
+      message: `Approve “${details.deviceName}”?`,
+      detail: "This device will receive an encrypted copy of your sync key and can access the browser data selected for Locus Sync.",
+      buttons: ["Approve device", "Cancel"],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (confirmation.response !== 0) return;
+    const wrappedAccountKey = await wrapAccountKey(accountKey, details.publicKey);
+    await this.#request(account.serviceUrl, `/v1/devices/enrollments/${encodeURIComponent(enrollmentId)}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ approvalCode, wrappedAccountKey }),
+    }, token);
+    await this.#refreshDevices();
+  }
+
+  async revokeDevice(deviceId: string): Promise<void> {
+    const account = this.#requireAccount();
+    if (deviceId === account.deviceId) throw new Error("Disconnect this Mac instead of revoking it here");
+    const device = this.#devices.find((entry) => entry.deviceId === deviceId);
+    if (!device) throw new Error("Device is unavailable");
+    const confirmation = await dialog.showMessageBox(this.#parent, {
+      type: "warning",
+      title: "Revoke sync device",
+      message: `Revoke “${device.name}”?`,
+      detail: "It will stop receiving encrypted browser updates. Browser data already stored on that device will remain there.",
+      buttons: ["Revoke device", "Cancel"],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (confirmation.response !== 0) return;
+    const { token } = this.#secrets(account);
+    await this.#request(account.serviceUrl, `/v1/devices/${encodeURIComponent(deviceId)}`, { method: "DELETE" }, token);
+    await this.#refreshDevices();
+  }
+
+  async rotateRecoveryKey(): Promise<void> {
+    const confirmation = await dialog.showMessageBox(this.#parent, {
+      type: "warning",
+      title: "Rotate recovery key",
+      message: "Create a new recovery key?",
+      detail: "Every active device will receive the new encrypted account key. Your old recovery key will stop working immediately.",
+      buttons: ["Rotate key", "Cancel"],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (confirmation.response !== 0) return;
+    if (this.#syncPromise) await this.#syncPromise;
+    else {
+      try { await this.#runSync(); }
+      catch (error) { this.#handleError(error); throw error; }
+    }
+    const synchronized = this.#requireAccount();
+    if (synchronized.status === "error") throw new Error(synchronized.lastError ?? "Sync must complete before rotating the recovery key");
+    const account = synchronized;
+    const { token, accountKey } = this.#secrets(account);
+    const encryptedRecords = await this.#pullAllRecords(account.serviceUrl, token);
+    if (!encryptedRecords.length) throw new Error("Sync account has no encrypted key verifier");
+    if (encryptedRecords.length > 500) throw new Error("Recovery-key rotation currently supports up to 500 sync records");
+    const values = await Promise.all(encryptedRecords.map(async (record) => ({
+      record,
+      value: await decryptRecord(accountKey, record),
+    })));
+    const nextAccountKey = await generateAccountKey();
+    const nextVersion = account.keyVersion + 1;
+    const clock = new HybridLogicalClock(account.deviceId);
+    for (const { record } of values) clock.observe(record.clock);
+    const records = await Promise.all(values.map(async ({ record, value }) => await encryptRecord(nextAccountKey, {
+      accountId: account.accountId,
+      deviceId: account.deviceId,
+      collection: record.collection,
+      recordId: record.recordId,
+      clock: clock.tick(),
+      tombstone: record.tombstone,
+    }, value)));
+    const devices = await this.#fetchDevices(account, token);
+    const wraps = await Promise.all(devices.map(async (device) => ({
+      deviceId: device.deviceId,
+      wrappedAccountKey: await wrapAccountKey(nextAccountKey, device.publicKey),
+    })));
+    await this.#request(account.serviceUrl, "/v1/account/key/rotate", {
+      method: "POST",
+      body: JSON.stringify({ expectedVersion: account.keyVersion, version: nextVersion, wraps, records }),
+    }, token);
+    this.#database.updateSyncAccountKey(this.#profileId, this.#cipher.encrypt(nextAccountKey), nextVersion);
+    this.#database.resetSyncData(this.#profileId);
+    this.#onRecoveryKey(createRecoveryKey(nextAccountKey));
+    await this.#refreshDevices();
+    this.syncNow();
   }
 
   scheduleSync(): void {
@@ -148,6 +356,10 @@ export class SyncAccountManager {
 
   disconnect(): void {
     this.#database.deleteSyncAccount(this.#profileId);
+    if (this.#enrollmentTimer) clearTimeout(this.#enrollmentTimer);
+    this.#enrollmentTimer = undefined;
+    this.#pendingEnrollment = undefined;
+    this.#devices = [];
     this.#transientStatus = undefined;
     this.#transientServiceUrl = undefined;
     this.#lastError = undefined;
@@ -157,12 +369,13 @@ export class SyncAccountManager {
   dispose(): void {
     this.#disposed = true;
     if (this.#syncTimer) clearTimeout(this.#syncTimer);
+    if (this.#enrollmentTimer) clearTimeout(this.#enrollmentTimer);
     clearInterval(this.#pollTimer);
     this.#ceremonyWindow?.destroy();
   }
 
   #begin(kind: "register" | "authenticate", rawServiceUrl: string, displayName?: string, recoveredAccountKey?: string): void {
-    if (this.#transientStatus === "connecting" || this.#ceremonyWindow) throw new Error("A passkey request is already active");
+    if (this.#transientStatus === "connecting" || this.#ceremonyWindow || this.#pendingEnrollment) throw new Error("Another sync connection request is already active");
     if (!this.#cipher.available()) throw new Error("OS-backed sync-key encryption is unavailable");
     const serviceUrl = normalizeServiceUrl(rawServiceUrl);
     this.#transientStatus = "connecting";
@@ -190,6 +403,7 @@ export class SyncAccountManager {
       body: JSON.stringify({
         ...(displayName ? { displayName } : {}),
         deviceId: pending.deviceId,
+        deviceName: this.#deviceName,
         devicePublicKey: pending.device.publicKey,
       }),
     }));
@@ -203,8 +417,19 @@ export class SyncAccountManager {
       body: JSON.stringify(callback),
     }));
     if (claim.deviceId !== pending.deviceId) throw new Error("Passkey claim was issued to another device");
+    let keyVersion: number;
     try {
       if (kind === "register") {
+        keyVersion = 1;
+        const wrappedAccountKey = await wrapAccountKey(pending.accountKey, pending.device.publicKey);
+        KeyStateSchema.parse(await this.#request(serviceUrl, "/v1/account/key", {
+          method: "PUT",
+          body: JSON.stringify({
+            expectedVersion: 0,
+            version: keyVersion,
+            wraps: [{ deviceId: pending.deviceId, wrappedAccountKey }],
+          }),
+        }, claim.deviceToken));
         const verifier = await createSyncKeyVerifier(
           pending.accountKey,
           claim.accountId,
@@ -213,14 +438,22 @@ export class SyncAccountManager {
         );
         const pushed = PushResponseSchema.parse(await this.#request(serviceUrl, "/v1/sync/push", {
           method: "POST",
-          body: JSON.stringify({ records: [verifier] }),
+          body: JSON.stringify({ keyVersion, records: [verifier] }),
         }, claim.deviceToken));
         if (pushed.accepted !== 1) throw new Error("Could not initialize encrypted sync");
       } else {
+        const keyState = KeyStateSchema.parse(await this.#request(serviceUrl, "/v1/account/key", {}, claim.deviceToken));
+        if (!keyState.version) throw new Error("Sync account key is not initialized");
+        keyVersion = keyState.version;
         await this.#verifyRecoveredAccountKey(serviceUrl, claim.deviceToken, pending.accountKey);
+        const wrappedAccountKey = await wrapAccountKey(pending.accountKey, pending.device.publicKey);
+        await this.#request(serviceUrl, "/v1/devices/self/key", {
+          method: "PUT",
+          body: JSON.stringify({ version: keyVersion, wrappedAccountKey }),
+        }, claim.deviceToken);
       }
     } catch (error) {
-      const path = kind === "register" ? "/v1/account" : `/v1/devices/${encodeURIComponent(pending.deviceId)}`;
+      const path = kind === "register" ? "/v1/account" : "/v1/devices/self";
       await this.#request(serviceUrl, path, { method: "DELETE" }, claim.deviceToken).catch(() => undefined);
       throw error;
     }
@@ -233,12 +466,14 @@ export class SyncAccountManager {
       encryptedDevicePrivateKey: this.#cipher.encrypt(pending.device.privateKey),
       encryptedDeviceToken: this.#cipher.encrypt(claim.deviceToken),
       encryptedAccountKey: this.#cipher.encrypt(pending.accountKey),
+      keyVersion,
       status: "connected",
     });
     if (pending.recoveryKey) this.#onRecoveryKey(pending.recoveryKey);
     this.#transientStatus = undefined;
     this.#transientServiceUrl = undefined;
     this.#lastError = undefined;
+    await this.#refreshDevices();
     this.#changed();
     this.syncNow();
   }
@@ -260,6 +495,55 @@ export class SyncAccountManager {
       cursor = pulled.cursor;
     }
     throw new Error("This sync account has no recovery-key verifier");
+  }
+
+  #scheduleEnrollmentCheck(): void {
+    if (this.#enrollmentTimer) clearTimeout(this.#enrollmentTimer);
+    this.#enrollmentTimer = setTimeout(() => {
+      this.#enrollmentTimer = undefined;
+      this.checkDeviceEnrollment();
+    }, 3_000);
+  }
+
+  async #claimDeviceEnrollment(): Promise<void> {
+    const pending = this.#pendingEnrollment;
+    if (!pending) return;
+    if (pending.expiresAt <= Date.now()) {
+      this.#pendingEnrollment = undefined;
+      throw new Error("Device approval expired. Start again to get a new pairing code.");
+    }
+    const claimed = await this.#optionalRequest(pending.serviceUrl, "/v1/devices/enrollments/claim", {
+      method: "POST",
+      body: JSON.stringify({ enrollmentId: pending.enrollmentId, approvalCode: pending.approvalCode }),
+    });
+    if (!claimed) {
+      if (this.#pendingEnrollment === pending) this.#scheduleEnrollmentCheck();
+      return;
+    }
+    if (this.#pendingEnrollment !== pending) return;
+    const delivery = EnrollmentClaimSchema.parse(claimed);
+    if (delivery.deviceId !== pending.deviceId) throw new Error("Enrollment was issued to another device");
+    const accountKey = await unwrapAccountKey(delivery.wrappedAccountKey, pending.device);
+    await this.#verifyRecoveredAccountKey(pending.serviceUrl, delivery.deviceToken, accountKey);
+    this.#database.saveSyncAccount({
+      profileId: this.#profileId,
+      serviceUrl: pending.serviceUrl,
+      accountId: delivery.accountId,
+      deviceId: pending.deviceId,
+      devicePublicKey: pending.device.publicKey,
+      encryptedDevicePrivateKey: this.#cipher.encrypt(pending.device.privateKey),
+      encryptedDeviceToken: this.#cipher.encrypt(delivery.deviceToken),
+      encryptedAccountKey: this.#cipher.encrypt(accountKey),
+      keyVersion: delivery.keyVersion,
+      status: "connected",
+    });
+    this.#pendingEnrollment = undefined;
+    this.#transientStatus = undefined;
+    this.#transientServiceUrl = undefined;
+    this.#lastError = undefined;
+    await this.#refreshDevices();
+    this.#changed();
+    this.syncNow();
   }
 
   async #openPasskeyWindow(authUrl: string): Promise<{ claimId: string; claimCode: string }> {
@@ -318,8 +602,11 @@ export class SyncAccountManager {
   }
 
   async #runSync(): Promise<void> {
-    const account = this.#requireAccount();
-    const { token, accountKey } = this.#secrets(account);
+    let account = this.#requireAccount();
+    let { token, accountKey } = this.#secrets(account);
+    const refreshed = await this.#refreshAccountKey(account, token);
+    account = refreshed.account;
+    accountKey = refreshed.accountKey;
     this.#database.updateSyncAccountStatus(this.#profileId, "syncing");
     this.#changed();
     const progress = this.#database.syncProgress(this.#profileId);
@@ -342,7 +629,7 @@ export class SyncAccountManager {
       }, record.value)));
       PushResponseSchema.parse(await this.#request(account.serviceUrl, "/v1/sync/push", {
         method: "POST",
-        body: JSON.stringify({ records }),
+        body: JSON.stringify({ keyVersion: account.keyVersion, records }),
       }, token));
       this.#database.clearSyncOutbox(this.#profileId, batch);
     }
@@ -373,6 +660,7 @@ export class SyncAccountManager {
     }
     this.#database.cleanupExpiredSyncTombstones(this.#profileId);
     this.#database.updateSyncAccountStatus(this.#profileId, "connected", undefined, true);
+    await this.#refreshDevices();
     this.#onDataApplied();
     this.#changed();
   }
@@ -391,6 +679,58 @@ export class SyncAccountManager {
     };
   }
 
+  async #refreshAccountKey(account: StoredSyncAccount, token: string): Promise<{ account: StoredSyncAccount; accountKey: string }> {
+    const state = KeyStateSchema.parse(await this.#request(account.serviceUrl, "/v1/account/key", {}, token));
+    if (state.version < account.keyVersion) throw new Error("Sync service returned an older account key version");
+    if (state.version === account.keyVersion) return { account, accountKey: this.#cipher.decrypt(account.encryptedAccountKey) };
+    if (!state.wrappedAccountKey) throw new Error("This device has not received the newest sync key");
+    const privateKey = this.#cipher.decrypt(account.encryptedDevicePrivateKey);
+    const accountKey = await unwrapAccountKey(state.wrappedAccountKey, { publicKey: account.devicePublicKey, privateKey });
+    await this.#verifyRecoveredAccountKey(account.serviceUrl, token, accountKey);
+    this.#database.updateSyncAccountKey(this.#profileId, this.#cipher.encrypt(accountKey), state.version);
+    const updated = this.#requireAccount();
+    return { account: updated, accountKey };
+  }
+
+  async #refreshDevices(): Promise<void> {
+    const account = this.#database.syncAccount(this.#profileId);
+    if (!account) {
+      this.#devices = [];
+      return;
+    }
+    const { token } = this.#secrets(account);
+    this.#devices = await this.#fetchDevices(account, token);
+    this.#changed();
+  }
+
+  async #fetchDevices(account: StoredSyncAccount, token: string): Promise<ServiceDevice[]> {
+    return DevicesSchema.parse(await this.#request(account.serviceUrl, "/v1/devices", {}, token)).devices;
+  }
+
+  #deviceStates(): SyncDeviceState[] {
+    return this.#devices.map((device) => ({
+      deviceId: device.deviceId,
+      name: device.name,
+      current: device.current,
+      keyVersion: device.keyVersion,
+      createdAt: Math.floor(device.createdAt / 1_000),
+      lastSeenAt: Math.floor(device.lastSeenAt / 1_000),
+    }));
+  }
+
+  async #pullAllRecords(serviceUrl: string, token: string): Promise<EncryptedRecord[]> {
+    const records: EncryptedRecord[] = [];
+    let cursor = 0;
+    for (let page = 0; page < 100; page += 1) {
+      const pulled = PullResponseSchema.parse(await this.#request(serviceUrl, `/v1/sync/pull?cursor=${cursor}&limit=500`, {}, token));
+      records.push(...pulled.records.map((record) => EncryptedRecordSchema.parse(record)));
+      if (!pulled.hasMore) return records;
+      if (pulled.cursor <= cursor) throw new Error("Sync service returned a non-advancing cursor");
+      cursor = pulled.cursor;
+    }
+    throw new Error("Sync account exceeds the supported rotation scan size");
+  }
+
   async #request(serviceUrl: string, path: string, init: RequestInit, token?: string): Promise<unknown> {
     const response = await fetch(`${serviceUrl}${path}`, {
       ...init,
@@ -402,6 +742,19 @@ export class SyncAccountManager {
       },
       redirect: "error",
     });
+    const body = await response.json().catch(() => ({ error: `Sync service returned ${response.status}` })) as { error?: unknown };
+    if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : `Sync service returned ${response.status}`);
+    return body;
+  }
+
+  async #optionalRequest(serviceUrl: string, path: string, init: RequestInit): Promise<unknown | undefined> {
+    const response = await fetch(`${serviceUrl}${path}`, {
+      ...init,
+      signal: AbortSignal.timeout(20_000),
+      headers: { "content-type": "application/json", ...init.headers },
+      redirect: "error",
+    });
+    if (response.status === 404) return undefined;
     const body = await response.json().catch(() => ({ error: `Sync service returned ${response.status}` })) as { error?: unknown };
     if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : `Sync service returned ${response.status}`);
     return body;
@@ -432,4 +785,14 @@ function normalizeServiceUrl(value: string): string {
     throw new Error("Sync requires HTTPS except during local development");
   }
   return url.origin;
+}
+
+function formatPairingCode(enrollmentId: string, approvalCode: string): string {
+  return `LOCUS-DEVICE:${enrollmentId}:${approvalCode}`;
+}
+
+function parsePairingCode(value: string): { enrollmentId: string; approvalCode: string } {
+  const match = /^LOCUS-DEVICE:([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}):([A-Za-z0-9_-]{20,128})$/i.exec(value.trim());
+  if (!match) throw new Error("Enter the complete Locus device pairing code");
+  return { enrollmentId: match[1]!, approvalCode: match[2]! };
 }

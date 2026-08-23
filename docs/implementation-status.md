@@ -55,6 +55,15 @@ of truth.
   metadata. Device tokens, private keys, and the account key are protected by
   the OS credential store; generated recovery keys stay in a native
   main-process confirmation instead of crossing the renderer bridge.
+- Locus-themed device management lists the current and remote devices, creates
+  expiring pairing codes, lets an existing device approve the new X25519 public
+  key, supports explicit revocation, and allows a new Mac to claim its wrapped
+  account key exactly once.
+- Recovery-key rotation decrypts and verifies the full local replica, creates
+  a new account key, re-encrypts every record, wraps the new key independently
+  for every active device, and commits the records, wraps, and key version in a
+  single server transaction. Writes made with an older key version are then
+  rejected.
 - Durable SQLite outbox/inbox state, per-record encryption, cursoring, hybrid
   logical-clock conflict handling, stale-replay rejection, 90-day tombstones,
   offline retry, periodic sync, remote-device tabs, encrypted recovery-key
@@ -66,11 +75,9 @@ of truth.
 
 ## Required before canary
 
-- Add existing-device approval and recovery-key rotation/device-management UI.
-  Enrollment cryptography and service primitives exist, while the desktop
-  currently supports passkey sign-in plus the one-time recovery key.
 - Add S3-backed large opaque envelopes, broader offline/failure simulations,
-  key-rotation migrations, fuzzing, and an external sync cryptography review.
+  production-scale key-rotation migrations, fuzzing, and an external sync
+  cryptography review.
 - Load verified gallery extensions into profile sessions, add developer-mode
   UI, implement the supported MV3 shims, and ship compatibility/malware/update/
   rollback infrastructure.

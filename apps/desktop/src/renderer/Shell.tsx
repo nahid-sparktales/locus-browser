@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bookmark, Bot, Check, ChevronDown,
-  CircleAlert, Clock3, Cloud, CloudOff, Download, EyeOff, FileDown, Globe2, History,
+  CircleAlert, Clock3, Cloud, CloudOff, Copy, Download, EyeOff, FileDown, Globe2, History,
   KeyRound, Laptop, Layers3, LayoutList, LockKeyhole, LogIn, LogOut, Minus, Monitor, Moon, MoreHorizontal, PanelLeft,
   Pause, Play, Plus, Printer, RefreshCw, Search, Settings, ShieldCheck,
   Sparkles, Square, Sun, UserRound, UsersRound, Volume2, VolumeX, X,
@@ -580,7 +580,8 @@ function SettingsPanel({ state }: { state: BrowserAppState }) {
 function SyncSettings({ state }: { state: BrowserAppState }) {
   const [serviceUrl, setServiceUrl] = useState(state.sync.serviceUrl ?? defaultSyncService);
   const [recoveryKey, setRecoveryKey] = useState("");
-  const [showSignIn, setShowSignIn] = useState(false);
+  const [connectionMethod, setConnectionMethod] = useState<"create" | "recover" | "device">("create");
+  const [pairingCode, setPairingCode] = useState("");
   const [formError, setFormError] = useState<string>();
   const busy = state.sync.status === "connecting" || state.sync.status === "syncing";
   const connected = Boolean(state.sync.accountId);
@@ -596,6 +597,18 @@ function SyncSettings({ state }: { state: BrowserAppState }) {
     event.preventDefault();
     void run(() => command({ type: "begin-sync-sign-in", recoveryKey, serviceUrl }));
   };
+  const enroll = (event: React.FormEvent) => {
+    event.preventDefault();
+    void run(() => command({ type: "begin-sync-device-enrollment", serviceUrl }));
+  };
+  const approve = (event: React.FormEvent) => {
+    event.preventDefault();
+    void run(async () => {
+      await command({ type: "approve-sync-device", pairingCode });
+      setPairingCode("");
+    });
+  };
+  const pendingEnrollment = state.sync.pendingEnrollment;
   return (
     <section className="sync-settings" aria-labelledby="sync-settings-title">
       <div className="settings-subheading" id="sync-settings-title">Locus encrypted sync</div>
@@ -612,6 +625,27 @@ function SyncSettings({ state }: { state: BrowserAppState }) {
             <button className="primary" disabled={busy} onClick={() => void command({ type: "sync-now" })}><Cloud size={12} /> Sync now{state.sync.pendingRecords ? ` · ${state.sync.pendingRecords}` : ""}</button>
             <button disabled={busy} onClick={() => disconnectSync()}><LogOut size={12} /> Disconnect</button>
           </div>
+          <div className="sync-section-heading"><span>Devices</span><small>{state.sync.devices.length}</small></div>
+          <div className="sync-device-list">
+            {state.sync.devices.map((device) => (
+              <div className="sync-device" key={device.deviceId}>
+                <span className="sync-device-icon"><Laptop size={12} /></span>
+                <span><strong>{device.name}</strong><small>{device.current ? "This Mac" : `Seen ${formatTime(device.lastSeenAt)}`} · Key v{device.keyVersion}</small></span>
+                {!device.current && <button title={`Revoke ${device.name}`} disabled={busy} onClick={() => void run(() => command({ type: "revoke-sync-device", deviceId: device.deviceId }))}><X size={11} /></button>}
+              </div>
+            ))}
+          </div>
+          <details className="sync-device-add">
+            <summary><Plus size={11} /> Approve another device</summary>
+            <form className="sync-form" onSubmit={approve}>
+              <label><span>Pairing code from the new device</span><textarea required rows={3} value={pairingCode} onChange={(event) => setPairingCode(event.target.value)} placeholder="LOCUS-DEVICE:…" autoComplete="off" spellCheck={false} /></label>
+              <button className="sync-connect primary" type="submit" disabled={busy}><ShieldCheck size={12} /> Review device</button>
+            </form>
+          </details>
+          <div className="sync-recovery-row">
+            <span><strong>Recovery key</strong><small>Version {state.sync.keyVersion ?? 1} · rotating updates every active device</small></span>
+            <button disabled={busy} onClick={() => void run(() => command({ type: "rotate-sync-recovery-key" }))}><RefreshCw size={11} /> Rotate</button>
+          </div>
           <details className="sync-danger">
             <summary>Cloud data controls</summary>
             <p>Deleting cloud data keeps this Mac connected. Local data can upload again on a later sync.</p>
@@ -624,15 +658,41 @@ function SyncSettings({ state }: { state: BrowserAppState }) {
       ) : (
         <div className="sync-card">
           <div className="sync-card-heading"><span className="sync-status-icon"><ShieldCheck size={15} /></span><span><strong>Optional and private</strong><small>A passkey protects your account. Locus cannot decrypt your browser data.</small></span></div>
-          <form className="sync-form" onSubmit={showSignIn ? signIn : register}>
-            <label><span>Sync service</span><input type="url" required value={serviceUrl} onChange={(event) => setServiceUrl(event.target.value)} placeholder="https://sync.example.com" /></label>
-            {showSignIn && <label><span>Recovery key</span><textarea required rows={3} value={recoveryKey} onChange={(event) => setRecoveryKey(event.target.value)} placeholder="LOCUS-…" autoComplete="off" spellCheck={false} /></label>}
-            {(formError || state.sync.lastError) && <p className="sync-error" role="alert">{formError ?? state.sync.lastError}</p>}
-            <button className="sync-connect primary" type="submit" disabled={busy}>{showSignIn ? <LogIn size={13} /> : <KeyRound size={13} />}{busy ? "Waiting for passkey…" : showSignIn ? "Sign in with passkey" : "Create sync account"}</button>
-          </form>
-          <button className="sync-switch" disabled={busy} onClick={() => { setShowSignIn((value) => !value); setFormError(undefined); }}>
-            {showSignIn ? "Create a new account" : "Already use Locus Sync? Sign in"}
-          </button>
+          {pendingEnrollment ? (
+            <div className="sync-pairing" aria-live="polite">
+              <span className="sync-pairing-mark"><Laptop size={15} /></span>
+              <strong>Approve this Mac from another device</strong>
+              <p>On an already connected device, open Settings → Locus encrypted sync → Approve another device, then paste this code.</p>
+              <code>{pendingEnrollment.pairingCode}</code>
+              {(formError || state.sync.lastError) && <p className="sync-error" role="alert">{formError ?? state.sync.lastError}</p>}
+              <div className="sync-actions">
+                <button className="primary" onClick={() => void command({ type: "copy-sync-pairing-code" })}><Copy size={11} /> Copy code</button>
+                <button onClick={() => void command({ type: "check-sync-device-enrollment" })}><RefreshCw size={11} /> Check again</button>
+                <button onClick={() => void command({ type: "cancel-sync-device-enrollment" })}>Cancel</button>
+              </div>
+              <small>Expires {formatTime(pendingEnrollment.expiresAt)}</small>
+            </div>
+          ) : (
+            <>
+              <div className="sync-methods" role="radiogroup" aria-label="Connect to Locus Sync">
+                {(["create", "recover", "device"] as const).map((method) => (
+                  <button key={method} role="radio" aria-checked={connectionMethod === method} className={connectionMethod === method ? "active" : ""} onKeyDown={navigateRadioGroup} onClick={() => { setConnectionMethod(method); setFormError(undefined); }}>
+                    {method === "create" ? "New" : method === "recover" ? "Recovery" : "Device"}
+                  </button>
+                ))}
+              </div>
+              <form className="sync-form" onSubmit={connectionMethod === "create" ? register : connectionMethod === "recover" ? signIn : enroll}>
+                <label><span>Sync service</span><input type="url" required value={serviceUrl} onChange={(event) => setServiceUrl(event.target.value)} placeholder="https://sync.example.com" /></label>
+                {connectionMethod === "recover" && <label><span>Recovery key</span><textarea required rows={3} value={recoveryKey} onChange={(event) => setRecoveryKey(event.target.value)} placeholder="LOCUS-…" autoComplete="off" spellCheck={false} /></label>}
+                <p className="sync-method-detail">{connectionMethod === "create" ? "Create an account with a passkey and receive a one-time recovery key." : connectionMethod === "recover" ? "Use your passkey and recovery key on this Mac." : "Get a pairing code and approve this Mac from a connected device—no recovery key needed."}</p>
+                {(formError || state.sync.lastError) && <p className="sync-error" role="alert">{formError ?? state.sync.lastError}</p>}
+                <button className="sync-connect primary" type="submit" disabled={busy}>
+                  {connectionMethod === "create" ? <KeyRound size={13} /> : connectionMethod === "recover" ? <LogIn size={13} /> : <Laptop size={13} />}
+                  {busy ? "Waiting for passkey…" : connectionMethod === "create" ? "Create sync account" : connectionMethod === "recover" ? "Sign in with recovery key" : "Get pairing code"}
+                </button>
+              </form>
+            </>
+          )}
         </div>
       )}
     </section>
