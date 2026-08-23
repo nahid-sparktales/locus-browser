@@ -71,7 +71,8 @@ verify:
 4. Merge only after Browser CI is green.
 5. Create and push the exact tag `canary-vX.Y.Z-canary.N`. The protected
    `Publish Canary` workflow imports the Developer ID identity, embeds the
-   Python runtime, seals the two production service origins, builds Apple
+   Python runtime and integrity-pinned OpenAI Codex App Server, seals the two
+   production service origins, builds Apple
    Silicon DMG/ZIP artifacts, notarizes and staples the app, verifies Gatekeeper,
    emits a CycloneDX SBOM, signs the release manifest, and publishes a GitHub
    prerelease.
@@ -87,6 +88,9 @@ the workflow copy. Confirm the manifest SHA-256 values and then exercise:
   windows, history, bookmarks, download quarantine, password gesture, and PDF;
 - Work open/close, model selection, workspace choice, one solo task, Stop,
   permission review, a browser tab grant/revoke, and agent crash recovery;
+- ChatGPT Plan sign-in in the browser, dynamic model discovery, one completed
+  plan-backed solo task, sign-out, and confirmation that ChatGPT API remains a
+  separate usage-billed provider;
 - signed extension install/update/rollback and a signed revocation disable;
 - new passkey account, second-device approval, offline convergence, recovery-key
   rotation, device revocation, and cloud deletion;

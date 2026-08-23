@@ -9,12 +9,14 @@ agent_root="${platform_root}/agent"
 cache="${repo_root}/.agent-runtime"
 stage="${repo_root}/apps/desktop/build/AgentRuntime"
 requirements_lock="${agent_root}/requirements-runtime.lock"
+component_manifest="${agent_root}/ollama_code/runtime_components/codex-app-server.json"
 
 [[ "$(/usr/bin/uname -s)" == "Darwin" ]] || {
   echo "error: the first canary runtime target is macOS" >&2
   exit 1
 }
-[[ -f "${agent_root}/pyproject.toml" && -f "${requirements_lock}" ]] || {
+[[ -f "${agent_root}/pyproject.toml" && -f "${requirements_lock}" \
+    && -f "${component_manifest}" ]] || {
   echo "error: locus-platform agent runtime is missing at ${agent_root}" >&2
   exit 1
 }
@@ -77,6 +79,11 @@ fi
 /usr/bin/ditto --norsrc --noextattr --noqtn "${agent_root}/ollama_code" "${stage}/source/ollama_code"
 /usr/bin/ditto --norsrc --noextattr --noqtn "${cache}/cpython" "${stage}/python"
 /usr/bin/ditto --norsrc --noextattr --noqtn "${cache}/site-packages" "${stage}/site-packages"
+node "${repo_root}/scripts/prepare-managed-component.mjs" \
+  --manifest "${component_manifest}" \
+  --cache "${cache}/managed-components" \
+  --destination "${stage}/components/codex-app-server" \
+  --license "${platform_root}/LICENSE"
 
 for junk in "${stage}/source/ollama_code"/**/__pycache__(N/); do /bin/rm -rf "${junk}"; done
 for lib_dir in "${stage}/python/lib"/python3.*(N/); do
@@ -105,5 +112,6 @@ revision="$(/usr/bin/git -C "${platform_root}" rev-parse HEAD)"
   echo "python_asset=${asset}"
   echo "python_sha256=${pbs_sha256}"
   echo "requirements_sha256=$(/usr/bin/shasum -a 256 "${requirements_lock}" | /usr/bin/cut -d' ' -f1)"
+  echo "codex_component_manifest_sha256=$(/usr/bin/shasum -a 256 "${component_manifest}" | /usr/bin/cut -d' ' -f1)"
 } > "${stage}/PROVENANCE"
 echo "Self-contained agent runtime staged at ${stage}."

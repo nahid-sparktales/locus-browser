@@ -68,8 +68,12 @@ Claude API, vLLM/OpenAI-compatible endpoints, and models installed through
 Ollama. The active model is saved per browser profile. Provider keys are
 entered in a native hidden field, encrypted with macOS secure storage, and
 never placed in page content, Work Mode state, or renderer IPC. ChatGPT Plan
-uses Locus's managed sign-in flow and reports unavailable when its pinned
-runtime component is not installed in a development checkout.
+uses the pinned [OpenAI Codex App Server](https://learn.chatgpt.com/docs/app-server)
+bundled inside the signed application.
+Its archive, executable, architecture, version, upstream signing identity, and
+license are verified while packaging; the runtime is signed again as part of
+the Locus Browser app. Development checkouts still fail closed unless a helper
+is deliberately configured or the packaged runtime has been prepared.
 
 The app identity is the Locus lime tile with a single black **L**. The source
 assets live at `apps/desktop/assets/icon.png` and `icon.icns`; macOS installs

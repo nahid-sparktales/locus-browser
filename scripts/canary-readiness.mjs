@@ -1,4 +1,5 @@
-import { createPublicKey, verify } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -6,6 +7,9 @@ const root = new URL("..", import.meta.url).pathname;
 const release = process.argv.includes("--release");
 const checks = [];
 const packageJson = JSON.parse(readFileSync(join(root, "apps/desktop/package.json"), "utf8"));
+const platformRoot = process.env.LOCUS_PLATFORM_ROOT || join(root, "..", "locus-platform");
+const codexComponentPath = join(platformRoot, "agent/ollama_code/runtime_components/codex-app-server.json");
+let codexComponent;
 check("Desktop canary version", () => {
   const value = packageJson.version;
   if (!/^\d+\.\d+\.\d+-canary\.\d+$/.test(value)) throw new Error(`unexpected version ${value}`);
@@ -24,6 +28,19 @@ for (const path of [
   "SECURITY.md",
   "docs/canary-runbook.md",
 ]) check(path, () => { if (!existsSync(join(root, path))) throw new Error("missing"); });
+check("Pinned managed ChatGPT component contract", () => {
+  codexComponent = JSON.parse(readFileSync(codexComponentPath, "utf8"));
+  const target = codexComponent.targets?.["darwin-arm64"];
+  if (codexComponent.schema_version !== 1 || !/^\d+\.\d+\.\d+$/.test(codexComponent.version ?? "")) {
+    throw new Error("invalid component manifest");
+  }
+  if (target?.package !== "@openai/codex" || target.package_version !== `${codexComponent.version}-darwin-arm64`) {
+    throw new Error("unexpected component package");
+  }
+  for (const field of ["archive_sha256", "executable_sha256"]) {
+    if (!/^[0-9a-f]{64}$/.test(target[field] ?? "")) throw new Error(`${field} is not pinned`);
+  }
+});
 check("Pinned Electron compatibility evidence", () => {
   const registry = JSON.parse(readFileSync(join(root, "packages/extensions/registry.json"), "utf8"));
   const electron = packageJson.devDependencies?.electron;
@@ -63,6 +80,20 @@ if (release) {
     if (!sbom.components.some((component) => component.purl?.startsWith("pkg:pypi/"))) {
       throw new Error("embedded Python dependencies are missing from the SBOM");
     }
+    if (!sbom.components.some((component) => component.name === "OpenAI Codex App Server" && component.version === codexComponent.version)) {
+      throw new Error("managed ChatGPT component is missing from the SBOM");
+    }
+  });
+  check("Bundled managed ChatGPT runtime", () => {
+    const componentRoot = join(root, "release/mac-arm64/Locus Browser.app/Contents/Resources/AgentRuntime/components/codex-app-server");
+    const packagedManifest = join(componentRoot, "component.json");
+    const executable = join(componentRoot, "codex");
+    if (sha256(packagedManifest) !== sha256(codexComponentPath)) throw new Error("packaged component contract differs from the platform release");
+    const reported = execFileSync(executable, ["--version"], { encoding: "utf8", timeout: 15_000 }).trim();
+    if (reported !== `codex-cli ${codexComponent.version}`) throw new Error(`unexpected helper version ${reported || "unknown"}`);
+    const file = execFileSync("/usr/bin/file", [executable], { encoding: "utf8" });
+    if (!file.includes("Mach-O 64-bit executable arm64")) throw new Error("helper is not Apple Silicon");
+    execFileSync("/usr/bin/codesign", ["--verify", "--strict", "--verbose=2", executable], { stdio: "pipe" });
   });
   check("Signed release manifest", () => {
     const envelope = JSON.parse(readFileSync(join(root, "release/release-manifest.json"), "utf8"));
@@ -98,4 +129,8 @@ function serviceOrigin(raw) {
     throw new Error("release service URLs must be credential-free HTTPS origins");
   }
   return url.origin;
+}
+
+function sha256(path) {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
 }

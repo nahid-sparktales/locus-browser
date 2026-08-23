@@ -29,12 +29,16 @@ agent rather than every team and orchestration surface in native Locus.
 
 ## Canary release and security foundation
 
-- A self-contained pinned Python agent runtime is embedded in the signed app;
-  nested Mach-O files are signed explicitly under hardened runtime.
+- A self-contained pinned Python agent runtime and the pinned OpenAI Codex App
+  Server for ChatGPT Plan are embedded in the signed app. Download size/hash,
+  executable size/hash, Apple Silicon architecture, exact version, and upstream
+  signing identity are verified before nested Mach-O files are signed under the
+  app's hardened runtime identity.
 - Apple Silicon DMG/ZIP packaging, Developer ID signing, notarization/stapling
   hooks, canary update checks, install-on-quit, database snapshots, and two-
   version rollback retention.
-- Browser CI and protected tag release workflows run typechecking, 145 tests,
+- Browser CI and protected tag release workflows run typechecking, the complete
+  unit/integration/fuzz suite,
   production builds, native extension compatibility, UI/accessibility/performance
   acceptance, dependency audit, code-sign/Gatekeeper checks, SBOM generation,
   and signed release-manifest verification.
@@ -81,7 +85,7 @@ agent rather than every team and orchestration surface in native Locus.
 
 ## Automated gate status
 
-The local candidate currently passes 145 unit/integration/fuzz tests, the full
+The local candidate currently passes its unit/integration/fuzz suites, the full
 production build, the Electron compatibility fixture, three responsive UI
 surfaces, warm tab switching under the 150 ms p95 gate, Reduced Motion, 200%
 scaling, a production dependency audit with no known vulnerabilities, and a
@@ -99,8 +103,6 @@ before inviting canary users:
 - Run the tag workflow with Apple App Store Connect credentials so the public
   DMG/ZIP is notarized, stapled, Gatekeeper-assessed, manifest-signed, and
   published from CI.
-- Publish the pinned managed ChatGPT Plan component used by the packaged agent
-  runtime, or keep that route visibly unavailable for the first cohort.
 - Complete independent desktop security, encrypted-sync cryptography, and
   accessibility reviews; resolve every critical/high finding.
 - Run clean-Mac acceptance, a 24-hour internal cohort, long-session soak,

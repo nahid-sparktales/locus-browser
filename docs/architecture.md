@@ -36,7 +36,13 @@ encrypted with `safeStorage` and persisted per browser profile; no command or
 public browser state contains the secret. The broker applies fixed official
 endpoints and authentication styles for OpenAI, Kimi, and Anthropic, discovers
 Ollama models from the loopback service, and delegates ChatGPT Plan account and
-model state to the pinned local runtime component.
+model state to the pinned local runtime component. `locus-platform` owns that
+component's versioned artifact contract. Packaging downloads only the exact
+Apple Silicon archive from the recorded npm origin, verifies archive and
+executable size/hash, architecture, version, and OpenAI signing team, then
+embeds only the App Server executable. The packaged agent receives its explicit
+path and an app-owned credential home; it never searches the user's `PATH` or
+silently substitutes an unreviewed installation.
 
 Work image attachments are also admitted by the main-process broker. It checks
 count and byte budgets before loading data, verifies PNG/JPEG/GIF/WebP content

@@ -42,6 +42,7 @@ export class AgentRuntime extends EventEmitter {
     const pythonPath = packaged
       ? [agentRoot, join(this.#platformRoot, "site-packages")].join(":")
       : agentRoot;
+    const managedEnvironment = managedChatGPTEnvironment(this.#platformRoot, this.#dataRoot, packaged);
     mkdirSync(this.#dataRoot, { recursive: true });
     this.emit("status", { status: "starting", message: "Starting the local agent…" });
 
@@ -51,6 +52,7 @@ export class AgentRuntime extends EventEmitter {
         ...process.env,
         PYTHONPATH: pythonPath,
         ...(packaged ? { PYTHONDONTWRITEBYTECODE: "1" } : {}),
+        ...managedEnvironment,
         LOCUS_AGENT_TOKEN: this.#token,
         OLLAMA_CODE_HOME: this.#dataRoot,
         PYTHONUNBUFFERED: "1",
@@ -278,6 +280,18 @@ export class AgentRuntime extends EventEmitter {
     this.#reportedOfflineGeneration = generation;
     this.emit("status", { status: "offline", message });
   }
+}
+
+export function managedChatGPTEnvironment(
+  platformRoot: string,
+  dataRoot: string,
+  packaged: boolean,
+): Record<string, string> {
+  if (!packaged) return {};
+  return {
+    LOCUS_CODEX_APP_SERVER_PATH: join(platformRoot, "components", "codex-app-server", "codex"),
+    LOCUS_CODEX_HOME: join(dataRoot, "chatgpt-plan"),
+  };
 }
 
 async function availablePort(): Promise<number> {
