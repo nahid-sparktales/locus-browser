@@ -69,7 +69,7 @@ jobs:
         run: pnpm sync:verify-deployment
       - name: Verify source
         working-directory: locus-browser
-        run: pnpm canary:check && pnpm typecheck && pnpm test && pnpm build && pnpm --filter @locus/browser-desktop compat:extensions && pnpm --filter @locus/browser-desktop acceptance:ui && pnpm audit --prod --audit-level high
+        run: pnpm canary:check && pnpm typecheck && pnpm test && pnpm build && pnpm --filter @locus/browser-desktop compat:extensions && pnpm --filter @locus/browser-desktop acceptance:ui && pnpm audit --audit-level high
       - name: Prepare App Store Connect key
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}

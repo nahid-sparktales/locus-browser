@@ -125,7 +125,7 @@ pnpm test
 pnpm build
 pnpm --filter @locus/browser-desktop compat:extensions
 pnpm --filter @locus/browser-desktop acceptance:ui
-pnpm audit --prod --audit-level high
+pnpm audit --audit-level high
 ```
 
 The Browser CI workflow runs the same source gate against the immutable
