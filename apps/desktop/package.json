@@ -1,6 +1,6 @@
 {
   "name": "@locus/browser-desktop",
-  "version": "0.1.0-canary.2",
+  "version": "0.1.0-canary.3",
   "description": "A browser-first, local-agent desktop workspace from Locus.",
   "author": "SparkTales Inc.",
   "private": true,
@@ -19,7 +19,7 @@
     "prepare:runtime": "../../scripts/prepare-agent-runtime.sh",
     "prepare:release-config": "node ../../scripts/write-release-config.mjs",
     "package:dir": "pnpm build && pnpm prepare:runtime && pnpm prepare:release-config && electron-builder --config electron-builder.yml --mac dir --arm64",
-    "dist:canary": "pnpm build && pnpm prepare:runtime && node ../../scripts/write-release-config.mjs --require-production && electron-builder --config electron-builder.yml --mac dmg zip --arm64 --publish never",
+    "dist:canary": "pnpm build && pnpm prepare:runtime && node ../../scripts/write-release-config.mjs --require-production && electron-builder --config electron-builder.yml --mac dmg zip --arm64 --publish never && node ../../scripts/create-update-metadata.mjs",
     "pretest": "pnpm --filter @locus/extensions --filter @locus/sync-crypto build",
     "test": "vitest run src",
     "pretypecheck": "pnpm --filter @locus/extensions --filter @locus/sync-crypto build",

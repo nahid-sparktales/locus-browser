@@ -21,6 +21,7 @@ for (const path of [
   "apps/desktop/build/app-update.yml",
   "scripts/prepare-agent-runtime.sh",
   "scripts/create-sbom.mjs",
+  "scripts/create-update-metadata.mjs",
   "scripts/create-release-manifest.mjs",
   "scripts/publish-release.mjs",
   ".github/workflows/ci.yml",
@@ -90,6 +91,14 @@ check("Pinned platform canary contract", () => {
   const workflow = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
   if (!workflow.includes("ref: v0.1.0-canary.4")) throw new Error("browser CI is not pinned to the reviewed platform tag");
 });
+check("Discoverable canary update contract", () => {
+  const workflow = readFileSync(join(root, ".github/workflows/canary-release.yml"), "utf8");
+  const updater = readFileSync(join(root, "apps/desktop/src/main/AppUpdater.ts"), "utf8");
+  const desktopPackage = readFileSync(join(root, "apps/desktop/package.json"), "utf8");
+  if (!workflow.includes('tags: ["v*-canary.*"]')) throw new Error("release tags are not SemVer-compatible");
+  if (!updater.includes('autoUpdater.channel = "canary"')) throw new Error("desktop updater is not on the canary channel");
+  if (!desktopPackage.includes("create-update-metadata.mjs")) throw new Error("canary metadata generation is missing");
+});
 if (release) {
   for (const name of [
     "APPLE_API_KEY", "APPLE_API_KEY_ID", "APPLE_API_ISSUER",
@@ -99,8 +108,8 @@ if (release) {
     if (process.env.LOCUS_PLATFORM_REF === "main") throw new Error("main is not an immutable platform release");
   });
   check("Release tag matches package version", () => {
-    if (process.env.GITHUB_REF_NAME && process.env.GITHUB_REF_NAME !== `canary-v${packageJson.version}`) {
-      throw new Error(`expected canary-v${packageJson.version}`);
+    if (process.env.GITHUB_REF_NAME && process.env.GITHUB_REF_NAME !== `v${packageJson.version}`) {
+      throw new Error(`expected v${packageJson.version}`);
     }
   });
   check("Sealed production service origins", () => {
@@ -112,8 +121,13 @@ if (release) {
   });
   check("DMG, ZIP, and update metadata", () => {
     const names = readdirSync(join(root, "release"));
-    for (const suffix of [".dmg", ".zip", "latest-mac.yml"]) {
+    for (const suffix of [".dmg", ".zip", "canary-mac.yml"]) {
       if (!names.some((name) => name.endsWith(suffix))) throw new Error(`missing ${suffix}`);
+    }
+    const expectedZip = `Locus-Browser-${packageJson.version}-arm64.zip`;
+    const metadata = readFileSync(join(root, "release/canary-mac.yml"), "utf8");
+    if (!metadata.includes(`version: "${packageJson.version}"`) || !metadata.includes(`url: "${expectedZip}"`)) {
+      throw new Error("canary update metadata does not match the packaged version");
     }
   });
   check("CycloneDX software bill of materials", () => {
@@ -148,7 +162,8 @@ if (release) {
     const valid = verify(null, Buffer.from(`${JSON.stringify(envelope.manifest)}\n`), key, Buffer.from(envelope.signature.value, "base64"));
     if (!valid) throw new Error("release manifest signature is invalid");
     const names = new Set(envelope.manifest.artifacts.map((artifact) => artifact.name));
-    if (![...names].some((name) => name.endsWith(".dmg")) || ![...names].some((name) => name.endsWith(".zip")) || !names.has("sbom.cdx.json")) {
+    if (![...names].some((name) => name.endsWith(".dmg")) || ![...names].some((name) => name.endsWith(".zip"))
+      || !names.has("canary-mac.yml") || !names.has("sbom.cdx.json")) {
       throw new Error("release manifest is incomplete");
     }
   });

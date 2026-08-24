@@ -1,16 +1,17 @@
 import { spawnSync } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 const root = new URL("..", import.meta.url).pathname;
 const releaseRoot = join(root, "release");
 const tag = process.env.GITHUB_REF_NAME;
-if (!tag?.startsWith("canary-v")) throw new Error("GITHUB_REF_NAME must be a canary tag");
+const version = JSON.parse(readFileSync(join(root, "apps/desktop/package.json"), "utf8")).version;
+if (tag !== `v${version}`) throw new Error(`GITHUB_REF_NAME must be v${version}`);
 const files = readdirSync(releaseRoot, { withFileTypes: true })
   .filter((entry) => entry.isFile() && (releaseArtifact(entry.name) || entry.name === "release-manifest.json"))
   .map((entry) => join(releaseRoot, entry.name))
   .sort();
-for (const required of [".dmg", ".zip", "latest-mac.yml", "sbom.cdx.json", "release-manifest.json"]) {
+for (const required of [".dmg", ".zip", "canary-mac.yml", "sbom.cdx.json", "release-manifest.json"]) {
   if (!files.some((path) => path.endsWith(required))) throw new Error(`Release artifact ${required} is missing`);
 }
 const result = spawnSync("gh", [
@@ -22,6 +23,6 @@ if (result.status !== 0) process.exit(result.status ?? 1);
 
 function releaseArtifact(name) {
   return /\.(?:dmg|zip|blockmap)$/i.test(name)
-    || name === "latest-mac.yml"
+    || name === "canary-mac.yml"
     || name === "sbom.cdx.json";
 }

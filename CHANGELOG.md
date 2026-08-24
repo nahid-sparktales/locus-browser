@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-canary.2 — unreleased
+## 0.1.0-canary.3 — unreleased
 
 Initial Apple Silicon macOS canary candidate:
 
@@ -16,6 +16,10 @@ Initial Apple Silicon macOS canary candidate:
   artifact manifest, and automated security/accessibility/performance gates.
 - deterministic Apple Silicon speech-runtime builds that avoid runner-specific
   CPU extensions while retaining Metal acceleration.
+- an explicitly generated, checksummed `canary-mac.yml` feed included in the
+  signed release manifest for reliable prerelease updates.
+- SemVer-compatible `vX.Y.Z-canary.N` release tags that the desktop updater can
+  discover through GitHub's release feed.
 
 See `docs/implementation-status.md` for scope and `docs/canary-runbook.md` for
 the controlled release procedure.

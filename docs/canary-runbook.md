@@ -77,7 +77,7 @@ verify:
    ```
 
 4. Merge only after Browser CI is green.
-5. Create and push the exact tag `canary-vX.Y.Z-canary.N`. The protected
+5. Create and push the exact SemVer-compatible tag `vX.Y.Z-canary.N`. The protected
    `Publish Canary` workflow imports the Developer ID identity, embeds the
    Python runtime and integrity-pinned OpenAI Codex App Server, seals the two
    production service origins, builds Apple
