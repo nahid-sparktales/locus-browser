@@ -29,6 +29,8 @@ for (const path of [
   "SECURITY.md",
   "docs/canary-runbook.md",
   "docs/sync-deployment.md",
+  "docs/keys/locus-canary-gallery-2026-08-public.pem",
+  "docs/keys/locus-canary-release-2026-08-public.pem",
   "services/sync-worker/wrangler.jsonc",
   "services/gallery-worker/wrangler.jsonc",
   "supabase/migrations/20260824001215_create_locus_sync_private_schema.sql",
@@ -98,6 +100,21 @@ check("Discoverable canary update contract", () => {
   if (!workflow.includes('tags: ["v*-canary.*"]')) throw new Error("release tags are not SemVer-compatible");
   if (!updater.includes('autoUpdater.channel = "canary"')) throw new Error("desktop updater is not on the canary channel");
   if (!desktopPackage.includes("create-update-metadata.mjs")) throw new Error("canary metadata generation is missing");
+});
+check("Auditable canary signing keys", () => {
+  const galleryPem = readFileSync(join(root, "docs/keys/locus-canary-gallery-2026-08-public.pem"), "utf8");
+  const releasePem = readFileSync(join(root, "docs/keys/locus-canary-release-2026-08-public.pem"), "utf8");
+  createPublicKey(galleryPem);
+  const releaseKey = createPublicKey(releasePem);
+  const galleryFingerprint = createHash("sha256").update(galleryPem.replace(/\s+/g, "")).digest("hex");
+  const releaseFingerprint = createHash("sha256")
+    .update(releaseKey.export({ format: "der", type: "spki" })).digest("hex");
+  if (galleryFingerprint !== "d1257f8fe1c98e28efeb83b9fa1755cca4e82aa0360391bb73a7b054b161f10d") {
+    throw new Error("gallery public key does not match the pinned trust root");
+  }
+  if (releaseFingerprint !== "082a491f8a5806be6bb9540b2918c96b47a84da53de60bf10ca9d4cd3d0488b3") {
+    throw new Error("release public key does not match the pinned trust root");
+  }
 });
 if (release) {
   for (const name of [
