@@ -63,6 +63,6 @@ function fileSha256(path) {
 
 function releaseArtifact(name) {
   return /\.(?:dmg|zip|blockmap)$/i.test(name)
-    || name === "latest-mac.yml"
+    || name === "canary-mac.yml"
     || name === "sbom.cdx.json";
 }

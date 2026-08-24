@@ -2,7 +2,7 @@ name: Publish Canary
 
 on:
   push:
-    tags: ["canary-v*"]
+    tags: ["v*-canary.*"]
 
 permissions:
   contents: write
