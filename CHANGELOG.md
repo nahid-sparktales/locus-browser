@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-canary.1 — unreleased
+## 0.1.0-canary.2 — unreleased
 
 Initial Apple Silicon macOS canary candidate:
 
@@ -14,6 +14,8 @@ Initial Apple Silicon macOS canary candidate:
   encrypted local transcripts, `⌘Enter` assistance, and opt-in redacted video;
 - signed/notarized packaging, canary updates, rollback snapshots, SBOM, signed
   artifact manifest, and automated security/accessibility/performance gates.
+- deterministic Apple Silicon speech-runtime builds that avoid runner-specific
+  CPU extensions while retaining Metal acceleration.
 
 See `docs/implementation-status.md` for scope and `docs/canary-runbook.md` for
 the controlled release procedure.
