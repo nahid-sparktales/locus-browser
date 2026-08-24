@@ -79,9 +79,9 @@ jobs:
       - name: Verify accessibility and responsiveness
         working-directory: locus-browser
         run: pnpm --filter @locus/browser-desktop acceptance:ui
-      - name: Audit production dependencies
+      - name: Audit complete dependency graph
         working-directory: locus-browser
-        run: pnpm audit --prod --audit-level high
+        run: pnpm audit --audit-level high
       - name: Generate software bill of materials
         working-directory: locus-browser
         run: pnpm release:sbom

@@ -68,7 +68,7 @@ verify:
    pnpm build
    pnpm --filter @locus/browser-desktop compat:extensions
    pnpm --filter @locus/browser-desktop acceptance:ui
-   pnpm audit --prod --audit-level high
+   pnpm audit --audit-level high
    ```
 
 4. Merge only after Browser CI is green.
