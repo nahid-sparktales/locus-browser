@@ -1,0 +1,11 @@
+-- Run this once as the Supabase `postgres` role after applying migrations.
+-- Generate a unique 32+ character password and never commit the completed file.
+-- Hyperdrive should use this role through Supabase's direct database endpoint.
+
+alter role locus_sync_runtime login password 'REPLACE_WITH_A_RANDOM_32_PLUS_CHARACTER_PASSWORD';
+
+-- Verify the role cannot read outside the private sync schema before creating
+-- the Hyperdrive configuration.
+set role locus_sync_runtime;
+select count(*) from locus_sync.accounts;
+reset role;

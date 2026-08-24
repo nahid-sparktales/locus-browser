@@ -39,7 +39,7 @@ services:
       retries: 20
     volumes:
       - locus-sync-postgres:/var/lib/postgresql/data
-      - ./services/sync/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+      - ./supabase/migrations/20260824001215_create_locus_sync_private_schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
   objects:
     image: minio/minio:latest
     command: server /data

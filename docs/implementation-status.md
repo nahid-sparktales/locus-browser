@@ -72,10 +72,16 @@ agent rather than every team and orchestration surface in native Locus.
   per-record key derivation, checksummed one-time recovery keys, OS-protected
   device/account keys, key-version gates, recovery proof before first write,
   and transactional full-replica key rotation.
-- PostgreSQL stores opaque routing metadata and small ciphertext. Large
-  ciphertext uses S3-compatible storage with staged cleanup around database
-  commits, size verification, encrypted-object metadata, rotation cleanup, and
-  complete account deletion.
+- A Cloudflare Worker exposes the production API with per-device/public rate
+  limits, strict response headers, dependency readiness, and daily orphan
+  reconciliation. Hyperdrive connects to a dedicated least-privilege role in a
+  private, RLS-protected Supabase schema. Large ciphertext uses private R2 with
+  staged cleanup around database commits, size verification, encrypted-object
+  metadata, rotation cleanup, and complete account deletion.
+- The canary deployment is live at `https://sync.locushost.co`. Cloudflare is
+  authoritative for `locushost.co`, the custom domain is the Worker's only
+  public route, and the live dependency verifier passes against Supabase and
+  private R2.
 - Durable local outbox/inbox, hybrid logical clocks, deterministic field merge,
   cursoring, offline retry, replay rejection, 90-day tombstones, remote-device
   tabs, device revocation, and cloud/account deletion.
@@ -97,9 +103,10 @@ and launched with its embedded Python runtime.
 These steps cannot be completed by source changes alone and remain required
 before inviting canary users:
 
-- Deploy the controlled gallery, sync, PostgreSQL, and S3-compatible services;
-  complete the offline production gallery/release key ceremonies and configure
-  the protected GitHub `canary` environment.
+- Deploy the controlled extension gallery, complete the offline production
+  gallery/release key ceremonies, and configure the protected GitHub `canary`
+  environment. The Supabase, Hyperdrive, private R2, and controlled sync Worker
+  deployment is complete.
 - Run the tag workflow with Apple App Store Connect credentials so the public
   DMG/ZIP is notarized, stapled, Gatekeeper-assessed, manifest-signed, and
   published from CI.

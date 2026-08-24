@@ -7,3 +7,4 @@ allowBuilds:
   electron-winstaller: false
   esbuild: true
   libxmljs2: set this to true or false
+  workerd: true

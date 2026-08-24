@@ -7,11 +7,17 @@ resizable Solo Work dock. The page remains the primary canvas and the local
 agent can control only tabs the user shares or tabs the current conversation
 creates.
 
-![Locus Browser showing Google beside the Solo Work model picker](docs/images/locus-browser.png)
+### Browser first
+
+![Locus Browser browsing Google with its standard chrome visible and Work Mode closed](docs/images/locus-browser-browse.png)
+
+### Solo Work when you need it
+
+![Locus Browser showing Google beside the focused Solo Work dock](docs/images/locus-browser-work.png)
 
 This checkout is the source-complete Apple Silicon macOS canary candidate. See
 [`docs/implementation-status.md`](docs/implementation-status.md) for its exact
-scope and the external signing, service, and review gates required before
+scope and the external signing, gallery, and review gates required before
 inviting canary users. It does not claim stable-release parity yet.
 
 ## Repository layout
@@ -21,7 +27,10 @@ inviting canary users. It does not claim stable-release parity yet.
 - `packages/extensions` — curated Manifest V3 capability and signed `.locusx` package checks.
 - `packages/sync-crypto` — client-side encrypted sync records and device keys.
 - `services/gallery` — fail-closed curated extension catalog and immutable package delivery.
-- `services/sync` — opaque-record PostgreSQL sync service.
+- `services/sync` — transport-neutral opaque sync API and PostgreSQL repository.
+- `services/sync-worker` — production Cloudflare Worker with Hyperdrive, R2,
+  request limits, readiness checks, and orphan cleanup.
+- `supabase` — private sync schema, least-privilege runtime role, and permission tests.
 
 Shared agent and browser-wire contracts come from the sibling
 [`locus-platform`](https://github.com/nahid-sparktales/locus-platform) repository.
@@ -125,9 +134,16 @@ system. Connected devices can approve a new Mac without exposing the account
 key to the service, revoke other devices, and rotate the recovery key across
 the entire encrypted replica in one versioned operation. A newly generated or
 rotated recovery key is shown once in a native dialog.
-Small ciphertext stays in PostgreSQL and larger opaque envelopes move to
-S3-compatible storage; staged writes and post-commit cleanup preserve conflict,
-rotation, and account-deletion behavior across both stores.
+Production uses a dedicated Supabase Postgres project for private opaque
+metadata and a Cloudflare Worker for the public API. Hyperdrive connects
+directly to the least-privilege database role, while private R2 stores larger
+encrypted envelopes. Small ciphertext remains in PostgreSQL. Staged writes,
+post-commit cleanup, and a daily orphan reconciler preserve conflict, rotation,
+and account-deletion behavior across both stores. Supabase Auth, Storage,
+Realtime, and the Data API are not part of the sync trust boundary.
+The canary service is live at [`https://sync.locushost.co`](https://sync.locushost.co/ready);
+the custom domain is the only public Worker route, and `/ready` checks both the
+database and private object store before reporting healthy.
 Passwords, cookies, downloads, workspaces, conversations, memory, provider
 credentials, and run records remain local. For local development, start the
 sync stack and point the desktop UI at it with `VITE_LOCUS_SYNC_URL`:
@@ -136,6 +152,9 @@ sync stack and point the desktop UI at it with `VITE_LOCUS_SYNC_URL`:
 docker compose -f compose.sync.yaml up --build
 VITE_LOCUS_SYNC_URL=http://localhost:8787 pnpm dev:desktop
 ```
+
+The production setup and rollback checklist is in
+[`docs/sync-deployment.md`](docs/sync-deployment.md).
 
 For renderer-only UI work, `pnpm --filter @locus/browser-desktop exec vite`
 opens a safe local preview with representative browser state. Production file

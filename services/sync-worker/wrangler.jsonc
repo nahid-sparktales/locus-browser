@@ -1,0 +1,51 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "locus-browser-sync",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-23",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "routes": [
+    { "pattern": "sync.locushost.co", "custom_domain": true }
+  ],
+  "triggers": { "crons": ["17 4 * * *"] },
+  "placement": { "mode": "smart" },
+  "limits": {
+    "cpu_ms": 30000,
+    "subrequests": 1000
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "ratelimits": [
+    {
+      "name": "PUBLIC_RATE_LIMITER",
+      "namespace_id": "478231901",
+      "simple": { "limit": 30, "period": 60 }
+    },
+    {
+      "name": "DEVICE_RATE_LIMITER",
+      "namespace_id": "478231902",
+      "simple": { "limit": 600, "period": 60 }
+    }
+  ],
+  "vars": {
+    "LOCUS_PASSKEY_RP_NAME": "Locus Sync",
+    "LOCUS_PASSKEY_RP_ID": "sync.locushost.co",
+    "LOCUS_PASSKEY_ORIGIN": "https://sync.locushost.co"
+  },
+  "hyperdrive": [
+    {
+      "binding": "SYNC_DATABASE",
+      "id": "d7c5984786bd4e06baa0c8f9e7b42aea"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "SYNC_OBJECTS",
+      "bucket_name": "locus-browser-sync-production",
+      "preview_bucket_name": "locus-browser-sync-preview"
+    }
+  ]
+}

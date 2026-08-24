@@ -58,6 +58,19 @@ describe("opaque sync service", () => {
     expect(response.statusCode).toBe(401);
   });
 
+  it("does not expose unexpected repository errors", async () => {
+    const repository = new MemorySyncRepository();
+    repository.authenticate = async () => { throw new Error("database-host.example internal detail"); };
+    const response = await createSyncApp(repository).inject({
+      method: "GET",
+      url: "/v1/sync/pull",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toEqual({ error: "Request failed" });
+    expect(response.body).not.toContain("database-host.example");
+  });
+
   it("stores ciphertext and returns it through a cursor", async () => {
     const app = fixture();
     const authorization = { authorization: `Bearer ${token}` };

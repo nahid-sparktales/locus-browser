@@ -11,9 +11,9 @@ Sandboxed remote tab views ───┘ (no IPC/preload)       ├─ local agen
                                                         └─ WAL browser database
 
 OS-protected account key ─ local sync client ─ XChaCha20-Poly1305 ciphertext
-                                           └─ passkey auth ─ sync service
-                                                            ├─ PostgreSQL
-                                                            └─ S3 API
+                                           └─ passkey auth ─ Cloudflare Worker
+                                                            ├─ Hyperdrive ─ private Supabase schema
+                                                            └─ private R2 binding
 ```
 
 The visible shell is one trusted `BrowserWindow`. Each live webpage is a
@@ -164,3 +164,11 @@ account key to the new device's X25519 public key. Recovery-key rotation
 re-encrypts the complete replica and advances its account-key version in the
 same transaction that replaces every active device wrap, preventing a stale
 client from writing mixed-key ciphertext.
+
+The production Worker shares the exact request handler used by the local Node
+service. Hyperdrive connects through a dedicated runtime role whose SQL is
+fully schema-qualified; `locus_sync` is omitted from Supabase's Data API
+schemas and every table has RLS defense in depth. R2 is reachable only through
+the Worker binding. Larger ciphertext is staged there before PostgreSQL commit,
+superseded objects are removed afterward, and a daily grace-period reconciler
+removes crash-orphaned objects without touching a newly staged write.
