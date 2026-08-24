@@ -82,13 +82,15 @@ Silicon Macs running macOS 14 or newer. The automated source gate covers the
 browser, agent contracts, live-context recording, extension isolation,
 encrypted sync, accessibility, performance, fuzzing, and release artifacts.
 
-The first public binary still requires the controlled production extension
-gallery, Apple notarization credentials, release signing, and clean-Mac release
+The controlled extension gallery and encrypted-sync service are live, and the
+gallery and release manifests use separate signing identities. The first public
+binary still requires a successful notarized release run and clean-Mac release
 acceptance. Stable parity, Windows/Linux builds, team orchestration, arbitrary
 Chrome Web Store compatibility, and AI-session or password sync are not claimed.
 
 - [Exact implementation status](docs/implementation-status.md)
 - [Architecture and trust boundaries](docs/architecture.md)
+- [Illustrated architecture and feature guide](output/pdf/locus-browser-architecture-and-features.pdf)
 - [Canary release runbook](docs/canary-runbook.md)
 - [Extension package format](docs/locusx-format.md)
 - [Encrypted sync deployment](docs/sync-deployment.md)
@@ -138,8 +140,10 @@ The Browser CI workflow runs the same source gate against the immutable
 - `packages/extensions` — tested MV3 capability registry and signed `.locusx`
   verification.
 - `packages/sync-crypto` — client-side encrypted sync records and device keys.
-- `services/gallery` — fail-closed curated extension catalog and package
-  delivery.
+- `services/gallery` — offline package review, signing, and local fail-closed
+  gallery service.
+- `services/gallery-worker` — production read-only Cloudflare Worker backed by
+  private R2 at `https://extensions.locushost.co`.
 - `services/sync` and `services/sync-worker` — opaque sync API, Supabase
   Postgres repository, Cloudflare Worker, Hyperdrive, and private R2 storage.
 - `supabase` — private sync schema, least-privilege runtime role, and permission

@@ -29,6 +29,7 @@ for (const path of [
   "docs/canary-runbook.md",
   "docs/sync-deployment.md",
   "services/sync-worker/wrangler.jsonc",
+  "services/gallery-worker/wrangler.jsonc",
   "supabase/migrations/20260824001215_create_locus_sync_private_schema.sql",
   "supabase/tests/locus_sync_permissions.sql",
 ]) check(path, () => { if (!existsSync(join(root, path))) throw new Error("missing"); });
@@ -43,6 +44,29 @@ check("Cloudflare sync deployment contract", () => {
   if (config.ratelimits?.length !== 2 || new Set(config.ratelimits.map((item) => item.namespace_id)).size !== 2) {
     throw new Error("sync rate-limit namespaces are missing or shared");
   }
+});
+check("Cloudflare extension gallery deployment contract", () => {
+  const config = JSON.parse(readFileSync(join(root, "services/gallery-worker/wrangler.jsonc"), "utf8"));
+  const fingerprint = "d1257f8fe1c98e28efeb83b9fa1755cca4e82aa0360391bb73a7b054b161f10d";
+  if (config.compatibility_date !== "2026-08-24" || config.workers_dev !== false) {
+    throw new Error("unexpected gallery Worker runtime contract");
+  }
+  if (config.routes?.[0]?.pattern !== "extensions.locushost.co" || config.routes[0].custom_domain !== true) {
+    throw new Error("production gallery custom domain is missing");
+  }
+  if (config.r2_buckets?.[0]?.binding !== "GALLERY_OBJECTS"
+    || config.r2_buckets[0].bucket_name !== "locus-browser-extension-gallery-production") {
+    throw new Error("private production gallery storage is missing");
+  }
+  if (config.ratelimits?.[0]?.name !== "PUBLIC_RATE_LIMITER"
+    || config.ratelimits[0].simple?.limit !== 120 || config.ratelimits[0].simple?.period !== 60) {
+    throw new Error("gallery rate limit binding is missing");
+  }
+  if (config.vars?.LOCUS_GALLERY_FINGERPRINT !== fingerprint) {
+    throw new Error("gallery Worker signing identity is not pinned");
+  }
+  const trustStore = readFileSync(join(root, "packages/extensions/src/index.ts"), "utf8");
+  if (!trustStore.includes(fingerprint)) throw new Error("desktop gallery trust store differs from the Worker");
 });
 check("Pinned managed ChatGPT component contract", () => {
   codexComponent = JSON.parse(readFileSync(codexComponentPath, "utf8"));

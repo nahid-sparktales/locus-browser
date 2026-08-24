@@ -14,6 +14,9 @@ OS-protected account key ─ local sync client ─ XChaCha20-Poly1305 ciphertext
                                            └─ passkey auth ─ Cloudflare Worker
                                                             ├─ Hyperdrive ─ private Supabase schema
                                                             └─ private R2 binding
+
+Offline gallery signer ─ signed catalog/revocations ─ private R2
+                                                   └─ Cloudflare Worker ─ desktop verifier
 ```
 
 The visible shell is one trusted `BrowserWindow`. Each live webpage is a
@@ -99,9 +102,13 @@ deletes the developer's source folder. Enabled extensions are restored before
 saved webpages open, while new permissions block startup until user review.
 
 The catalog service is intentionally less trusted than the package verifier.
-It starts only when every `.locusx` file in its configured read-only directory
-passes the trusted-gallery contract, publishes the newest semantic version for
-each stable ID, and serves immutable hash-addressed responses. The desktop
+The offline publisher accepts only `.locusx` files that pass the
+trusted-gallery contract, publishes the newest semantic version for each stable
+ID, and signs the catalog and revocation documents with an offline key. A
+read-only Cloudflare Worker at `https://extensions.locushost.co` loads those
+documents and immutable packages through a private R2 binding, checks bounded
+shape and the compiled signer fingerprint, rate limits public reads, and fails
+closed whenever required metadata is absent or inconsistent. The desktop
 accepts only the versioned bounded catalog schema over HTTPS (or loopback HTTP),
 rejects redirects and cross-origin package paths, and streams each package into
 private temporary storage while enforcing the catalog byte count and SHA-256.
@@ -109,6 +116,12 @@ The temporary file is then passed through the normal `.locusx` verification,
 native permission review, managed extraction, and update/rollback lifecycle.
 Neither catalog metadata nor the server's transport trust can authorize an
 extension by itself.
+
+The gallery and release-manifest Ed25519 identities are separate. Their public
+keys and fingerprints are committed under `docs/keys`; the gallery private key
+remains offline while the release private key is available only to the protected
+GitHub canary environment. Cloudflare receives signed public documents and
+packages, never either private key.
 
 Only gallery extension ID/version/enabled/source metadata participates in
 encrypted sync. Developer installs and filesystem paths are excluded at the

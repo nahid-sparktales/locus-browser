@@ -10,7 +10,7 @@ export const trustedGalleryKeys = [{
   id: "locus-canary-2026-08",
   name: "Locus Canary Gallery",
   channel: "canary",
-  fingerprint: "52064709bc12f9096b378a96a8d266e67c6a42b0c7b2accb4133686b768c09b4",
+  fingerprint: "d1257f8fe1c98e28efeb83b9fa1755cca4e82aa0360391bb73a7b054b161f10d",
 }] as const;
 
 export const capabilityRegistry = {

@@ -1,0 +1,2 @@
+*.pdf binary
+services/gallery-worker/src/worker-configuration.d.ts whitespace=-trailing-space
