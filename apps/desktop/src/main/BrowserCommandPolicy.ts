@@ -27,6 +27,15 @@ const SHELL_ONLY_COMMANDS = new Set<BrowserCommand["type"]>([
   "disconnect-sync",
   "delete-sync-cloud-data",
   "delete-sync-account",
+  "configure-speech",
+  "download-speech-model",
+  "start-recording",
+  "pause-recording",
+  "resume-recording",
+  "stop-recording",
+  "set-recording-source",
+  "delete-recording-transcript",
+  "reveal-recording-video",
 ]);
 
 export function requiresShellSender(command: BrowserCommand): boolean {

@@ -15,6 +15,10 @@ creates.
 
 ![Locus Browser showing Google beside the focused Solo Work dock](docs/images/locus-browser-work.png)
 
+### Live help with what you see and hear
+
+![Locus Browser recording an explicitly shared Google tab with the visible timer and Solo Work dock](docs/images/locus-browser-recording.png)
+
 This checkout is the source-complete Apple Silicon macOS canary candidate. See
 [`docs/implementation-status.md`](docs/implementation-status.md) for its exact
 scope and the external signing, gallery, and review gates required before
@@ -34,6 +38,7 @@ inviting canary users. It does not claim stable-release parity yet.
 
 Shared agent and browser-wire contracts come from the sibling
 [`locus-platform`](https://github.com/nahid-sparktales/locus-platform) repository.
+This candidate is verified against the immutable `v0.1.0-canary.4` platform tag.
 
 ## Run the desktop app
 
@@ -71,6 +76,30 @@ agent's permission-aware tool activity and bounded output. If the local agent
 stops, the browser retries three times and restores the saved conversation and
 workspace. A manual Reconnect action remains available after retries are
 exhausted.
+
+The toolbar's **Record** control starts one clearly indicated live-context
+session for the current Work conversation. It follows only tabs explicitly
+shared with that conversation (or tabs that conversation created), pauses on
+private, internal, local-file, protected, or revoked tabs, and captures only
+the webpage canvas. Tab audio and microphone are independently visible and
+changeable; optional redacted video export is off by default. Closing Work Mode
+does not end an active recording.
+
+Speech defaults to the pinned, checksummed on-device Whisper runtime. Settings
+can instead reuse the OS-encrypted OpenAI API credential with
+`gpt-4o-mini-transcribe`, or use a validated OpenAI-compatible HTTPS or loopback
+endpoint. Audio is chunked by source and is never retained. Cloud transcription
+failures create a visible gap and offer the on-device fallback.
+
+Recording supplies bounded recent/relevant transcript, safe page text, tab
+metadata, and—after the existing hosted-screenshot consent—redacted keyframes
+only when the user sends a message. **⌘Enter** asks for help with what is visible
+and audible now, or steers the active run. Captured page and speech content is
+always treated as untrusted evidence, never as agent instructions. Transcripts
+are encrypted per record with a random key protected by macOS secure storage,
+stay local until explicitly deleted, and never enter browser sync. Raw audio is
+never written to the transcript store; video is kept only when explicitly
+enabled and exported by the user.
 
 The model picker matches native Locus with ChatGPT Plan, ChatGPT API, Kimi,
 Claude API, vLLM/OpenAI-compatible endpoints, and models installed through

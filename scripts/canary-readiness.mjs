@@ -62,6 +62,10 @@ check("Pinned Electron compatibility evidence", () => {
   const electron = packageJson.devDependencies?.electron;
   if (registry.canaryEngine?.electron !== electron) throw new Error("registry and desktop Electron versions differ");
 });
+check("Pinned platform canary contract", () => {
+  const workflow = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
+  if (!workflow.includes("ref: v0.1.0-canary.4")) throw new Error("browser CI is not pinned to the reviewed platform tag");
+});
 if (release) {
   for (const name of [
     "APPLE_API_KEY", "APPLE_API_KEY_ID", "APPLE_API_ISSUER",

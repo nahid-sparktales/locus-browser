@@ -1,10 +1,11 @@
-import type { TabAccessGrant } from "@locus/protocol";
+import type { BrowserObservationContext, TabAccessGrant } from "@locus/protocol";
 
 export type WorkMode = "ask" | "work" | "plan" | "build";
 export type WorkModelProviderId = "chatgpt-plan" | "openai-api" | "kimi" | "claude-api" | "vllm" | "local";
 export type SidebarSection = "tabs" | "bookmarks" | "history" | "downloads" | "spaces" | "conversations" | "settings";
 export type SearchEngine = "duckduckgo" | "brave" | "google" | "bing";
 export type Appearance = "system" | "light" | "dark";
+export type SpeechEngine = "local" | "openai" | "custom";
 export type SitePermissionDecision = "allow" | "deny";
 export type WorkPanel =
   | "chat"
@@ -68,7 +69,60 @@ export interface BrowserSettingsState {
   sleepAfterMinutes: 0 | 15 | 30 | 60;
   downloadDirectory: string;
   onboardingComplete: boolean;
+  speech: SpeechSettings;
 }
+
+export interface SpeechSettings {
+  engine: SpeechEngine;
+  language: string;
+  customBaseUrl?: string;
+  customModel?: string;
+  localModelStatus: "missing" | "downloading" | "ready" | "error";
+  localModelProgress?: number;
+  message?: string;
+}
+
+export interface RecordingSourceState {
+  tabAudio: boolean;
+  microphone: boolean;
+}
+
+export interface TranscriptSegment {
+  id: string;
+  recordingId: string;
+  source: "tab" | "microphone";
+  startMs: number;
+  endMs: number;
+  text: string;
+  tabId?: string;
+}
+
+export interface RecordingTranscriptSummary {
+  id: string;
+  workSessionId: string;
+  startedAt: number;
+  endedAt?: number;
+  durationMs: number;
+  segmentCount: number;
+  videoPath?: string;
+}
+
+export interface RecordingSessionState {
+  status: "idle" | "starting" | "recording" | "paused" | "stopping" | "error";
+  id?: string;
+  startedAt?: number;
+  elapsedMs: number;
+  sources: RecordingSourceState;
+  saveVideo: boolean;
+  activeTabId?: string;
+  pausedReason?: string;
+  transcriptPreview: TranscriptSegment[];
+  transcripts: RecordingTranscriptSummary[];
+  engine: SpeechEngine;
+  error?: string;
+}
+
+export type { BrowserObservationContext };
 
 export interface ExtensionInstallState {
   id: string;
@@ -398,5 +452,6 @@ export interface BrowserAppState {
   workWidth: number;
   workOverlay: boolean;
   searchEngine: SearchEngine;
+  recording: RecordingSessionState;
   work: WorkState;
 }

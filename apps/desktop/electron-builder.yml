@@ -45,7 +45,8 @@ mac:
     - ".*/Contents/Resources/AgentRuntime/.*"
   extendInfo:
     NSCameraUsageDescription: Locus Browser uses the camera only for sites you explicitly allow.
-    NSMicrophoneUsageDescription: Locus Browser uses the microphone only for sites you explicitly allow.
+    NSMicrophoneUsageDescription: Locus Browser uses the microphone only for sites you allow or while you start a visible live recording.
+    NSAudioCaptureUsageDescription: Locus Browser captures audio only from the explicitly shared browser tab while its visible recording indicator is active.
 
 dmg:
   sign: false

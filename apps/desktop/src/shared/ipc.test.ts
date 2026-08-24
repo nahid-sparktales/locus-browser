@@ -37,6 +37,25 @@ describe("Solo Work surface commands", () => {
   });
 });
 
+describe("live recording commands", () => {
+  it("keeps tab and work-session selection inside the browser broker", () => {
+    const parsed = BrowserCommandSchema.parse({
+      type: "start-recording", shareLevel: "interact", tabAudio: true,
+      microphone: true, saveVideo: false, tabId: "forged-tab", sessionId: "forged-session",
+    });
+    expect(parsed).not.toHaveProperty("tabId");
+    expect(parsed).not.toHaveProperty("sessionId");
+  });
+
+  it("validates speech configuration and transcript identities", () => {
+    expect(BrowserCommandSchema.safeParse({
+      type: "configure-speech", engine: "custom", language: "auto",
+      baseUrl: "https://speech.example.com/v1", model: "whisper-1", apiKey: "secret",
+    }).success).toBe(true);
+    expect(BrowserCommandSchema.safeParse({ type: "delete-recording-transcript", recordingId: "not-a-uuid" }).success).toBe(false);
+  });
+});
+
 describe("extension management commands", () => {
   it.each([
     { type: "set-extension-developer-mode", enabled: true },

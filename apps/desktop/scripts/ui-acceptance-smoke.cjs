@@ -21,7 +21,9 @@ app.whenReady().then(async () => {
     if (!address || typeof address === "string") throw new Error("UI acceptance server did not bind");
     const origin = `http://127.0.0.1:${address.port}`;
     await inspectSurface(`${origin}/?surface=shell`, "shell", 1440, 940, 1);
+    await inspectSurface(`${origin}/?surface=shell&recording=1`, "shell-recording", 1440, 940, 1);
     await inspectSurface(`${origin}/?surface=work`, "work", 720, 940, 1);
+    await inspectSurface(`${origin}/?surface=work&recording=1`, "work-recording", 520, 940, 1);
     await inspectSurface(`${origin}/?surface=work`, "work-200-percent", 720, 940, 2);
     const failures = results.flatMap((result) => result.issues.map((issue) => `${result.surface}: ${issue}`));
     const output = join(repositoryRoot, "release", "ui-acceptance.json");
