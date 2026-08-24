@@ -9,5 +9,7 @@ coverage/
 .env
 .env.*
 !.env.example
+.dev.vars*
+.wrangler/
 *.log
 gallery-packages/

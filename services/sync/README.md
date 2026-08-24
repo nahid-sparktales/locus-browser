@@ -1,7 +1,9 @@
 # Locus encrypted sync service
 
-The service stores opaque client-encrypted records. It cannot decrypt their
-contents. Run the local PostgreSQL/S3-compatible stack from the repository root:
+The transport-neutral API stores opaque client-encrypted records. It cannot
+decrypt their contents. The same request handler runs behind Fastify for local
+development and behind the production Cloudflare Worker without changing the
+wire protocol. Run the local PostgreSQL/S3-compatible stack from the repository root:
 
 ```bash
 docker compose -f compose.sync.yaml up --build
@@ -9,8 +11,8 @@ docker compose -f compose.sync.yaml up --build
 
 The checked-in bootstrap token is for local development fixtures only. Account
 creation and sign-in use hosted WebAuthn passkey ceremonies and expiring,
-one-use claims. Production must use managed secrets, TLS, private database and
-object-store networks, retention policy, and backups. Records are capped at 2 MB
+one-use claims. Production uses the private Supabase schema and Cloudflare
+deployment in `../../docs/sync-deployment.md`. Records are capped at 2 MB
 and the batch body at 3 MB. Ciphertext at or above 256 KB is stored in the
 configured S3-compatible backend; smaller ciphertext remains inline in
 PostgreSQL.

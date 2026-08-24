@@ -1,0 +1,25 @@
+{
+  "name": "@locus/sync-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "deploy": "node scripts/deploy.mjs",
+    "dev": "wrangler dev",
+    "prebuild": "pnpm --filter @locus/sync-service build",
+    "predeploy": "pnpm run build && pnpm run test",
+    "pretest": "pnpm --filter @locus/sync-service build",
+    "pretypecheck": "pnpm --filter @locus/sync-service build",
+    "test": "vitest run src",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@locus/sync-service": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260815.1",
+    "wrangler": "4.123.0"
+  }
+}

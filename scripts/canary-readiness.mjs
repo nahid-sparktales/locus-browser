@@ -27,7 +27,23 @@ for (const path of [
   ".github/workflows/canary-release.yml",
   "SECURITY.md",
   "docs/canary-runbook.md",
+  "docs/sync-deployment.md",
+  "services/sync-worker/wrangler.jsonc",
+  "supabase/migrations/20260824001215_create_locus_sync_private_schema.sql",
+  "supabase/tests/locus_sync_permissions.sql",
 ]) check(path, () => { if (!existsSync(join(root, path))) throw new Error("missing"); });
+check("Cloudflare sync deployment contract", () => {
+  const config = JSON.parse(readFileSync(join(root, "services/sync-worker/wrangler.jsonc"), "utf8"));
+  if (config.compatibility_date !== "2026-08-23" || !config.compatibility_flags?.includes("nodejs_compat")) {
+    throw new Error("unexpected Worker runtime contract");
+  }
+  if (config.hyperdrive?.[0]?.binding !== "SYNC_DATABASE" || config.r2_buckets?.[0]?.binding !== "SYNC_OBJECTS") {
+    throw new Error("sync storage bindings are missing");
+  }
+  if (config.ratelimits?.length !== 2 || new Set(config.ratelimits.map((item) => item.namespace_id)).size !== 2) {
+    throw new Error("sync rate-limit namespaces are missing or shared");
+  }
+});
 check("Pinned managed ChatGPT component contract", () => {
   codexComponent = JSON.parse(readFileSync(codexComponentPath, "utf8"));
   const target = codexComponent.targets?.["darwin-arm64"];

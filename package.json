@@ -13,6 +13,7 @@
     "release:manifest": "node scripts/create-release-manifest.mjs",
     "release:publish": "node scripts/publish-release.mjs",
     "release:sbom": "node scripts/create-sbom.mjs",
+    "sync:verify-deployment": "node scripts/check-sync-deployment.mjs",
     "pretest": "pnpm --filter './packages/**' build",
     "pretypecheck": "pnpm --filter './packages/**' build",
     "test": "node --test scripts/prepare-managed-component.test.mjs && pnpm -r --if-present test",

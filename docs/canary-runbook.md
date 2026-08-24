@@ -40,14 +40,17 @@ only signed `catalog.json` and `revocations.json` documents.
 Before tagging, deploy the gallery and sync stacks to their canary origins and
 verify:
 
-1. TLS, backups, monitoring, rate limits, and private database/object-storage
-   networking are active.
+1. Complete [`sync-deployment.md`](sync-deployment.md): the dedicated Supabase
+   migration and permission query pass, Hyperdrive uses the direct endpoint and
+   `locus_sync_runtime` role, the R2 bucket has no public access, and the Worker
+   is attached to the final HTTPS hostname.
 2. The gallery package directory is immutable. Generate signed metadata with
    `pnpm --filter @locus/extension-gallery-service publish` on the offline
    signer, then deploy the packages and signed documents together.
 3. `/health`, `/v1/extensions`, and `/v1/revocations` return successfully.
    Verify the document fingerprints against the key compiled into the desktop.
-4. Passkey registration uses the exact production RP ID and HTTPS origin.
+4. `pnpm sync:verify-deployment` passes against the exact `LOCUS_SYNC_URL`.
+   Passkey registration uses that hostname as the exact RP ID and HTTPS origin.
 5. A two-device sync rehearsal covers offline writes, recovery, revocation,
    cloud deletion, and a large record stored through the S3-compatible backend.
 

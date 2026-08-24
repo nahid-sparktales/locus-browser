@@ -4,6 +4,20 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
+  "exports": {
+    "./opaque-record-storage": {
+      "types": "./dist/opaqueRecordStorage.d.ts",
+      "default": "./dist/opaqueRecordStorage.js"
+    },
+    "./postgres-repository": {
+      "types": "./dist/postgresRepository.d.ts",
+      "default": "./dist/postgresRepository.js"
+    },
+    "./request-handler": {
+      "types": "./dist/requestHandler.d.ts",
+      "default": "./dist/requestHandler.js"
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/server.ts",
