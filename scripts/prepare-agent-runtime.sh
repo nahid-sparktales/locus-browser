@@ -97,8 +97,10 @@ speech_version="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys
 speech_url="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_url"])' "${speech_manifest}")"
 speech_sha256="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_sha256"])' "${speech_manifest}")"
 speech_cache="${cache}/whisper-cpp-${speech_version}"
+speech_cpu_baseline="armv8.2-a+dotprod"
+speech_build_contract="v2 ${speech_sha256} metal ${speech_cpu_baseline}"
 if [[ ! -x "${speech_cache}/whisper-cli" || ! -f "${speech_cache}/.stamp" \
-    || "$(<"${speech_cache}/.stamp")" != "${speech_sha256}" ]]; then
+    || "$(<"${speech_cache}/.stamp")" != "${speech_build_contract}" ]]; then
   speech_work="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/locus-whisper-build.XXXXXX")"
   temporary_paths+=("${speech_work}")
   /usr/bin/curl -fsSL --retry 3 -o "${speech_work}/source.tar.gz" "${speech_url}"
@@ -111,12 +113,13 @@ if [[ ! -x "${speech_cache}/whisper-cli" || ! -f "${speech_cache}/.stamp" \
   [[ -x "${speech_cmake}" ]] || { echo "error: cmake is required to build the on-device speech component" >&2; exit 1; }
   "${speech_cmake}" -S "${speech_source[1]}" -B "${speech_work}/build" \
     -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
-    -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF -DWHISPER_METAL=ON
+    -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF -DWHISPER_METAL=ON \
+    -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH="${speech_cpu_baseline}"
   "${speech_cmake}" --build "${speech_work}/build" --config Release --target whisper-cli -j "$(/usr/sbin/sysctl -n hw.ncpu)"
   /bin/mkdir -p "${speech_cache}"
   /usr/bin/ditto --norsrc --noextattr --noqtn "${speech_work}/build/bin/whisper-cli" "${speech_cache}/whisper-cli"
   /usr/bin/ditto --norsrc --noextattr --noqtn "${speech_source[1]}/LICENSE" "${speech_cache}/LICENSE"
-  print -r -- "${speech_sha256}" > "${speech_cache}/.stamp"
+  print -r -- "${speech_build_contract}" > "${speech_cache}/.stamp"
 fi
 /bin/mkdir -p "${stage}/components/whisper"
 /usr/bin/ditto --norsrc --noextattr --noqtn "${speech_cache}/whisper-cli" "${stage}/components/whisper/whisper-cli"
