@@ -8,6 +8,7 @@ const previewCredential = previewParams.has("credential");
 const previewSync = previewParams.has("sync");
 const previewPairing = previewParams.has("pairing");
 const previewExtensions = previewParams.has("extensions");
+const previewRecording = previewParams.has("recording");
 
 const previewState: BrowserAppState = {
   windowId: "preview",
@@ -16,8 +17,8 @@ const previewState: BrowserAppState = {
   tabs: [
     {
       id: "welcome",
-      title: "Locus Browser",
-      url: "https://github.com/nahid-sparktales/locus-browser",
+      title: "Google",
+      url: "https://www.google.com/",
       active: true,
       loading: false,
       canGoBack: false,
@@ -30,7 +31,7 @@ const previewState: BrowserAppState = {
       mediaPlaying: false,
       mediaAvailable: false,
       groupId: "locus-projects",
-      grants: [],
+      grants: previewRecording ? [{ sessionId: "preview-session", tabId: "welcome", level: "interact", source: "user_share", grantedAt: "2026-08-23T22:00:00.000Z" }] : [],
     },
     {
       id: "platform",
@@ -141,14 +142,31 @@ const previewState: BrowserAppState = {
       : { status: "disconnected", pendingRecords: 0, devices: [] },
   remoteTabs: previewSync ? [{ id: "ipad:tab-1", deviceId: "ipad-7d3e2a", title: "Locus protocol notes", url: "https://example.com/protocol", updatedAt: 1_787_408_000 }] : [],
   onboardingRequired: previewOnboarding,
-  settings: { appearance: "system", searchEngine: "duckduckgo", sleepAfterMinutes: 30, downloadDirectory: "/Users/nahid/Downloads", onboardingComplete: !previewOnboarding },
-  activePageBookmarked: true,
+  settings: {
+    appearance: "system", searchEngine: "duckduckgo", sleepAfterMinutes: 30,
+    downloadDirectory: "/Users/nahid/Downloads", onboardingComplete: !previewOnboarding,
+    speech: { engine: "local", language: "auto", localModelStatus: "ready", message: "On-device transcription is ready" },
+  },
+  activePageBookmarked: false,
   find: { open: false, query: "", matches: 0, activeMatchOrdinal: 0 },
   zoomFactor: 1,
-  workOpen: false,
+  workOpen: previewRecording,
   workWidth: 420,
   workOverlay: false,
   searchEngine: "duckduckgo",
+  recording: previewRecording ? {
+    status: "recording", id: "3b31540d-720a-451b-b9f1-a9c31c3e9811", startedAt: Date.now() - 83_000,
+    elapsedMs: 83_000, sources: { tabAudio: true, microphone: true }, saveVideo: false,
+    activeTabId: "welcome", engine: "local",
+    transcriptPreview: [
+      { id: "preview-segment-1", recordingId: "3b31540d-720a-451b-b9f1-a9c31c3e9811", source: "tab", startMs: 12_000, endMs: 15_000, text: "Search the web with Google", tabId: "welcome" },
+      { id: "preview-segment-2", recordingId: "3b31540d-720a-451b-b9f1-a9c31c3e9811", source: "microphone", startMs: 61_000, endMs: 64_000, text: "Help me compare the clearest sources", tabId: "welcome" },
+    ],
+    transcripts: [],
+  } : {
+    status: "idle", elapsedMs: 0, sources: { tabAudio: true, microphone: true }, saveVideo: false,
+    transcriptPreview: [], transcripts: [], engine: "local",
+  },
   work: {
     sessionId: "preview-session",
     mode: "work",

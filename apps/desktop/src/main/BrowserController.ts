@@ -35,6 +35,7 @@ import type {
   Appearance,
   BrowserAppState,
   BrowserSettingsState,
+  BrowserObservationContext,
   BrowserTabState,
   ExtensionGalleryState,
   ExtensionManagerState,
@@ -85,6 +86,9 @@ import { interruptRunningWorkTerminal, updateWorkPlan, updateWorkTerminal } from
 import { listWorkspaceFiles, readWorkspaceFile } from "./WorkWorkspaceBrowser.js";
 import { trustedSurfaceRecovery } from "./TrustedSurfaceRecovery.js";
 import { loadReleaseConfiguration } from "./ReleaseConfiguration.js";
+import { RecordingCoordinator, type RecordingTargetResult } from "./RecordingCoordinator.js";
+import { SpeechRuntime, SpeechSettingsStore } from "./SpeechRuntime.js";
+import { TranscriptVault } from "./TranscriptVault.js";
 
 const CHROME_HEIGHT = 92;
 const SIDEBAR_WIDTH = 248;
@@ -99,6 +103,9 @@ const SITE_PERMISSION_HEIGHT = 46;
 const CREDENTIAL_PROMPT_HEIGHT = 46;
 const SLEEP_CHECK_INTERVAL = 60_000;
 const GALLERY_REFRESH_INTERVAL = 6 * 60 * 60_000;
+const ADVISORY_BLOCKED_BROWSER_TOOLS = new Set([
+  "browser_navigate", "browser_input", "browser_resize", "browser_javascript", "browser_dev_server",
+]);
 const GROUP_COLORS = ["lime", "blue", "coral", "violet", "gold"];
 const ALLOWED_SITE_PERMISSIONS = new Set(["camera", "microphone", "media", "geolocation", "notifications", "clipboard-read"]);
 const AgentSessionsSchema = z.object({
@@ -258,6 +265,10 @@ export class BrowserController {
   readonly #database: BrowserDatabase;
   readonly #credentials: CredentialVault;
   readonly #workModelProviders: WorkModelProviderStore;
+  readonly #speechSettings: SpeechSettingsStore;
+  readonly #speechRuntime: SpeechRuntime;
+  readonly #transcriptVault: TranscriptVault;
+  readonly #recording: RecordingCoordinator | undefined;
   readonly #extensions: ExtensionManager | undefined;
   #extensionGallery: ExtensionGalleryClient | undefined;
   readonly #grants = new TabAccessRegistry();
@@ -334,6 +345,9 @@ export class BrowserController {
     this.#partitionName = profile.partitionName;
     this.#credentials = new CredentialVault(this.#database, electronCredentialCipher, this.#profileId);
     this.#workModelProviders = new WorkModelProviderStore(this.#database, electronCredentialCipher, this.#profileId);
+    this.#speechSettings = new SpeechSettingsStore(this.#database, electronCredentialCipher, this.#profileId);
+    this.#speechRuntime = new SpeechRuntime(platformRoot, join(app.getPath("userData"), "agent"));
+    this.#transcriptVault = new TranscriptVault(this.#database, electronCredentialCipher, this.#profileId);
     const lastWorkSessionId = this.#database.setting(this.#profileId, "lastWorkSessionId");
     if (!this.#privateWindow && typeof lastWorkSessionId === "string" && lastWorkSessionId.trim()) {
       this.#sessionId = lastWorkSessionId.trim();
@@ -367,6 +381,21 @@ export class BrowserController {
     this.window.on("resize", () => this.#layout(false));
     this.window.on("close", () => this.#persistNow());
     this.window.on("closed", () => this.dispose());
+
+    this.#recording = this.#privateWindow ? undefined : new RecordingCoordinator({
+      rendererUrl,
+      preloadPath,
+      parent: this.window,
+      database: this.#database,
+      profileId: this.#profileId,
+      transcriptVault: this.#transcriptVault,
+      speechSettings: this.#speechSettings,
+      speechRuntime: this.#speechRuntime,
+      getWorkSessionId: () => this.#sessionId,
+      getTarget: () => this.#recordingTarget(),
+      openAIKey: () => this.#workModelProviders.apiKey("openai-api"),
+      onChanged: () => this.#broadcast(),
+    });
 
     const releaseConfiguration = loadReleaseConfiguration({
       packaged: app.isPackaged,
@@ -484,6 +513,7 @@ export class BrowserController {
       workWidth: this.#workWidth,
       workOverlay: this.#workOverlay,
       searchEngine: this.#settings.searchEngine,
+      recording: this.#recording?.state() ?? idleRecordingState(this.#settings.speech.engine),
       work: {
         sessionId: this.#sessionId,
         mode: this.#workMode,
@@ -510,6 +540,52 @@ export class BrowserController {
     this.window.webContents.send(ipcChannels.focusAddress);
   }
 
+  async captureDocumentationImage(): Promise<Buffer> {
+    const contentSize = this.window.getContentSize();
+    const width = contentSize[0]!;
+    const height = contentSize[1]!;
+    const chromeHeight = this.#chromeHeight();
+    const page = this.#active()?.view;
+    if (!page) throw new Error("No browser page is available to capture");
+    const shellImage = await this.window.webContents.capturePage({ x: 0, y: 0, width, height: chromeHeight });
+    const pageImage = await page.webContents.capturePage();
+    const workImage = this.#workOpen && this.#workView ? await this.#workView.webContents.capturePage() : undefined;
+    const pageBounds = page.getBounds();
+    const workBounds = this.#workView?.getBounds();
+    const compositor = new BrowserWindow({
+      show: false,
+      frame: false,
+      width,
+      height,
+      backgroundColor: this.#surfaceBackground(),
+      paintWhenInitiallyHidden: true,
+      webPreferences: {
+        nodeIntegration: false,
+        sandbox: true,
+        contextIsolation: true,
+        webSecurity: true,
+        backgroundThrottling: false,
+      },
+    });
+    const image = (data: Buffer, bounds: Rectangle) => `<img alt="" src="data:image/png;base64,${data.toString("base64")}" style="position:absolute;left:${bounds.x}px;top:${bounds.y}px;width:${bounds.width}px;height:${bounds.height}px">`;
+    const html = `<!doctype html><html><body style="margin:0;overflow:hidden;background:#11130f">
+      ${image(pageImage.toPNG(), pageBounds)}
+      ${workImage && workBounds ? image(workImage.toPNG(), workBounds) : ""}
+      ${image(shellImage.toPNG(), { x: 0, y: 0, width, height: chromeHeight })}
+    </body></html>`;
+    try {
+      await compositor.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+      await compositor.webContents.executeJavaScript(`(async () => {
+        await Promise.all([...document.images].map((image) => image.decode()));
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      })()`);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return (await compositor.webContents.capturePage()).toPNG();
+    } finally {
+      compositor.destroy();
+    }
+  }
+
   toggleWork(): void {
     void this.command({ type: "toggle-work" });
   }
@@ -520,6 +596,14 @@ export class BrowserController {
 
   ownsShellSender(senderId: number): boolean {
     return this.window.webContents.id === senderId;
+  }
+
+  ownsRecorderSender(senderId: number): boolean {
+    return Boolean(this.#recording?.ownsSender(senderId));
+  }
+
+  handleRecorderMessage(raw: unknown): void {
+    this.#recording?.handleRendererMessage(raw);
   }
 
   async command(command: BrowserCommand): Promise<BrowserAppState> {
@@ -683,6 +767,23 @@ export class BrowserController {
         this.#database.setSetting(this.#profileId, "sleepAfterMinutes", command.minutes);
         this.#sleepEligibleTabs();
         break;
+      case "configure-speech":
+        this.#speechSettings.save({
+          engine: command.engine,
+          language: command.language,
+          ...(command.baseUrl !== undefined ? { baseUrl: command.baseUrl } : {}),
+          ...(command.model !== undefined ? { model: command.model } : {}),
+          ...(command.apiKey !== undefined ? { apiKey: command.apiKey } : {}),
+        });
+        this.#settings = this.#loadSettings();
+        break;
+      case "download-speech-model":
+        await this.#speechRuntime.downloadModel(() => {
+          this.#settings = this.#loadSettings();
+          this.#broadcast();
+        });
+        this.#settings = this.#loadSettings();
+        break;
       case "choose-download-directory": {
         const result = await dialog.showOpenDialog(this.window, {
           title: "Choose Downloads Folder",
@@ -801,6 +902,57 @@ export class BrowserController {
         this.#workOpen = !this.#workOpen;
         this.#layout(true);
         break;
+      case "start-recording": {
+        if (this.#privateWindow || !this.#recording) throw new Error("Recording is unavailable in private windows");
+        if (command.tabAudio || command.microphone) {
+          if (!this.#transcriptVault.available()) throw new Error("OS-backed transcript encryption is unavailable on this Mac");
+          if (this.#speechSettings.engine() === "local" && !this.#speechRuntime.localModelReady()) {
+            throw new Error("Download the on-device speech model before recording audio");
+          }
+          if (this.#speechSettings.engine() === "openai" && !this.#workModelProviders.apiKey("openai-api")) {
+            throw new Error("Add your OpenAI API key before using OpenAI transcription");
+          }
+        }
+        const tab = this.#active();
+        if (!tab || TabAccessRegistry.isProtectedUrl(tab.state.url, tab.state.private) || !/^https?:/i.test(tab.state.url)) {
+          throw new Error("Open a normal webpage before starting a recording");
+        }
+        if (!this.#grants.access(this.#sessionId, tab.state.id)) {
+          this.#grants.grant(this.#sessionId, tab.state.id, command.shareLevel, "user_share");
+        }
+        await this.#recording.start({
+          tabAudio: command.tabAudio,
+          microphone: command.microphone,
+          saveVideo: command.saveVideo,
+        });
+        break;
+      }
+      case "pause-recording":
+        await this.#recording?.pause();
+        break;
+      case "resume-recording":
+        await this.#recording?.resume();
+        break;
+      case "stop-recording":
+        await this.#recording?.stop();
+        break;
+      case "set-recording-source":
+        await this.#recording?.setSource(command.source, command.enabled);
+        break;
+      case "delete-recording-transcript":
+        this.#recording?.deleteTranscript(command.recordingId);
+        break;
+      case "reveal-recording-video": {
+        const recording = this.#transcriptVault.summaries().find((item) => item.id === command.recordingId);
+        if (recording?.videoPath) shell.showItemInFolder(recording.videoPath);
+        break;
+      }
+      case "recording-assist":
+        this.#workOpen = true;
+        this.#workPanel = "chat";
+        this.#layout(true);
+        await this.#sendRecordingAssist();
+        break;
       case "set-work-width":
         this.#workWidth = clamp(command.width, WORK_MIN, this.#maximumWorkWidth());
         this.#layout(false);
@@ -836,10 +988,10 @@ export class BrowserController {
         await this.#chooseWorkspace();
         break;
       case "request-work-plan":
-        this.#requestWorkPlan();
+        await this.#requestWorkPlan();
         break;
       case "approve-work-plan":
-        this.#approveWorkPlan();
+        await this.#approveWorkPlan();
         break;
       case "revise-work-plan":
         this.#reviseWorkPlan();
@@ -884,7 +1036,7 @@ export class BrowserController {
         await this.#refreshWorkModelCatalogs(true);
         break;
       case "work-send":
-        this.#sendWorkMessage(command.text);
+        await this.#sendWorkMessage(command.text);
         break;
       case "stop-work":
         this.#stopRequested = true;
@@ -924,6 +1076,7 @@ export class BrowserController {
     this.#disposed = true;
     this.#sync?.dispose();
     this.#runtime.stop();
+    const recordingShutdown = this.#recording?.dispose();
     this.#grants.revokeSession(this.#sessionId);
     for (const download of this.#activeDownloads.values()) download.cancel();
     this.#activeDownloads.clear();
@@ -939,7 +1092,8 @@ export class BrowserController {
     this.#tabs.clear();
     this.#workView?.webContents.close();
     this.#workView = undefined;
-    this.#database.close();
+    if (recordingShutdown) void recordingShutdown.finally(() => this.#database.close());
+    else this.#database.close();
   }
 
   #createWorkView(rendererUrl: string, preloadPath: string): void {
@@ -1745,6 +1899,11 @@ export class BrowserController {
       sleepAfterMinutes: isSleepInterval(sleepAfterMinutes) ? sleepAfterMinutes : 30,
       downloadDirectory: typeof downloadDirectory === "string" && downloadDirectory ? downloadDirectory : app.getPath("downloads"),
       onboardingComplete: onboardingComplete === true,
+      speech: this.#speechSettings.value(
+        this.#speechRuntime.state().localModelStatus,
+        this.#speechRuntime.state().localModelProgress,
+        this.#speechRuntime.state().message,
+      ),
     };
   }
 
@@ -2215,19 +2374,19 @@ export class BrowserController {
     this.#stopRequested = false;
   }
 
-  #requestWorkPlan(): void {
+  async #requestWorkPlan(): Promise<void> {
     if (this.#busy || this.#runtimeState !== "online") return;
     this.#workMode = "plan";
     this.#workPanel = "chat";
-    this.#sendWorkMessage("Create a concise, decision-complete implementation plan for the current request and workspace.");
+    await this.#sendWorkMessage("Create a concise, decision-complete implementation plan for the current request and workspace.");
   }
 
-  #approveWorkPlan(): void {
+  async #approveWorkPlan(): Promise<void> {
     if (!this.#workPlan?.pendingApproval || this.#busy || this.#runtimeState !== "online") return;
     this.#workPlan = { ...this.#workPlan, pendingApproval: false };
     this.#workMode = "build";
     this.#workPanel = "chat";
-    this.#sendWorkMessage("Implement the plan you just created, in order. Keep the task list updated as you complete each step.");
+    await this.#sendWorkMessage("Implement the plan you just created, in order. Keep the task list updated as you complete each step.");
   }
 
   #reviseWorkPlan(): void {
@@ -2683,7 +2842,7 @@ export class BrowserController {
     };
   }
 
-  #sendWorkMessage(text: string): void {
+  async #sendWorkMessage(text: string, suppliedBrowserContext?: BrowserObservationContext): Promise<void> {
     this.#stopRequested = false;
     this.#messages.push({ id: randomUUID(), role: "user", text });
     const attachments = [...this.#attachments.values()].map((attachment) => ({
@@ -2691,11 +2850,17 @@ export class BrowserController {
       mime_type: attachment.mimeType,
       data: attachment.data,
     }));
+    let browserContext = suppliedBrowserContext;
+    if (!browserContext) {
+      try { browserContext = await this.#liveBrowserContext(text); }
+      catch { browserContext = undefined; }
+    }
     const sent = this.#runtime.send({
       type: "user_message",
       text,
       mode: this.#workMode,
       ...(attachments.length ? { attachments } : {}),
+      ...(browserContext ? { browser_context: browserContext } : {}),
     });
     if (!sent) {
       this.#messages.push({ id: randomUUID(), role: "system", text: "The local agent is offline. Your message was not sent." });
@@ -2703,6 +2868,81 @@ export class BrowserController {
       this.#attachments.clear();
       this.#busy = true;
     }
+  }
+
+  async #sendRecordingAssist(): Promise<void> {
+    const text = "Help me with what I’m seeing and hearing now";
+    if (!this.#recording?.state().id) {
+      this.#messages.push({ id: randomUUID(), role: "system", text: "Start Record first so Locus can use the live page and transcript." });
+      return;
+    }
+    let allowFrames = this.#workModel.activeProvider === "local" || this.#screenshotConsentForSession;
+    if (!allowFrames) {
+      const decision = await this.#requestScreenshotPermission(`recording-${randomUUID()}`);
+      allowFrames = decision !== "deny";
+    }
+    const browserContext = await this.#liveBrowserContext(text, allowFrames);
+    if (this.#busy) {
+      this.#messages.push({ id: randomUUID(), role: "user", text });
+      const sent = this.#runtime.send({
+        type: "steer",
+        text,
+        ...(browserContext ? { browser_context: browserContext } : {}),
+      });
+      if (!sent) this.#messages.push({ id: randomUUID(), role: "system", text: "The live update could not be sent." });
+      return;
+    }
+    await this.#sendWorkMessage(text, browserContext);
+  }
+
+  async #liveBrowserContext(text: string, allowFrames?: boolean): Promise<BrowserObservationContext | undefined> {
+    if (!this.#recording?.state().id) return undefined;
+    const target = this.#recordingTarget().target;
+    let pageText = "";
+    if (target) {
+      try {
+        const snapshot = await target.webContents.executeJavaScriptInIsolatedWorld(BRIDGE_WORLD, [
+          { code: `${browserBridgeSource}\n${bridgeInvocation.snapshot({ filter: "all", maxChars: 12_000, limit: 700 })}` },
+        ]) as { text?: unknown };
+        if (typeof snapshot.text === "string") pageText = snapshot.text;
+      } catch {
+        // The coordinator will pause if the page changes while context is gathered.
+      }
+    }
+    const provider = this.#workModel.providers.find((item) => item.id === this.#workModel.activeProvider);
+    const model = provider?.models.find((item) => item.id === this.#workModel.activeModel);
+    const visionCapable = model?.vision !== false;
+    const includeFrames = visionCapable && (allowFrames ?? (this.#workModel.activeProvider === "local" || this.#screenshotConsentForSession));
+    return await this.#recording.observationContext(text, pageText, includeFrames);
+  }
+
+  #recordingTarget(): RecordingTargetResult {
+    const tab = this.#active();
+    if (!tab) return { reason: "Capture paused because no tab is active" };
+    if (tab.state.private) return { reason: "Private tabs cannot be recorded" };
+    if (!/^https?:/i.test(tab.state.url) || TabAccessRegistry.isProtectedUrl(tab.state.url, false)) {
+      return { reason: "This protected or internal page cannot be recorded" };
+    }
+    const grant = this.#grants.access(this.#sessionId, tab.state.id);
+    if (!grant) return { reason: "Share this tab with the current Work conversation to continue" };
+    const contents = tab.view?.webContents;
+    if (!contents || contents.isDestroyed() || tab.state.crashed || tab.state.sleeping) {
+      return { reason: "Capture paused while this tab recovers" };
+    }
+    return {
+      target: {
+        tabId: tab.state.id,
+        title: tab.state.title,
+        url: contents.getURL(),
+        accessLevel: grant.level,
+        webContents: contents,
+        protectedRects: async () => await this.#bridge(tab, bridgeInvocation.protectedRects()) as {
+          url: string;
+          viewport: { width: number; height: number };
+          rects: Array<{ x: number; y: number; width: number; height: number }>;
+        },
+      },
+    };
   }
 
   async #newWorkConversation(): Promise<void> {
@@ -2863,6 +3103,9 @@ export class BrowserController {
 
   async #executeBrowserAction(request: BrowserActionRequest): Promise<BrowserActionResult> {
     try {
+      if ((this.#workMode === "ask" || this.#workMode === "plan") && ADVISORY_BLOCKED_BROWSER_TOOLS.has(request.tool)) {
+        throw new Error(`${this.#workMode === "ask" ? "Ask" : "Plan"} mode is advisory and cannot change the page or start processes.`);
+      }
       const result = await this.#dispatchBrowserAction(request);
       return { type: "browser_action_result", request_id: request.request_id, result };
     } catch (error) {
@@ -3202,10 +3445,22 @@ function trustedRendererPreferences(preloadPath: string): Electron.WebPreference
   };
 }
 
-function surfaceUrl(rendererUrl: string, surface: "shell" | "work"): string {
+function surfaceUrl(rendererUrl: string, surface: "shell" | "work" | "recorder"): string {
   const url = new URL(rendererUrl);
   url.searchParams.set("surface", surface);
   return url.toString();
+}
+
+function idleRecordingState(engine: BrowserSettingsState["speech"]["engine"]): BrowserAppState["recording"] {
+  return {
+    status: "idle",
+    elapsedMs: 0,
+    sources: { tabAudio: true, microphone: true },
+    saveVideo: false,
+    transcriptPreview: [],
+    transcripts: [],
+    engine,
+  };
 }
 
 export function normalizeNavigation(value: string, searchEngine: SearchEngine = "duckduckgo"): string {

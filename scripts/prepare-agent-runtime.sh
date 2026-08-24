@@ -10,13 +10,21 @@ cache="${repo_root}/.agent-runtime"
 stage="${repo_root}/apps/desktop/build/AgentRuntime"
 requirements_lock="${agent_root}/requirements-runtime.lock"
 component_manifest="${agent_root}/ollama_code/runtime_components/codex-app-server.json"
+speech_manifest="${agent_root}/ollama_code/runtime_components/whisper-cpp.json"
+temporary_paths=()
+cleanup() {
+  for path in "${temporary_paths[@]}"; do
+    [[ -n "${path}" ]] && /bin/rm -rf "${path}"
+  done
+}
+trap cleanup EXIT
 
 [[ "$(/usr/bin/uname -s)" == "Darwin" ]] || {
   echo "error: the first canary runtime target is macOS" >&2
   exit 1
 }
 [[ -f "${agent_root}/pyproject.toml" && -f "${requirements_lock}" \
-    && -f "${component_manifest}" ]] || {
+    && -f "${component_manifest}" && -f "${speech_manifest}" ]] || {
   echo "error: locus-platform agent runtime is missing at ${agent_root}" >&2
   exit 1
 }
@@ -44,7 +52,7 @@ stamp_value="v1 ${asset} ${pbs_sha256} ${manifest_hash}"
 if [[ ! -x "${cache}/cpython/bin/python3" || ! -d "${cache}/site-packages" \
     || ! -f "${cache}/.stamp" || "$(<"${cache}/.stamp")" != "${stamp_value}" ]]; then
   workdir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/locus-browser-runtime.XXXXXX")"
-  trap '/bin/rm -rf "${workdir}"' EXIT
+  temporary_paths+=("${workdir}")
   /usr/bin/curl -fsSL --retry 3 -o "${workdir}/${asset}" "${url}"
   actual="$(/usr/bin/shasum -a 256 "${workdir}/${asset}" | /usr/bin/cut -d' ' -f1)"
   [[ "${actual}" == "${pbs_sha256}" ]] || { echo "error: pinned CPython checksum mismatch" >&2; exit 1; }
@@ -85,6 +93,36 @@ node "${repo_root}/scripts/prepare-managed-component.mjs" \
   --destination "${stage}/components/codex-app-server" \
   --license "${platform_root}/LICENSE"
 
+speech_version="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "${speech_manifest}")"
+speech_url="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_url"])' "${speech_manifest}")"
+speech_sha256="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_sha256"])' "${speech_manifest}")"
+speech_cache="${cache}/whisper-cpp-${speech_version}"
+if [[ ! -x "${speech_cache}/whisper-cli" || ! -f "${speech_cache}/.stamp" \
+    || "$(<"${speech_cache}/.stamp")" != "${speech_sha256}" ]]; then
+  speech_work="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/locus-whisper-build.XXXXXX")"
+  temporary_paths+=("${speech_work}")
+  /usr/bin/curl -fsSL --retry 3 -o "${speech_work}/source.tar.gz" "${speech_url}"
+  speech_actual="$(/usr/bin/shasum -a 256 "${speech_work}/source.tar.gz" | /usr/bin/cut -d' ' -f1)"
+  [[ "${speech_actual}" == "${speech_sha256}" ]] || { echo "error: pinned whisper.cpp checksum mismatch" >&2; exit 1; }
+  /usr/bin/tar -xzf "${speech_work}/source.tar.gz" -C "${speech_work}"
+  speech_source=("${speech_work}"/whisper.cpp-*(N/))
+  [[ ${#speech_source[@]} -eq 1 ]] || { echo "error: whisper.cpp source archive is malformed" >&2; exit 1; }
+  speech_cmake="$(command -v cmake || true)"
+  [[ -x "${speech_cmake}" ]] || { echo "error: cmake is required to build the on-device speech component" >&2; exit 1; }
+  "${speech_cmake}" -S "${speech_source[1]}" -B "${speech_work}/build" \
+    -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+    -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF -DWHISPER_METAL=ON
+  "${speech_cmake}" --build "${speech_work}/build" --config Release --target whisper-cli -j "$(/usr/sbin/sysctl -n hw.ncpu)"
+  /bin/mkdir -p "${speech_cache}"
+  /usr/bin/ditto --norsrc --noextattr --noqtn "${speech_work}/build/bin/whisper-cli" "${speech_cache}/whisper-cli"
+  /usr/bin/ditto --norsrc --noextattr --noqtn "${speech_source[1]}/LICENSE" "${speech_cache}/LICENSE"
+  print -r -- "${speech_sha256}" > "${speech_cache}/.stamp"
+fi
+/bin/mkdir -p "${stage}/components/whisper"
+/usr/bin/ditto --norsrc --noextattr --noqtn "${speech_cache}/whisper-cli" "${stage}/components/whisper/whisper-cli"
+/usr/bin/ditto --norsrc --noextattr --noqtn "${speech_cache}/LICENSE" "${stage}/components/whisper/LICENSE"
+/usr/bin/ditto --norsrc --noextattr --noqtn "${speech_manifest}" "${stage}/components/whisper/manifest.json"
+
 for junk in "${stage}/source/ollama_code"/**/__pycache__(N/); do /bin/rm -rf "${junk}"; done
 for lib_dir in "${stage}/python/lib"/python3.*(N/); do
   /bin/rm -rf "${lib_dir}/dbm" "${lib_dir}/tkinter" "${lib_dir}/test" \
@@ -113,5 +151,6 @@ revision="$(/usr/bin/git -C "${platform_root}" rev-parse HEAD)"
   echo "python_sha256=${pbs_sha256}"
   echo "requirements_sha256=$(/usr/bin/shasum -a 256 "${requirements_lock}" | /usr/bin/cut -d' ' -f1)"
   echo "codex_component_manifest_sha256=$(/usr/bin/shasum -a 256 "${component_manifest}" | /usr/bin/cut -d' ' -f1)"
+  echo "whisper_component_manifest_sha256=$(/usr/bin/shasum -a 256 "${speech_manifest}" | /usr/bin/cut -d' ' -f1)"
 } > "${stage}/PROVENANCE"
 echo "Self-contained agent runtime staged at ${stage}."

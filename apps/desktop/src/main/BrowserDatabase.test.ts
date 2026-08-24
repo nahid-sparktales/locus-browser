@@ -6,6 +6,28 @@ import { describe, expect, it } from "vitest";
 import { BrowserDatabase } from "./BrowserDatabase.js";
 
 describe("BrowserDatabase", () => {
+  it("stores local recording metadata outside every sync collection", () => {
+    const database = new BrowserDatabase(join(mkdtempSync(join(tmpdir(), "locus-recordings-")), "browser.sqlite"));
+    database.createRecordingSession({
+      id: "recording-local", profileId: "default", workSessionId: "work-local",
+      startedAt: 100, status: "recording", engine: "local",
+      sourcesJson: JSON.stringify({ tabAudio: true, microphone: true }), saveVideo: false,
+    });
+    database.saveRecordingSegment({
+      id: "segment-local", recordingId: "recording-local", source: "tab",
+      startMs: 0, endMs: 500, nonce: "nonce", ciphertext: "ciphertext",
+    });
+    database.finishRecordingSession("recording-local", "completed", 1_000);
+
+    expect(database.listRecordingSessions("default")[0]).toMatchObject({
+      id: "recording-local", status: "completed", workSessionId: "work-local",
+    });
+    expect(database.recordingSegments("recording-local")).toMatchObject([{ ciphertext: "ciphertext" }]);
+    database.queueSyncSnapshot("default", "device-local", () => "0000000000001:device-local:000001");
+    expect(database.syncOutbox("default").some((record) => String(record.collection).includes("record"))).toBe(false);
+    database.close();
+  });
+
   it("round-trips window and tab restoration state", () => {
     const database = new BrowserDatabase(join(mkdtempSync(join(tmpdir(), "locus-browser-")), "browser.sqlite"));
     database.saveWindow({

@@ -1,6 +1,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BrowserWindow, Menu, app, ipcMain, nativeImage, type IpcMainInvokeEvent } from "electron";
+import { writeFile } from "node:fs/promises";
+import { BrowserWindow, Menu, app, ipcMain, nativeImage, type IpcMainEvent, type IpcMainInvokeEvent } from "electron";
 import { AppUpdater } from "./AppUpdater.js";
 import { BrowserController, platformRootFromApp } from "./BrowserController.js";
 import { snapshotDatabaseForVersion } from "./DatabaseSnapshot.js";
@@ -30,8 +31,9 @@ app.whenReady().then(() => {
   snapshotDatabaseForVersion(join(app.getPath("userData"), "browser.sqlite3"), app.getVersion());
   installAppIcon();
   installIpc();
-  createWindow(false, "default");
+  const primary = createWindow(false, "default");
   installMenu();
+  if (!app.isPackaged && process.env.LOCUS_README_SCREENSHOT) void captureReadmeScreenshot(primary, process.env.LOCUS_README_SCREENSHOT);
   if (app.isPackaged) {
     updater.initialize(() => focusedController()?.window);
     setTimeout(() => void updater.check(false), 15_000);
@@ -41,6 +43,26 @@ app.whenReady().then(() => {
 function installAppIcon(): void {
   const icon = nativeImage.createFromPath(join(app.getAppPath(), "assets", "icon.png"));
   if (!icon.isEmpty() && process.platform === "darwin") app.dock?.setIcon(icon);
+}
+
+async function captureReadmeScreenshot(controller: BrowserController, outputPath: string): Promise<void> {
+  try {
+    controller.window.setContentSize(1254, 768);
+    await controller.command({ type: "complete-onboarding", appearance: "dark", searchEngine: "google", sleepAfterMinutes: 30 });
+    await controller.command({ type: "navigate", value: "https://www.google.com/" });
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    await controller.command({ type: "share-active-tab", level: "interact" });
+    if (!controller.state().workOpen) await controller.command({ type: "toggle-work" });
+    await controller.command({
+      type: "start-recording", shareLevel: "interact",
+      tabAudio: false, microphone: false, saveVideo: false,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 4_000));
+    await writeFile(outputPath, await controller.captureDocumentationImage(), { mode: 0o644 });
+    await controller.command({ type: "stop-recording" });
+  } finally {
+    app.quit();
+  }
 }
 
 app.on("activate", () => {
@@ -91,6 +113,7 @@ function installMenu(): void {
         { label: "Focus Address Bar", accelerator: "CmdOrCtrl+L", click: () => focusedController()?.focusAddress() },
         { label: "Find in Page", accelerator: "CmdOrCtrl+F", click: () => void focusedController()?.command({ type: "toggle-find" }) },
         { label: "Toggle Work Mode", accelerator: "CmdOrCtrl+Alt+L", click: () => focusedController()?.toggleWork() },
+        { label: "Use Live Recording Context", accelerator: "CmdOrCtrl+Enter", click: () => void focusedController()?.command({ type: "recording-assist" }) },
         { type: "separator" },
         { label: "Reload Page", accelerator: "CmdOrCtrl+R", click: () => void focusedController()?.command({ type: "reload" }) },
         { role: "toggleDevTools" },
@@ -138,6 +161,10 @@ function controllerForSender(event: IpcMainInvokeEvent): BrowserController {
   return controller;
 }
 
+function controllerForRecorderSender(event: IpcMainEvent): BrowserController | undefined {
+  return [...controllers].find((candidate) => candidate.ownsRecorderSender(event.sender.id));
+}
+
 function installIpc(): void {
   ipcMain.handle(ipcChannels.getState, (event) => controllerForSender(event).state());
   ipcMain.handle(ipcChannels.command, async (event, raw) => {
@@ -147,5 +174,8 @@ function installIpc(): void {
       throw new Error("This command requires trusted browser chrome");
     }
     return await controller.command(command);
+  });
+  ipcMain.on(ipcChannels.recorderMessage, (event, raw) => {
+    controllerForRecorderSender(event)?.handleRecorderMessage(raw);
   });
 }

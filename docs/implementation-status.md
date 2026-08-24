@@ -23,6 +23,12 @@ agent rather than every team and orchestration surface in native Locus.
 - Explicit per-session tab grants, visible control indicators and revoke,
   protected credential/payment fields, hosted-screenshot consent, background
   input, console/network capture, and quarantined agent downloads.
+- One application-wide, always-visible live recording session for explicitly
+  shared eligible tabs, with independent tab-audio and microphone controls,
+  protected-field/frame redaction, consented changed keyframes, and `⌘Enter`
+  assistance. On-device Whisper is the default; OpenAI and validated custom
+  transcription endpoints are optional. Per-record encrypted transcripts stay
+  local, and optional redacted video requires deliberate export.
 - Native workspace choice, bounded image attachments, plan approval, live Git
   changes/diffs, containment-checked file previews, permission-aware terminal
   activity, Stop/steering, and bounded local-agent restart.
@@ -45,6 +51,9 @@ agent rather than every team and orchestration surface in native Locus.
 - Trusted shell/work crash recovery, 1,000 malformed IPC-envelope cases,
   extension-archive fuzzing, sync-envelope fuzzing, offline replay simulations,
   and ciphertext/associated-data tamper checks.
+- Recording policy, trusted-recorder sender binding, tab-grant revocation,
+  protected URL/field redaction, transcript encryption, endpoint validation,
+  context bounds, media fallback, and interrupted-video recovery fixtures.
 - The packaged app ignores service-origin environment overrides. Gallery and
   sync HTTPS origins are sealed into the signed release and fail closed if the
   release configuration is missing or invalid.

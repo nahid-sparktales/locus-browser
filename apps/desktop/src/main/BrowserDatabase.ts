@@ -155,6 +155,30 @@ export interface StoredRemoteTab {
   updatedAt: number;
 }
 
+export interface StoredRecordingSession {
+  id: string;
+  profileId: string;
+  workSessionId: string;
+  startedAt: number;
+  endedAt?: number;
+  status: "recording" | "completed" | "interrupted";
+  engine: string;
+  sourcesJson: string;
+  saveVideo: boolean;
+  videoPath?: string;
+}
+
+export interface StoredRecordingSegment {
+  id: string;
+  recordingId: string;
+  source: "tab" | "microphone";
+  startMs: number;
+  endMs: number;
+  tabId?: string;
+  nonce: string;
+  ciphertext: string;
+}
+
 export class BrowserDatabase {
   readonly #database: DatabaseSyncType;
 
@@ -203,7 +227,7 @@ export class BrowserDatabase {
     try {
       for (const table of [
         "history_visits", "bookmarks", "downloads", "site_permissions", "browser_settings",
-        "browser_credentials", "extension_packages", "extension_installs", "sync_local_records", "sync_outbox", "sync_inbox",
+        "browser_credentials", "recording_sessions", "recording_keys", "extension_packages", "extension_installs", "sync_local_records", "sync_outbox", "sync_inbox",
       ]) {
         this.#database.prepare(`DELETE FROM ${table} WHERE profile_id = ?`).run(id);
       }
@@ -331,6 +355,70 @@ export class BrowserDatabase {
       INSERT INTO history_visits(id, profile_id, tab_id, url, title, visited_at)
       VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, unixepoch())
     `).run(profileId, tabId, url, title);
+  }
+
+  recordingKey(profileId: string): Uint8Array | undefined {
+    const row = this.#database.prepare("SELECT wrapped_key AS wrappedKey FROM recording_keys WHERE profile_id = ?")
+      .get(profileId) as unknown as { wrappedKey: Uint8Array } | undefined;
+    return row?.wrappedKey;
+  }
+
+  saveRecordingKey(profileId: string, wrappedKey: Uint8Array): void {
+    this.#database.prepare(`
+      INSERT INTO recording_keys(profile_id, wrapped_key, updated_at) VALUES (?, ?, unixepoch())
+      ON CONFLICT(profile_id) DO UPDATE SET wrapped_key=excluded.wrapped_key, updated_at=excluded.updated_at
+    `).run(profileId, wrappedKey);
+  }
+
+  createRecordingSession(session: StoredRecordingSession): void {
+    this.#database.prepare(`
+      INSERT INTO recording_sessions(
+        id, profile_id, work_session_id, started_at, ended_at, status,
+        engine, sources_json, save_video, video_path
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      session.id, session.profileId, session.workSessionId, session.startedAt,
+      session.endedAt ?? null, session.status, session.engine, session.sourcesJson,
+      Number(session.saveVideo), session.videoPath ?? null,
+    );
+  }
+
+  finishRecordingSession(id: string, status: "completed" | "interrupted", endedAt: number, videoPath?: string): void {
+    this.#database.prepare(`
+      UPDATE recording_sessions SET status=?, ended_at=?, video_path=? WHERE id=?
+    `).run(status, endedAt, videoPath ?? null, id);
+  }
+
+  saveRecordingSegment(segment: StoredRecordingSegment): void {
+    this.#database.prepare(`
+      INSERT INTO recording_segments(
+        id, recording_id, source, start_ms, end_ms, tab_id, nonce, ciphertext, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+    `).run(
+      segment.id, segment.recordingId, segment.source, segment.startMs, segment.endMs,
+      segment.tabId ?? null, segment.nonce, segment.ciphertext,
+    );
+  }
+
+  listRecordingSessions(profileId: string, limit = 100): StoredRecordingSession[] {
+    return this.#database.prepare(`
+      SELECT id, profile_id AS profileId, work_session_id AS workSessionId,
+             started_at AS startedAt, ended_at AS endedAt, status, engine,
+             sources_json AS sourcesJson, save_video AS saveVideo, video_path AS videoPath
+      FROM recording_sessions WHERE profile_id=? ORDER BY started_at DESC LIMIT ?
+    `).all(profileId, Math.max(1, Math.min(limit, 500))) as unknown as StoredRecordingSession[];
+  }
+
+  recordingSegments(recordingId: string): StoredRecordingSegment[] {
+    return this.#database.prepare(`
+      SELECT id, recording_id AS recordingId, source, start_ms AS startMs, end_ms AS endMs,
+             tab_id AS tabId, nonce, ciphertext
+      FROM recording_segments WHERE recording_id=? ORDER BY start_ms ASC, id ASC
+    `).all(recordingId) as unknown as StoredRecordingSegment[];
+  }
+
+  deleteRecording(profileId: string, recordingId: string): void {
+    this.#database.prepare("DELETE FROM recording_sessions WHERE profile_id=? AND id=?").run(profileId, recordingId);
   }
 
   listHistory(profileId: string, limit = 250): StoredHistoryEntry[] {
@@ -988,6 +1076,39 @@ export class BrowserDatabase {
         updated_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS browser_credentials_origin ON browser_credentials(origin);
+      CREATE TABLE IF NOT EXISTS recording_keys (
+        profile_id TEXT PRIMARY KEY,
+        wrapped_key BLOB NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(profile_id) REFERENCES browser_profiles(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS recording_sessions (
+        id TEXT PRIMARY KEY,
+        profile_id TEXT NOT NULL,
+        work_session_id TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        ended_at INTEGER,
+        status TEXT NOT NULL,
+        engine TEXT NOT NULL,
+        sources_json TEXT NOT NULL,
+        save_video INTEGER NOT NULL DEFAULT 0,
+        video_path TEXT,
+        FOREIGN KEY(profile_id) REFERENCES browser_profiles(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS recording_segments (
+        id TEXT PRIMARY KEY,
+        recording_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        start_ms INTEGER NOT NULL,
+        end_ms INTEGER NOT NULL,
+        tab_id TEXT,
+        nonce TEXT NOT NULL,
+        ciphertext TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY(recording_id) REFERENCES recording_sessions(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS recording_sessions_profile_time ON recording_sessions(profile_id, started_at DESC);
+      CREATE INDEX IF NOT EXISTS recording_segments_recording_time ON recording_segments(recording_id, start_ms ASC);
       CREATE TABLE IF NOT EXISTS browser_settings (
         profile_id TEXT NOT NULL,
         key TEXT NOT NULL,
@@ -1107,6 +1228,7 @@ export class BrowserDatabase {
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (5, unixepoch());
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (6, unixepoch());
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (7, unixepoch());
+      INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (8, unixepoch());
     `);
   }
 

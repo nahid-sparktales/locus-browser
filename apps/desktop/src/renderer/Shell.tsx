@@ -3,8 +3,8 @@ import {
   ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bookmark, Bot, Check, ChevronDown,
   CircleAlert, Clock3, Cloud, CloudOff, Copy, Download, EyeOff, FileDown, FolderPlus, Globe2, History,
   KeyRound, Laptop, Layers3, LayoutList, LockKeyhole, LogIn, LogOut, Minus, Monitor, Moon, MoreHorizontal, PanelLeft,
-  Pause, Play, Plus, Printer, Puzzle, RefreshCw, Search, Settings, ShieldCheck,
-  Sparkles, Square, Sun, UserRound, UsersRound, Volume2, VolumeX, X,
+  Mic, Pause, Play, Plus, Printer, Puzzle, RefreshCw, Search, Settings, ShieldCheck,
+  Sparkles, Square, Sun, UserRound, UsersRound, Video, Volume2, VolumeX, X,
 } from "lucide-react";
 import type { BrowserCommand } from "../shared/ipc.js";
 import type { Appearance, BrowserAppState, BrowserTabState, SearchEngine, SidebarSection } from "../shared/types.js";
@@ -24,6 +24,7 @@ export function Shell() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [passwordMenuOpen, setPasswordMenuOpen] = useState(false);
+  const [recordOpen, setRecordOpen] = useState(false);
   const addressRef = useRef<HTMLInputElement>(null);
   const active = state?.tabs.find((tab) => tab.id === state.activeTabId);
 
@@ -45,12 +46,13 @@ export function Shell() {
   }, []);
 
   useEffect(() => {
-    if (!profileOpen && !menuOpen && !passwordMenuOpen) return;
+    if (!profileOpen && !menuOpen && !passwordMenuOpen && !recordOpen) return;
     const closeOnPointerDown = (event: PointerEvent) => {
       if (!(event.target instanceof Element) || !event.target.closest(".toolbar-popover-wrap")) {
         setProfileOpen(false);
         setMenuOpen(false);
         setPasswordMenuOpen(false);
+        setRecordOpen(false);
       }
     };
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -58,6 +60,7 @@ export function Shell() {
         setProfileOpen(false);
         setMenuOpen(false);
         setPasswordMenuOpen(false);
+        setRecordOpen(false);
       }
     };
     document.addEventListener("pointerdown", closeOnPointerDown);
@@ -66,7 +69,7 @@ export function Shell() {
       document.removeEventListener("pointerdown", closeOnPointerDown);
       document.removeEventListener("keydown", closeOnEscape);
     };
-  }, [menuOpen, passwordMenuOpen, profileOpen]);
+  }, [menuOpen, passwordMenuOpen, profileOpen, recordOpen]);
 
   if (!state) return <LoadingSurface />;
   if (state.onboardingRequired) return <OnboardingSurface state={state} />;
@@ -136,7 +139,7 @@ export function Shell() {
           {state.credentialSuggestions.length > 0 && (
             <div className="toolbar-popover-wrap">
               <button className={`chrome-button password-button ${passwordMenuOpen ? "selected" : ""}`} title="Saved logins"
-                onClick={() => { setPasswordMenuOpen((open) => !open); setProfileOpen(false); setMenuOpen(false); }}>
+                onClick={() => { setPasswordMenuOpen((open) => !open); setProfileOpen(false); setMenuOpen(false); setRecordOpen(false); }}>
                 <KeyRound size={15} />
               </button>
               {passwordMenuOpen && <PasswordMenu state={state} close={() => setPasswordMenuOpen(false)} />}
@@ -164,10 +167,28 @@ export function Shell() {
           </button>
           <div className="toolbar-popover-wrap">
             <button className={`profile-button ${profileOpen ? "selected" : ""}`} title={state.privateWindow ? `Private ${state.currentProfile.name} profile` : `${state.currentProfile.name} profile`}
-              onClick={() => { setProfileOpen((open) => !open); setMenuOpen(false); setPasswordMenuOpen(false); }}>
+              onClick={() => { setProfileOpen((open) => !open); setMenuOpen(false); setPasswordMenuOpen(false); setRecordOpen(false); }}>
               {state.privateWindow ? <EyeOff size={15} /> : <UserRound size={15} />}<ChevronDown size={11} />
             </button>
             {profileOpen && <ProfileMenu state={state} close={() => setProfileOpen(false)} />}
+          </div>
+          <div className="toolbar-popover-wrap">
+            <button
+              className={`record-button ${state.recording.status} ${recordOpen ? "open" : ""}`}
+              type="button"
+              disabled={state.privateWindow}
+              aria-expanded={recordOpen}
+              title={state.privateWindow ? "Recording is unavailable in private windows" : "Live browser recording"}
+              onClick={() => {
+                setRecordOpen((open) => !open);
+                setProfileOpen(false);
+                setMenuOpen(false);
+                setPasswordMenuOpen(false);
+              }}>
+              <span className="record-dot" aria-hidden="true" />
+              <span>{state.recording.status === "idle" ? "Record" : formatRecordingDuration(state.recording.elapsedMs)}</span>
+            </button>
+            {recordOpen ? <RecordingMenu state={state} close={() => setRecordOpen(false)} /> : null}
           </div>
           <button className={`work-button ${workTone} ${state.workOpen ? "open" : ""}`} disabled={state.privateWindow}
             title={state.privateWindow ? "Work Mode is unavailable in private windows" : "Toggle Work Mode (⌘⌥L)"}
@@ -177,7 +198,7 @@ export function Shell() {
           </button>
           <div className="toolbar-popover-wrap">
             <button className={`chrome-button ${menuOpen ? "selected" : ""}`} title="Browser menu"
-              onClick={() => { setMenuOpen((open) => !open); setProfileOpen(false); setPasswordMenuOpen(false); }}><MoreHorizontal size={18} /></button>
+              onClick={() => { setMenuOpen((open) => !open); setProfileOpen(false); setPasswordMenuOpen(false); setRecordOpen(false); }}><MoreHorizontal size={18} /></button>
             {menuOpen && <BrowserMenu state={state} close={() => setMenuOpen(false)} />}
           </div>
         </div>
@@ -191,6 +212,80 @@ export function Shell() {
       <div className="page-drop-shadow" style={{ left: state.sidebarOpen ? 248 : 0, top: chromeHeight }} aria-hidden="true" />
     </div>
   );
+}
+
+function RecordingMenu({ state, close }: { state: BrowserAppState; close: () => void }) {
+  const [tabAudio, setTabAudio] = useState(true);
+  const [microphone, setMicrophone] = useState(true);
+  const [saveVideo, setSaveVideo] = useState(false);
+  const [shareLevel, setShareLevel] = useState<"read" | "interact">("read");
+  const [error, setError] = useState("");
+  const active = state.recording.status !== "idle";
+  const localModelMissing = state.settings.speech.engine === "local"
+    && state.settings.speech.localModelStatus !== "ready"
+    && (tabAudio || microphone);
+  const run = async (value: BrowserCommand) => {
+    setError("");
+    try { await command(value); } catch (caught) { setError(caught instanceof Error ? caught.message : "Recording request failed"); }
+  };
+
+  return (
+    <section className="toolbar-popover recording-menu" aria-label="Live recording controls">
+      <header>
+        <span className={`recording-mark ${state.recording.status}`}><span /></span>
+        <span>
+          <strong>{active ? formatRecordingDuration(state.recording.elapsedMs) : "Live context"}</strong>
+          <small>{active ? recordingStatusLabel(state) : "Your shared browser tab only"}</small>
+        </span>
+        <button type="button" aria-label="Close recording controls" onClick={close}><X size={13} /></button>
+      </header>
+
+      {!active ? (
+        <>
+          <p className="recording-privacy">Locus captures the webpage canvas—not browser chrome or other apps. Protected fields and inaccessible frames are masked before capture.</p>
+          <label className="recording-choice"><span><Volume2 size={14} /><span><strong>Tab audio</strong><small>Transcribe sound from this tab</small></span></span><input type="checkbox" checked={tabAudio} onChange={(event) => setTabAudio(event.target.checked)} /></label>
+          <label className="recording-choice"><span><Mic size={14} /><span><strong>Microphone</strong><small>Transcribe your voice</small></span></span><input type="checkbox" checked={microphone} onChange={(event) => setMicrophone(event.target.checked)} /></label>
+          <label className="recording-choice"><span><Video size={14} /><span><strong>Save video</strong><small>Off by default · asks where to save on stop</small></span></span><input type="checkbox" checked={saveVideo} onChange={(event) => setSaveVideo(event.target.checked)} /></label>
+          <label className="recording-access"><span>Tab access</span><select value={shareLevel} onChange={(event) => setShareLevel(event.target.value as "read" | "interact")}><option value="read">Read only</option><option value="interact">Allow interaction</option></select></label>
+          <p className="recording-speech-note">{speechPrivacyLabel(state)}</p>
+          {localModelMissing ? (
+            <button className="recording-download" type="button" disabled={state.settings.speech.localModelStatus === "downloading"} onClick={() => void run({ type: "download-speech-model" })}>
+              {state.settings.speech.localModelStatus === "downloading" ? `Downloading ${Math.round((state.settings.speech.localModelProgress ?? 0) * 100)}%` : "Download on-device speech model"}
+            </button>
+          ) : null}
+          <button className="recording-primary" type="button" disabled={localModelMissing} onClick={() => void run({ type: "start-recording", shareLevel, tabAudio, microphone, saveVideo })}>Start live recording</button>
+        </>
+      ) : (
+        <>
+          {state.recording.pausedReason ? <p className="recording-paused"><Pause size={13} />{state.recording.pausedReason}</p> : null}
+          <button className="recording-choice action" type="button" onClick={() => void run({ type: "set-recording-source", source: "tabAudio", enabled: !state.recording.sources.tabAudio })}><span><Volume2 size={14} /><span><strong>Tab audio</strong><small>{state.recording.sources.tabAudio ? "On" : "Off"}</small></span></span><span className={`settings-switch ${state.recording.sources.tabAudio ? "on" : ""}`}><span /></span></button>
+          <button className="recording-choice action" type="button" onClick={() => void run({ type: "set-recording-source", source: "microphone", enabled: !state.recording.sources.microphone })}><span><Mic size={14} /><span><strong>Microphone</strong><small>{state.recording.sources.microphone ? "On" : "Off"}</small></span></span><span className={`settings-switch ${state.recording.sources.microphone ? "on" : ""}`}><span /></span></button>
+          <div className="recording-actions">
+            {state.recording.status === "paused"
+              ? <button type="button" onClick={() => void run({ type: "resume-recording" })}><Play size={13} />Resume</button>
+              : <button type="button" onClick={() => void run({ type: "pause-recording" })}><Pause size={13} />Pause</button>}
+            <button className="stop" type="button" onClick={() => void run({ type: "stop-recording" })}><Square size={11} fill="currentColor" />Stop</button>
+          </div>
+        </>
+      )}
+      {state.recording.error ? <p className="recording-error" role="alert">{state.recording.error}</p> : null}
+      {error ? <p className="recording-error" role="alert">{error}</p> : null}
+    </section>
+  );
+}
+
+function speechPrivacyLabel(state: BrowserAppState): string {
+  if (state.settings.speech.engine === "local") return "Speech is transcribed on this Mac. Raw audio is discarded after each short chunk.";
+  if (state.settings.speech.engine === "openai") return "Short audio chunks are sent to OpenAI for transcription. Raw audio is never saved.";
+  return `Short audio chunks are sent to ${state.settings.speech.customBaseUrl || "your custom endpoint"}. Raw audio is never saved.`;
+}
+
+function recordingStatusLabel(state: BrowserAppState): string {
+  if (state.recording.status === "paused") return "Paused · no tab media is being accepted";
+  if (state.recording.status === "error") return "Needs attention";
+  if (state.recording.status === "starting") return "Connecting to the shared tab…";
+  if (state.recording.status === "stopping") return "Finishing securely…";
+  return "Recording the shared tab";
 }
 
 function OnboardingSurface({ state }: { state: BrowserAppState }) {
@@ -476,6 +571,19 @@ function SidebarContent({ state }: { state: BrowserAppState }) {
           </button>
         )) : <EmptyLibrary icon={<Clock3 size={18} />} text={state.work.runtime === "online" ? "Start a conversation in Work Mode." : "Conversation history appears when the local agent is ready."} />}
       </div>
+      {state.recording.transcripts.length ? (
+        <section className="recording-history">
+          <div className="sidebar-heading"><span>Live transcripts</span><span>{state.recording.transcripts.length}</span></div>
+          {state.recording.transcripts.map((recording) => (
+            <details key={recording.id} className="recording-history-card">
+              <summary><span className="recording-history-dot" /><span><strong>{formatRecordingDuration(recording.durationMs)}</strong><small>{new Date(recording.startedAt).toLocaleString()} · {recording.segmentCount} segments</small></span><ChevronDown size={11} /></summary>
+              <p>Encrypted on this Mac and linked to {recording.workSessionId === state.work.sessionId ? "this conversation" : "an earlier conversation"}. It is never synced.</p>
+              {recording.videoPath ? <button type="button" onClick={() => void command({ type: "reveal-recording-video", recordingId: recording.id })}>Show recovered video</button> : null}
+              <button type="button" disabled={recording.id === state.recording.id} onClick={() => deleteRecordingTranscript(recording.id)}>Delete transcript</button>
+            </details>
+          ))}
+        </section>
+      ) : null}
     </>
   );
 }
@@ -559,6 +667,7 @@ function SettingsPanel({ state }: { state: BrowserAppState }) {
       <SettingRow label="Downloads" detail={state.settings.downloadDirectory}>
         <button type="button" onClick={() => void command({ type: "choose-download-directory" })}>Choose folder…</button>
       </SettingRow>
+      <SpeechSettings state={state} />
       <ExtensionSettings state={state} />
       {!state.privateWindow ? <SyncSettings state={state} /> : null}
       <div className="settings-subheading">Profiles</div>
@@ -586,6 +695,48 @@ function SettingsPanel({ state }: { state: BrowserAppState }) {
         </div>
       )) : <p className="settings-empty">Sites you allow or block will appear here.</p>}
     </div>
+  );
+}
+
+function SpeechSettings({ state }: { state: BrowserAppState }) {
+  const speech = state.settings.speech;
+  const [engine, setEngine] = useState(speech.engine);
+  const [baseUrl, setBaseUrl] = useState(speech.customBaseUrl ?? "https://");
+  const [model, setModel] = useState(speech.customModel ?? "whisper-1");
+  const [apiKey, setApiKey] = useState("");
+  const [error, setError] = useState("");
+  const save = async (engine: BrowserAppState["settings"]["speech"]["engine"] = speech.engine) => {
+    setError("");
+    try {
+      await command({
+        type: "configure-speech", engine, language: speech.language,
+        ...(engine === "custom" ? { baseUrl, model, ...(apiKey ? { apiKey } : {}) } : {}),
+      });
+      setApiKey("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Speech settings could not be saved");
+    }
+  };
+  return (
+    <section className="speech-settings" aria-labelledby="speech-settings-title">
+      <div className="settings-subheading" id="speech-settings-title">Speech</div>
+      <div className="speech-card">
+        <label><span><strong>Transcription</strong><small>Used only during a visible live recording</small></span><select value={engine} onChange={(event) => { const next = event.target.value as typeof speech.engine; setEngine(next); if (next !== "custom") void save(next); }}><option value="local">On-device</option><option value="openai">OpenAI API</option><option value="custom">Custom endpoint</option></select></label>
+        {engine === "local" ? (
+          <div className="speech-runtime-row"><span><strong>{speech.localModelStatus === "ready" ? "Ready on this Mac" : "Model download required"}</strong><small>{speech.message || "A checksummed multilingual Whisper model is stored locally."}</small></span>{speech.localModelStatus !== "ready" ? <button type="button" disabled={speech.localModelStatus === "downloading"} onClick={() => void command({ type: "download-speech-model" })}>{speech.localModelStatus === "downloading" ? `${Math.round((speech.localModelProgress ?? 0) * 100)}%` : "Download"}</button> : <Check size={13} />}</div>
+        ) : engine === "openai" ? (
+          <p>Uses the encrypted OpenAI API credential from the model picker and <code>gpt-4o-mini-transcribe</code>. Short audio chunks leave this Mac; raw audio is never stored.</p>
+        ) : (
+          <form onSubmit={(event) => { event.preventDefault(); void save("custom"); }}>
+            <label><span>HTTPS or loopback URL</span><input type="url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://speech.example.com/v1" /></label>
+            <label><span>Model</span><input value={model} onChange={(event) => setModel(event.target.value)} /></label>
+            <label><span>API key</span><input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="Leave blank to keep saved key" autoComplete="off" /></label>
+            <button type="submit">Save custom speech</button>
+          </form>
+        )}
+        {error ? <p className="recording-error" role="alert">{error}</p> : null}
+      </div>
+    </section>
   );
 }
 
@@ -864,6 +1015,12 @@ function deleteCredential(credentialId: string, origin: string): void {
   }
 }
 
+function deleteRecordingTranscript(recordingId: string): void {
+  if (window.confirm("Delete this encrypted transcript from this Mac? This cannot be undone.")) {
+    void command({ type: "delete-recording-transcript", recordingId });
+  }
+}
+
 function navigateRadioGroup(event: React.KeyboardEvent<HTMLButtonElement>): void {
   const keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"];
   if (!keys.includes(event.key)) return;
@@ -906,6 +1063,16 @@ function formatTime(timestamp: number): string {
 function formatProgress(received: number, total: number): string {
   if (total <= 0) return `${formatBytes(received)} downloaded`;
   return `${Math.min(Math.round((received / total) * 100), 100)}% · ${formatBytes(total)}`;
+}
+
+function formatRecordingDuration(milliseconds: number): string {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
+  const hours = Math.floor(seconds / 3_600);
+  const minutes = Math.floor((seconds % 3_600) / 60);
+  const remainder = seconds % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`
+    : `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
 }
 
 function formatBytes(value: number): string {

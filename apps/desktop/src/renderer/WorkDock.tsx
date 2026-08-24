@@ -17,6 +17,7 @@ import {
   KeyRound,
   LogOut,
   MessageSquareText,
+  Mic,
   Paperclip,
   Play,
   RotateCcw,
@@ -30,6 +31,7 @@ import {
   TerminalSquare,
   Trash2,
   UserRound,
+  Volume2,
   X,
 } from "lucide-react";
 import type { BrowserCommand } from "../shared/ipc.js";
@@ -256,6 +258,8 @@ function ChatPanel({ state, grantLevel }: { state: BrowserAppState; grantLevel: 
         </div>
       </div>
 
+      {state.recording.id || state.recording.transcriptPreview.length ? <LiveContextCard state={state} /> : null}
+
       <div className={`workspace-bar ${state.work.workspace ? "selected" : ""}`}>
         <FolderOpen size={13} />
         <span title={state.work.workspace?.path}>{state.work.workspace?.name ?? "No workspace selected"}</span>
@@ -295,6 +299,7 @@ function ChatPanel({ state, grantLevel }: { state: BrowserAppState; grantLevel: 
             rows={2}
             onChange={(event) => setText(event.target.value)}
             onKeyDown={(event) => {
+              if (event.key === "Enter" && event.metaKey) { event.preventDefault(); void command({ type: "recording-assist" }); return; }
               if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); }
             }}
           />
@@ -307,9 +312,30 @@ function ChatPanel({ state, grantLevel }: { state: BrowserAppState; grantLevel: 
               : <button type="button" className="send-button" title="Send" disabled={!text.trim() || state.work.runtime !== "online"} onClick={submit}><SendHorizontal size={16} /></button>}
           </div>
         </div>
-        <div className="composer-foot"><span>{state.work.runtimeMessage}</span><span>↵ send · ⇧↵ newline</span></div>
+        <div className="composer-foot"><span>{state.work.runtimeMessage}</span><span>⌘↵ live help · ↵ send</span></div>
       </div>
     </div>
+  );
+}
+
+function LiveContextCard({ state }: { state: BrowserAppState }) {
+  const active = Boolean(state.recording.id);
+  const [expanded, setExpanded] = useState(active);
+  return (
+    <details className={`live-context-card ${state.recording.status}`} open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
+      <summary>
+        <span className="live-context-pulse" />
+        <span><strong>{active ? `Live context · ${formatRecordingDuration(state.recording.elapsedMs)}` : "Saved live transcript"}</strong><small>{state.recording.pausedReason || `${state.recording.transcriptPreview.length} recent transcript segments`}</small></span>
+        <ChevronDown size={12} />
+      </summary>
+      <div className="live-transcript" aria-live="polite">
+        {state.recording.transcriptPreview.length ? state.recording.transcriptPreview.slice(-5).map((segment) => (
+          <p key={segment.id}><span>{segment.source === "microphone" ? <Mic size={11} /> : <Volume2 size={11} />}{segment.source === "microphone" ? "You" : "Tab"}</span>{segment.text}</p>
+        )) : <p className="live-transcript-empty">Listening for speech. Raw audio is never saved.</p>}
+      </div>
+      {active ? <button type="button" className="live-assist" onClick={() => void command({ type: "recording-assist" })}><Sparkles size={12} />Help with this now <kbd>⌘↵</kbd></button> : null}
+      {state.recording.error ? <p className="live-context-error">{state.recording.error}</p> : null}
+    </details>
   );
 }
 
@@ -462,4 +488,10 @@ function formatBytes(value: number): string {
   if (value < 1_024) return `${value} B`;
   if (value < 1_048_576) return `${(value / 1_024).toFixed(1)} KB`;
   return `${(value / 1_048_576).toFixed(1)} MB`;
+}
+
+function formatRecordingDuration(milliseconds: number): string {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
+  const minutes = Math.floor(seconds / 60);
+  return `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 }

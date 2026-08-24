@@ -9,6 +9,9 @@ Initial Apple Silicon macOS canary candidate:
 - explicit agent tab grants and protected browser automation;
 - signed, revocable curated extensions with a tested MV3 subset;
 - optional end-to-end encrypted multi-device browser sync;
+- visible live browser recording for explicitly shared tabs, with separate tab
+  audio/microphone controls, on-device or optional cloud transcription,
+  encrypted local transcripts, `⌘Enter` assistance, and opt-in redacted video;
 - signed/notarized packaging, canary updates, rollback snapshots, SBOM, signed
   artifact manifest, and automated security/accessibility/performance gates.
 

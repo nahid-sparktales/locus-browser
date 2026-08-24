@@ -19,6 +19,17 @@ const api = {
   },
 };
 
+const recorderApi = {
+  send: (message: unknown): void => ipcRenderer.send(ipcChannels.recorderMessage, message),
+  subscribe: (listener: (message: unknown) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, message: unknown) => listener(message);
+    ipcRenderer.on(ipcChannels.recorderEvent, handler);
+    return () => ipcRenderer.removeListener(ipcChannels.recorderEvent, handler);
+  },
+};
+
 contextBridge.exposeInMainWorld("locusBrowser", api);
+contextBridge.exposeInMainWorld("locusRecorder", recorderApi);
 
 export type LocusBrowserAPI = typeof api;
+export type LocusRecorderAPI = typeof recorderApi;

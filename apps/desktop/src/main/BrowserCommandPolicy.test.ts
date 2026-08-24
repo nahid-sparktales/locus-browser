@@ -30,6 +30,15 @@ describe("browser command sender policy", () => {
     { type: "disconnect-sync" },
     { type: "delete-sync-cloud-data" },
     { type: "delete-sync-account" },
+    { type: "configure-speech", engine: "local", language: "auto" },
+    { type: "download-speech-model" },
+    { type: "start-recording", shareLevel: "read", tabAudio: true, microphone: true, saveVideo: false },
+    { type: "pause-recording" },
+    { type: "resume-recording" },
+    { type: "stop-recording" },
+    { type: "set-recording-source", source: "microphone", enabled: false },
+    { type: "delete-recording-transcript", recordingId: "00000000-0000-4000-8000-000000000000" },
+    { type: "reveal-recording-video", recordingId: "00000000-0000-4000-8000-000000000000" },
   ])("keeps $type on the trusted browser-chrome sender", (command) => {
     expect(requiresShellSender(command)).toBe(true);
   });
