@@ -1,6 +1,6 @@
 {
   "name": "@locus/browser-desktop",
-  "version": "0.1.0-canary.3",
+  "version": "0.1.0-canary.4",
   "description": "A browser-first, local-agent desktop workspace from Locus.",
   "author": "SparkTales Inc.",
   "private": true,

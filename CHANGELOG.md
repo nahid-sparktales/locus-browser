@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-canary.3 — unreleased
+## 0.1.0-canary.4 — unreleased
 
 Initial Apple Silicon macOS canary candidate:
 
@@ -20,6 +20,8 @@ Initial Apple Silicon macOS canary candidate:
   signed release manifest for reliable prerelease updates.
 - SemVer-compatible `vX.Y.Z-canary.N` release tags that the desktop updater can
   discover through GitHub's release feed.
+- parseable public signing-key files, with source gates that verify both
+  documented fingerprints against the gallery and release trust roots.
 
 See `docs/implementation-status.md` for scope and `docs/canary-runbook.md` for
 the controlled release procedure.
