@@ -48,26 +48,44 @@ LOCUS_GALLERY_PACKAGES=/reviewed/packages \
 LOCUS_GALLERY_METADATA=/publication/metadata \
 LOCUS_GALLERY_SIGNING_KEY_FILE=/offline/gallery-ed25519.pem \
 LOCUS_GALLERY_REVOCATIONS=/review/revocations.json \
-pnpm --filter @locus/extension-gallery-service publish
+pnpm --filter @locus/extension-gallery-service publish:metadata
 ```
 
-Deploy the immutable packages and both signed documents as one publication.
-The hardened container configuration in `deploy/gallery/compose.production.yaml`
-uses a read-only filesystem, dropped capabilities, a bounded temporary volume,
-rate limiting, and production fail-closed mode.
+The production read path is a Cloudflare Worker at
+`https://extensions.locushost.co` backed by the private
+`locus-browser-extension-gallery-production` R2 bucket. Cloudflare does not
+hold either signing private key. Upload the immutable packages and signed
+documents, deploy the Worker, and cryptographically verify the live publication:
+
+```bash
+LOCUS_GALLERY_PACKAGES=/reviewed/packages \
+LOCUS_GALLERY_METADATA=/publication/metadata \
+pnpm --filter @locus/gallery-worker publish:production
+
+pnpm --filter @locus/gallery-worker run deploy
+
+LOCUS_EXTENSION_GALLERY_URL=https://extensions.locushost.co \
+pnpm --filter @locus/gallery-worker verify:deployment
+```
+
+The Worker streams package bodies, serves short-lived signed metadata and
+immutable package caches, rejects writes and ranges, rate limits reads, and
+fails closed when metadata is missing, oversized, malformed, or signed by an
+unexpected fingerprint. The desktop repeats the full signature, package,
+permission, and inventory verification before installation.
+
+The container configuration in `deploy/gallery/compose.production.yaml`
+remains available for a self-hosted deployment or local production rehearsal.
 
 For an emergency takedown, add an extension, version, publisher, or gallery-key
 revocation; sign and deploy the new revocation document before removing the
 package from discovery. Clients retain and enforce the last verified security
 document when the service is offline.
 
-## External controls required before public deployment
+## Controls required before publishing the first extension
 
-- Replace the canary key through an offline production key ceremony with
-  documented quorum, backup, rotation, and revocation procedures.
 - Add authenticated publisher enrollment, isolated build/review workers,
   malware and remote-code analysis, reproducible reports, and human approval.
-- Store approved immutable packages in object storage behind a CDN and operate
-  audit logs, monitoring, backups, and disaster recovery.
-- Complete external review of the service, package pipeline, and desktop update
-  path before switching the packaged app to the production origin.
+- Exercise gallery-key rotation/revocation and R2 backup/restore procedures.
+- Complete external review of the package pipeline and desktop extension/update
+  path before admitting third-party packages.

@@ -1,0 +1,15 @@
+{
+  "documentVersion": 1,
+  "kind": "revocations",
+  "payload": {
+    "version": 1,
+    "generatedAt": 1787589987,
+    "revocations": []
+  },
+  "signature": {
+    "algorithm": "Ed25519",
+    "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAsT/nt9VedMuNKI+OjtAykqWqjpIiX0bxSBa54FezQn0=\n-----END PUBLIC KEY-----\n",
+    "fingerprint": "d1257f8fe1c98e28efeb83b9fa1755cca4e82aa0360391bb73a7b054b161f10d",
+    "value": "8l+1Tc6iiLo2B8mZ+2zGgS+OF0gA7JhfBPq8CM8AGGdhKQaQZslnULSiU015TZuLWmdHAFzsr/ouAaOuVOwhBQ=="
+  }
+}

@@ -68,6 +68,10 @@ agent rather than every team and orchestration surface in native Locus.
   verified security notice, deterministic staged rollout, rate limiting,
   production fail-closed metadata loading, and immediate disable/unload of
   revoked installs.
+- The production gallery is live at `https://extensions.locushost.co` on a
+  read-only Cloudflare Worker backed by private R2. Its canary catalog is signed
+  with an offline key and intentionally contains zero extensions until a package
+  completes publisher enrollment, automated analysis, and human review.
 - Developer Mode supports reviewed local unpacked extensions and is off in
   private profiles. Developer paths/storage never sync.
 - The pinned Electron 43.4.1 contract proves `runtime`, content scripts, and
@@ -101,9 +105,9 @@ agent rather than every team and orchestration surface in native Locus.
 ## Automated gate status
 
 The local candidate currently passes its unit/integration/fuzz suites, the full
-production build, the Electron compatibility fixture, three responsive UI
+production build, the Electron compatibility fixture, five responsive UI
 surfaces, warm tab switching under the 150 ms p95 gate, Reduced Motion, 200%
-scaling, a production dependency audit with no known vulnerabilities, and a
+scaling, a complete dependency-graph audit with no high/critical findings, and a
 CycloneDX 1.6 SBOM. A locally signed app also passed deep code-sign verification
 and launched with its embedded Python runtime.
 
@@ -112,11 +116,8 @@ and launched with its embedded Python runtime.
 These steps cannot be completed by source changes alone and remain required
 before inviting canary users:
 
-- Deploy the controlled extension gallery, complete the offline production
-  gallery/release key ceremonies, and configure the protected GitHub `canary`
-  environment. The Supabase, Hyperdrive, private R2, and controlled sync Worker
-  deployment is complete.
-- Run the tag workflow with Apple App Store Connect credentials so the public
+- Add the Developer ID certificate export password directly to the protected
+  GitHub `canary` environment, then run the tag workflow so the public
   DMG/ZIP is notarized, stapled, Gatekeeper-assessed, manifest-signed, and
   published from CI.
 - Complete independent desktop security, encrypted-sync cryptography, and

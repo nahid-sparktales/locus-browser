@@ -136,6 +136,16 @@ importers:
         specifier: 4.20.6
         version: 4.20.6
 
+  services/gallery-worker:
+    dependencies:
+      '@locus/extensions':
+        specifier: workspace:*
+        version: link:../../packages/extensions
+    devDependencies:
+      wrangler:
+        specifier: 4.123.0
+        version: 4.123.0(@cloudflare/workers-types@5.20260815.1)
+
   services/sync:
     dependencies:
       '@aws-sdk/client-s3':

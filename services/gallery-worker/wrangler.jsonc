@@ -1,0 +1,35 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "locus-browser-extension-gallery",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-24",
+  "workers_dev": false,
+  "routes": [
+    { "pattern": "extensions.locushost.co", "custom_domain": true }
+  ],
+  "limits": {
+    "cpu_ms": 1000,
+    "subrequests": 50
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "ratelimits": [
+    {
+      "name": "PUBLIC_RATE_LIMITER",
+      "namespace_id": "478231903",
+      "simple": { "limit": 120, "period": 60 }
+    }
+  ],
+  "vars": {
+    "LOCUS_GALLERY_FINGERPRINT": "d1257f8fe1c98e28efeb83b9fa1755cca4e82aa0360391bb73a7b054b161f10d"
+  },
+  "r2_buckets": [
+    {
+      "binding": "GALLERY_OBJECTS",
+      "bucket_name": "locus-browser-extension-gallery-production",
+      "preview_bucket_name": "locus-browser-extension-gallery-preview"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "documentVersion": 1,
+  "kind": "catalog",
+  "payload": {
+    "catalogVersion": 1,
+    "packageContractVersion": 2,
+    "extensions": []
+  },
+  "signature": {
+    "algorithm": "Ed25519",
+    "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAsT/nt9VedMuNKI+OjtAykqWqjpIiX0bxSBa54FezQn0=\n-----END PUBLIC KEY-----\n",
+    "fingerprint": "d1257f8fe1c98e28efeb83b9fa1755cca4e82aa0360391bb73a7b054b161f10d",
+    "value": "4gLo+yH43Q7oIFAOTAzQQ4EvhcwejKBP8LpcXfIT6QF0j+LXUePhPNDqqRaXBDa4lgdvVMibEP7+z0tb1DgQCw=="
+  }
+}
