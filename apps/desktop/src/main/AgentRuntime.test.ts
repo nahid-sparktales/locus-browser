@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { managedChatGPTEnvironment } from "./AgentRuntime.js";
+import { managedChatGPTEnvironment, shouldRefreshBrowserControl } from "./AgentRuntime.js";
 
 describe("packaged managed ChatGPT runtime", () => {
   it("passes the bundled helper and profile-owned credential home to the agent", () => {
@@ -18,5 +18,13 @@ describe("packaged managed ChatGPT runtime", () => {
 
   it("does not silently discover an unmanaged helper in development", () => {
     expect(managedChatGPTEnvironment("/source/locus-platform", "/profile/agent", false)).toEqual({});
+  });
+});
+
+describe("browser-control capability", () => {
+  it("is re-advertised only after a complete agent turn", () => {
+    expect(shouldRefreshBrowserControl({ type: "message_end" })).toBe(false);
+    expect(shouldRefreshBrowserControl({ type: "tool_result" })).toBe(false);
+    expect(shouldRefreshBrowserControl({ type: "turn_done" })).toBe(true);
   });
 });

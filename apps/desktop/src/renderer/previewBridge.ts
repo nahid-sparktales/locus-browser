@@ -15,6 +15,7 @@ const previewPalette = previewParams.has("palette");
 const previewRecall = previewParams.has("recall");
 const previewResearch = previewParams.has("research");
 const previewSteward = previewParams.has("steward");
+const previewBusy = previewParams.has("busy");
 
 const previewResearchBoard: ResearchBoardState = {
   id: "research-preview", workSessionId: "preview-session", prompt: "Compare the browser architecture sources.", format: "comparison",
@@ -181,6 +182,8 @@ const previewState: BrowserAppState = {
     downloadDirectory: "/Users/nahid/Downloads", onboardingComplete: !previewOnboarding,
     localModelsEnabled: false,
     semanticRecallEnabled: previewRecall,
+    thinkingVisibility: "collapsed",
+    toolActivityVisibility: "collapsed",
     speech: { engine: "local", language: "auto", localModelStatus: "ready", message: "On-device transcription is ready" },
   },
   activePageBookmarked: false,
@@ -220,12 +223,15 @@ const previewState: BrowserAppState = {
     panel: "chat",
     runtime: "online",
     runtimeMessage: "Local agent is ready",
-    busy: false,
-    messages: [{
-      id: "welcome-message",
-      role: "assistant",
-      text: "Work Mode is ready. Share this tab when you want Locus to read or interact with it.",
-    }],
+    busy: previewBusy,
+    activity: previewBusy ? { phase: "thinking", label: "Thinking about the page…" } : { phase: "idle", label: "Ready" },
+    messages: [
+      { id: "welcome-message", role: "assistant", text: "Work Mode is ready. Share this tab when you want Locus to read or interact with it." },
+      ...(previewBusy ? [
+        { id: "preview-user", role: "user" as const, text: "Summarize the current page and call out the main claim." },
+        { id: "preview-thinking", role: "assistant" as const, text: "", reasoningText: "I’m reading the shared page and identifying its main argument and supporting evidence.", streaming: true },
+      ] : []),
+    ],
     conversations: [
       { id: "preview-session", title: "Research the current page", preview: "Research the current page", updatedAt: 1_787_408_000, current: true },
       { id: "preview-session-2", title: "Plan a focused browser workflow", preview: "Plan a focused browser workflow", updatedAt: 1_787_321_600, current: false },
@@ -278,7 +284,9 @@ const previewState: BrowserAppState = {
       ],
     },
     terminal: [
-      { id: "preview-tool", tool: "bash", summary: "Run desktop tests", detail: "pnpm test", status: "done", result: "57 tests passed", startedAt: 1_787_408_000_000, finishedAt: 1_787_408_002_000 },
+      previewBusy
+        ? { id: "preview-tool", tool: "browser_read_page", summary: "Read the shared page", detail: "Visible text and page structure", status: "running", startedAt: 1_787_408_000_000 }
+        : { id: "preview-tool", tool: "bash", summary: "Run desktop tests", detail: "pnpm test", status: "done", result: "57 tests passed", startedAt: 1_787_408_000_000, finishedAt: 1_787_408_002_000 },
     ],
     recovery: { attempt: 0, retrying: false, canRetry: false },
   },
@@ -531,6 +539,12 @@ function applyPreviewCommand(command: BrowserCommand): void {
       break;
     case "set-sleep-after":
       previewState.settings.sleepAfterMinutes = command.minutes;
+      break;
+    case "set-thinking-visibility":
+      previewState.settings.thinkingVisibility = command.visibility;
+      break;
+    case "set-tool-activity-visibility":
+      previewState.settings.toolActivityVisibility = command.visibility;
       break;
     case "set-local-models-enabled": {
       previewState.settings.localModelsEnabled = command.enabled;

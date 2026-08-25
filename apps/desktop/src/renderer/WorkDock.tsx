@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import {
   AlertTriangle,
   Bot,
+  BrainCircuit,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -26,16 +27,18 @@ import {
   Server,
   Share2,
   Shield,
+  SlidersHorizontal,
   Sparkles,
   SquarePen,
   TerminalSquare,
   Trash2,
   UserRound,
   Volume2,
+  Wrench,
   X,
 } from "lucide-react";
 import type { BrowserCommand } from "../shared/ipc.js";
-import type { BrowserAppState, WorkMode, WorkModelProviderId, WorkModelProviderState, WorkPanel } from "../shared/types.js";
+import type { BrowserAppState, ThinkingVisibility, ToolActivityVisibility, WorkMessage, WorkMode, WorkModelProviderId, WorkModelProviderState, WorkPanel, WorkTerminalEntryState } from "../shared/types.js";
 import { useBrowserState } from "./useBrowserState.js";
 
 const panels: Array<{ id: WorkPanel; label: string; icon: React.ReactNode }> = [
@@ -46,11 +49,11 @@ const panels: Array<{ id: WorkPanel; label: string; icon: React.ReactNode }> = [
   { id: "terminal", label: "Terminal", icon: <TerminalSquare size={17} /> },
 ];
 
-const modes: Array<{ id: WorkMode; label: string }> = [
-  { id: "ask", label: "Ask" },
-  { id: "work", label: "Work" },
-  { id: "plan", label: "Plan" },
-  { id: "build", label: "Build" },
+const modes: Array<{ id: WorkMode; label: string; detail: string }> = [
+  { id: "ask", label: "Ask", detail: "Chat and summarize shared context without tools" },
+  { id: "work", label: "Work", detail: "Use browser and workspace tools with approvals" },
+  { id: "plan", label: "Plan", detail: "Research and prepare a plan without changing pages or files" },
+  { id: "build", label: "Build", detail: "Use tools to implement an approved plan" },
 ];
 
 export function WorkDock() {
@@ -231,7 +234,9 @@ function providerStatusLabel(provider: WorkModelProviderState): string {
 function ChatPanel({ state, grantLevel }: { state: BrowserAppState; grantLevel: "read" | "interact" | undefined }) {
   const [text, setText] = useState("");
   const [shareMenu, setShareMenu] = useState(false);
-  const latestId = state.work.messages.at(-1)?.id;
+  const [displayMenu, setDisplayMenu] = useState(false);
+  const visibleMessages = state.work.messages.filter((message) => message.text || message.streaming || (message.reasoningText && state.settings.thinkingVisibility !== "hidden"));
+  const latestId = visibleMessages.at(-1)?.id;
   const activeProvider = state.work.model.providers.find((provider) => provider.id === state.work.model.activeProvider);
   const modelReady = Boolean(activeProvider?.configured);
 
@@ -273,17 +278,21 @@ function ChatPanel({ state, grantLevel }: { state: BrowserAppState; grantLevel: 
       </div>
 
       <div className="messages" aria-live="polite">
-        {state.work.messages.map((message) => (
+        {visibleMessages.map((message) => (
           <article key={message.id} className={`message ${message.role} ${message.id === latestId ? "latest" : ""}`}>
             {message.role !== "user" && <div className="message-avatar">{message.role === "assistant" ? <Sparkles size={13} /> : <Bot size={13} />}</div>}
-            <div className="message-bubble">{message.text || (message.streaming ? <span className="typing"><i /><i /><i /></span> : "")}</div>
+            <div className="message-bubble">
+              <ThinkingBlock key={`${message.id}:${state.settings.thinkingVisibility}`} message={message} visibility={state.settings.thinkingVisibility} />
+              {message.text || (message.streaming && (!message.reasoningText || state.settings.thinkingVisibility === "hidden") ? <span className="typing"><i /><i /><i /></span> : "")}
+            </div>
           </article>
         ))}
+        <ChatToolActivity state={state} />
       </div>
 
       <div className="composer-wrap">
         <div className="mode-picker" role="radiogroup" aria-label="Work mode">
-          {modes.map((mode) => <button key={mode.id} type="button" role="radio" aria-checked={state.work.mode === mode.id} className={state.work.mode === mode.id ? "active" : ""} onKeyDown={navigateModeRadio} onClick={() => void command({ type: "set-work-mode", mode: mode.id })}>{mode.label}</button>)}
+          {modes.map((mode) => <button key={mode.id} type="button" role="radio" aria-checked={state.work.mode === mode.id} className={state.work.mode === mode.id ? "active" : ""} title={mode.detail} onKeyDown={navigateModeRadio} onClick={() => void command({ type: "set-work-mode", mode: mode.id })}>{mode.label}</button>)}
         </div>
         <div className="composer">
           {state.work.attachments.length > 0 ? (
@@ -309,16 +318,75 @@ function ChatPanel({ state, grantLevel }: { state: BrowserAppState; grantLevel: 
           />
           <div className="composer-actions">
             <button type="button" title="Attach images" aria-label="Attach images" disabled={state.work.busy || state.work.runtime !== "online" || state.work.attachments.length >= 10} onClick={() => void command({ type: "choose-work-attachments" })}><Paperclip size={15} /></button>
+            {state.work.busy ? <span className={`composer-activity ${state.work.activity.phase}`} role="status"><i />{state.work.activity.label}</span> : null}
             <div className="composer-spacer" />
+            <div className="display-preferences-wrap">
+              <button type="button" title="Thinking and tool display" aria-label="Thinking and tool display" aria-expanded={displayMenu} onClick={() => setDisplayMenu((open) => !open)}><SlidersHorizontal size={14} /></button>
+            </div>
             <span className="context-meter" title="Context window">8%</span>
             {state.work.busy
               ? <button type="button" className="send-button stop" title="Stop" onClick={() => void command({ type: "stop-work" })}><CircleStop size={17} /></button>
               : <button type="button" className="send-button" title="Send" disabled={!text.trim() || state.work.runtime !== "online" || !modelReady} onClick={submit}><SendHorizontal size={16} /></button>}
           </div>
         </div>
-        <div className="composer-foot"><span>{state.work.runtimeMessage}</span><span>⌘↵ live help · ↵ send</span></div>
+        {displayMenu ? <DisplayPreferences state={state} /> : null}
+        <div className="composer-foot"><span>{state.work.busy ? state.work.activity.label : state.work.runtimeMessage}</span><span>{state.work.mode === "ask" ? "Ask uses shared context without tools" : "⌘↵ live help · ↵ send"}</span></div>
       </div>
     </div>
+  );
+}
+
+function ThinkingBlock({ message, visibility }: { message: WorkMessage; visibility: ThinkingVisibility }) {
+  const [open, setOpen] = useState(visibility === "expanded");
+  if (message.role !== "assistant" || !message.reasoningText || visibility === "hidden") return null;
+  return (
+    <details className="message-thinking" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary><BrainCircuit size={12} />Thinking</summary>
+      <p>{message.reasoningText}</p>
+    </details>
+  );
+}
+
+function ChatToolActivity({ state }: { state: BrowserAppState }) {
+  const visibility = state.settings.toolActivityVisibility;
+  const entries = state.work.terminal.slice(-5);
+  if (visibility === "hidden" || !entries.length) return null;
+  return (
+    <section className={`chat-tool-activity ${visibility}`} aria-label="Recent tool activity">
+      <header><Wrench size={12} /><span>Tool activity</span><small>{entries.length} recent</small></header>
+      {entries.map((entry) => <ChatToolActivityEntry key={`${entry.id}:${visibility}:${entry.status}`} entry={entry} visibility={visibility} />)}
+    </section>
+  );
+}
+
+function ChatToolActivityEntry({ entry, visibility }: { entry: WorkTerminalEntryState; visibility: Exclude<ToolActivityVisibility, "hidden"> }) {
+  const shouldOpen = visibility === "verbose" || entry.status === "running" || entry.status === "waiting";
+  const [open, setOpen] = useState(shouldOpen);
+  return (
+    <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary><i className={entry.status} />{displayToolLabel(entry.tool)}<small>{entry.status}</small></summary>
+      <p>{entry.summary}</p>
+      {visibility === "verbose" && entry.detail ? <pre>{entry.detail}</pre> : null}
+      {visibility === "verbose" && entry.result ? <pre>{entry.result}</pre> : null}
+    </details>
+  );
+}
+
+function DisplayPreferences({ state }: { state: BrowserAppState }) {
+  return (
+    <section className="display-preferences" aria-label="Thinking and tool display preferences">
+      <label><span><BrainCircuit size={13} /><i><strong>Thinking</strong><small>Reasoning in chat</small></i></span>
+        <select value={state.settings.thinkingVisibility} onChange={(event) => void command({ type: "set-thinking-visibility", visibility: event.target.value as ThinkingVisibility })}>
+          <option value="hidden">Hidden</option><option value="collapsed">Collapsed</option><option value="expanded">Expanded</option>
+        </select>
+      </label>
+      <label><span><Wrench size={13} /><i><strong>Tool activity</strong><small>Runs in chat</small></i></span>
+        <select value={state.settings.toolActivityVisibility} onChange={(event) => void command({ type: "set-tool-activity-visibility", visibility: event.target.value as ToolActivityVisibility })}>
+          <option value="verbose">Verbose</option><option value="collapsed">Collapsed</option><option value="hidden">Hidden</option>
+        </select>
+      </label>
+      <small>These defaults are also available in Settings.</small>
+    </section>
   );
 }
 
@@ -498,4 +566,8 @@ function formatRecordingDuration(milliseconds: number): string {
   const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
   const minutes = Math.floor(seconds / 60);
   return `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function displayToolLabel(value: string): string {
+  return value.replace(/^browser_/, "Browser ").replaceAll("_", " ");
 }

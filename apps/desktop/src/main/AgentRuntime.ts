@@ -9,6 +9,10 @@ import WebSocket from "ws";
 
 export type AgentEvent = Record<string, unknown> & { type?: string };
 
+export function shouldRefreshBrowserControl(event: AgentEvent): boolean {
+  return event.type === "turn_done";
+}
+
 export class AgentRuntime extends EventEmitter {
   readonly #platformRoot: string;
   readonly #dataRoot: string;
@@ -262,7 +266,11 @@ export class AgentRuntime extends EventEmitter {
       socket.on("message", (data) => {
         if (generation !== this.#generation) return;
         try {
-          this.emit("event", JSON.parse(data.toString()) as AgentEvent);
+          const event = JSON.parse(data.toString()) as AgentEvent;
+          this.emit("event", event);
+          if (shouldRefreshBrowserControl(event) && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "set_browser_control", enabled: true }));
+          }
         } catch {
           this.emit("log", "Ignored malformed local-agent event");
         }

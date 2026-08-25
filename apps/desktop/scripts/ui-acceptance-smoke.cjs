@@ -30,6 +30,8 @@ app.whenReady().then(async () => {
     await inspectSurface(`${origin}/?surface=shell&steward=1`, "shell-steward", 1180, 840, 1, ".steward-surface");
     await inspectSurface(`${origin}/?surface=reader`, "reader", 900, 940, 1, ".reader-article");
     await inspectSurface(`${origin}/?surface=work`, "work", 720, 940, 1, ".work-dock");
+    await inspectSurface(`${origin}/?surface=work&busy=1`, "work-activity", 520, 940, 1, ".composer-activity.thinking");
+    await inspectSurface(`${origin}/?surface=work`, "work-display-preferences", 520, 940, 1, ".display-preferences", ".display-preferences-wrap > button");
     await inspectSurface(`${origin}/?surface=work&recording=1`, "work-recording", 520, 940, 1, ".live-context-card");
     await inspectSurface(`${origin}/?surface=work`, "work-200-percent", 720, 940, 2, ".work-dock");
     const failures = results.flatMap((result) => result.issues.map((issue) => `${result.surface}: ${issue}`));
@@ -45,7 +47,7 @@ app.whenReady().then(async () => {
   }
 });
 
-async function inspectSurface(url, surface, width, height, zoom, expectedSelector) {
+async function inspectSurface(url, surface, width, height, zoom, expectedSelector, triggerSelector) {
   const consoleErrors = [];
   const window = new BrowserWindow({
     show: false,
@@ -61,6 +63,7 @@ async function inspectSurface(url, surface, width, height, zoom, expectedSelecto
   await window.loadURL(url);
   window.webContents.setZoomFactor(zoom);
   await new Promise((resolvePromise) => setTimeout(resolvePromise, 150));
+  if (triggerSelector) await window.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(triggerSelector)})?.click()`);
   const audit = await window.webContents.executeJavaScript(`(${pageAudit.toString()})()`);
   const expectedVisible = await window.webContents.executeJavaScript(`(() => { const element = document.querySelector(${JSON.stringify(expectedSelector)}); if (!element) return false; const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden"; })()`);
   const durations = [];
