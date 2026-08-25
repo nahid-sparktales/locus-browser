@@ -74,6 +74,10 @@ export function interruptRunningWorkTerminal(current: WorkTerminalEntryState[], 
     : entry);
 }
 
+export function isTerminalWorkTurnEvent(type: string): boolean {
+  return type === "turn_end" || type === "turn_done";
+}
+
 function bounded(value: unknown, length: number): string {
   return typeof value === "string" ? value.replaceAll("\0", "").slice(0, length) : "";
 }

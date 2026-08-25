@@ -56,6 +56,8 @@ export const BrowserCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("set-sleep-after"), minutes: z.union([z.literal(0), z.literal(15), z.literal(30), z.literal(60)]) }),
   z.object({ type: z.literal("set-local-models-enabled"), enabled: z.boolean() }),
   z.object({ type: z.literal("set-semantic-recall-enabled"), enabled: z.boolean() }),
+  z.object({ type: z.literal("set-thinking-visibility"), visibility: z.enum(["hidden", "collapsed", "expanded"]) }),
+  z.object({ type: z.literal("set-tool-activity-visibility"), visibility: z.enum(["verbose", "collapsed", "hidden"]) }),
   z.object({ type: z.literal("clear-semantic-recall") }),
   z.object({ type: z.literal("delete-recall-document"), documentId: z.string().min(1).max(255) }),
   z.object({ type: z.literal("add-recall-exclusion"), origin: z.string().url().max(2_048) }),

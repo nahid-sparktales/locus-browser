@@ -2,6 +2,8 @@ import type { BrowserObservationContext, TabAccessGrant } from "@locus/protocol"
 
 export type WorkMode = "ask" | "work" | "plan" | "build";
 export type WorkModelProviderId = "chatgpt-plan" | "openai-api" | "kimi" | "claude-api" | "vllm" | "local";
+export type ThinkingVisibility = "hidden" | "collapsed" | "expanded";
+export type ToolActivityVisibility = "verbose" | "collapsed" | "hidden";
 export type SidebarSection = "tabs" | "bookmarks" | "history" | "downloads" | "spaces" | "conversations";
 export type SearchEngine = "duckduckgo" | "brave" | "google" | "bing";
 export type Appearance = "system" | "light" | "dark";
@@ -111,6 +113,8 @@ export interface BrowserSettingsState {
   onboardingComplete: boolean;
   localModelsEnabled: boolean;
   semanticRecallEnabled: boolean;
+  thinkingVisibility: ThinkingVisibility;
+  toolActivityVisibility: ToolActivityVisibility;
   speech: SpeechSettings;
 }
 
@@ -447,7 +451,13 @@ export interface WorkMessage {
   id: string;
   role: "user" | "assistant" | "system";
   text: string;
+  reasoningText?: string;
   streaming?: boolean;
+}
+
+export interface WorkActivityState {
+  phase: "idle" | "thinking" | "tool" | "responding";
+  label: string;
 }
 
 export interface WorkConversationState {
@@ -588,6 +598,7 @@ export interface WorkState {
   runtime: "starting" | "online" | "offline";
   runtimeMessage: string;
   busy: boolean;
+  activity: WorkActivityState;
   messages: WorkMessage[];
   conversations: WorkConversationState[];
   attachments: WorkAttachmentState[];

@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { interruptRunningWorkTerminal, updateWorkPlan, updateWorkTerminal } from "./WorkSurfaceEvents.js";
+import { interruptRunningWorkTerminal, isTerminalWorkTurnEvent, updateWorkPlan, updateWorkTerminal } from "./WorkSurfaceEvents.js";
 
 describe("Solo Work surface events", () => {
+  it("keeps a multi-tool turn active across model-call boundaries", () => {
+    expect(isTerminalWorkTurnEvent("message_end")).toBe(false);
+    expect(isTerminalWorkTurnEvent("tool_result")).toBe(false);
+    expect(isTerminalWorkTurnEvent("turn_done")).toBe(true);
+  });
+
   it("turns plan and todo events into a decision-ready plan", () => {
     const plan = updateWorkPlan(undefined, {
       type: "plan_ready",

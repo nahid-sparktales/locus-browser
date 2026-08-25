@@ -97,7 +97,8 @@ import {
   workModelProvider,
   type ConfigurableWorkModelProviderId,
 } from "./WorkModelProviders.js";
-import { interruptRunningWorkTerminal, updateWorkPlan, updateWorkTerminal } from "./WorkSurfaceEvents.js";
+import { interruptRunningWorkTerminal, isTerminalWorkTurnEvent, updateWorkPlan, updateWorkTerminal } from "./WorkSurfaceEvents.js";
+import { referencesCurrentPage, sharedBrowserContext } from "./SharedBrowserContext.js";
 import { listWorkspaceFiles, readWorkspaceFile } from "./WorkWorkspaceBrowser.js";
 import { trustedSurfaceRecovery } from "./TrustedSurfaceRecovery.js";
 import { loadReleaseConfiguration } from "./ReleaseConfiguration.js";
@@ -142,11 +143,11 @@ const AgentSessionInfoSchema = z.object({
   cwd: z.string().nullish().transform((value) => value ?? ""),
 });
 const AgentSessionResultSchema = z.object({
-  messages: z.array(z.object({ role: z.string(), content: z.unknown() })).optional().default([]),
+  messages: z.array(z.object({ role: z.string(), content: z.unknown(), reasoning: z.string().optional() })).optional().default([]),
   session_info: AgentSessionInfoSchema,
 });
 const AgentSessionTranscriptSchema = z.object({
-  messages: z.array(z.object({ role: z.string(), content: z.unknown() })).optional().default([]),
+  messages: z.array(z.object({ role: z.string(), content: z.unknown(), reasoning: z.string().optional() })).optional().default([]),
 });
 const AgentNewSessionSchema = z.object({
   session_info: AgentSessionInfoSchema,
@@ -336,6 +337,7 @@ export class BrowserController {
   #runtimeState: BrowserAppState["work"]["runtime"] = "starting";
   #runtimeMessage = "Starting the local agent…";
   #busy = false;
+  #workActivity: BrowserAppState["work"]["activity"] = { phase: "idle", label: "Ready" };
   #stopRequested = false;
   #messages: WorkMessage[] = [welcomeWorkMessage()];
   #conversations: WorkConversationState[] = [];
@@ -607,6 +609,7 @@ export class BrowserController {
         runtime: this.#runtimeState,
         runtimeMessage: this.#runtimeMessage,
         busy: this.#busy,
+        activity: this.#workActivity,
         messages: this.#messages,
         conversations: this.#conversations,
         attachments: [...this.#attachments.values()].map(({ data: _data, ...attachment }) => attachment),
@@ -965,6 +968,14 @@ export class BrowserController {
         await this.#intelligence?.refresh();
         if (command.enabled) this.#scheduleRecallForVisibleTabs();
         break;
+      case "set-thinking-visibility":
+        this.#settings = { ...this.#settings, thinkingVisibility: command.visibility };
+        this.#database.setSetting(this.#profileId, "thinkingVisibility", command.visibility);
+        break;
+      case "set-tool-activity-visibility":
+        this.#settings = { ...this.#settings, toolActivityVisibility: command.visibility };
+        this.#database.setSetting(this.#profileId, "toolActivityVisibility", command.visibility);
+        break;
       case "clear-semantic-recall":
         await this.#intelligence?.clearRecall();
         break;
@@ -1312,6 +1323,7 @@ export class BrowserController {
         this.#stopRequested = true;
         this.#runtime.send({ type: "interrupt" });
         this.#busy = false;
+        this.#workActivity = { phase: "idle", label: "Stopped" };
         this.#pendingPermission = undefined;
         this.#workTerminal = interruptRunningWorkTerminal(this.#workTerminal);
         for (const message of this.#messages) {
@@ -2715,6 +2727,8 @@ export class BrowserController {
     const onboardingComplete = this.#database.setting(this.#profileId, "onboardingComplete");
     const localModelsEnabled = this.#database.setting(this.#profileId, "localModelsEnabled");
     const semanticRecallEnabled = this.#database.setting(this.#profileId, "semanticRecallEnabled");
+    const thinkingVisibility = this.#database.setting(this.#profileId, "thinkingVisibility");
+    const toolActivityVisibility = this.#database.setting(this.#profileId, "toolActivityVisibility");
     return {
       appearance: isAppearance(appearance) ? appearance : "system",
       searchEngine: isSearchEngine(searchEngine) ? searchEngine : "duckduckgo",
@@ -2723,6 +2737,8 @@ export class BrowserController {
       onboardingComplete: onboardingComplete === true,
       localModelsEnabled: localModelsEnabled === true,
       semanticRecallEnabled: semanticRecallEnabled === true,
+      thinkingVisibility: isThinkingVisibility(thinkingVisibility) ? thinkingVisibility : "collapsed",
+      toolActivityVisibility: isToolActivityVisibility(toolActivityVisibility) ? toolActivityVisibility : "collapsed",
       speech: this.#speechSettings.value(
         this.#speechRuntime.state().localModelStatus,
         this.#speechRuntime.state().localModelProgress,
@@ -3040,6 +3056,13 @@ export class BrowserController {
     if (nextPlan !== this.#workPlan) this.#workPlan = nextPlan;
     const nextTerminal = updateWorkTerminal(this.#workTerminal, event);
     if (nextTerminal !== this.#workTerminal) this.#workTerminal = nextTerminal;
+    if (type === "tool_call_proposed") {
+      this.#busy = true;
+      this.#workActivity = { phase: "tool", label: agentActivityLabel(event) };
+    } else if (type === "tool_result") {
+      this.#busy = true;
+      this.#workActivity = { phase: "thinking", label: "Thinking about the result…" };
+    }
     if (type === "chatgpt_account_updated") {
       await this.#refreshChatGPTState(true);
       this.#broadcast();
@@ -3062,6 +3085,7 @@ export class BrowserController {
       this.#workPanel = "chat";
       this.#pendingPermission = undefined;
       this.#busy = false;
+      this.#workActivity = { phase: "idle", label: "Ready" };
       this.#stopRequested = false;
       await this.#refreshConversations();
       if (this.#workspacePath) await Promise.all([this.#refreshWorkChanges(), this.#refreshWorkFiles()]);
@@ -3084,8 +3108,13 @@ export class BrowserController {
     } else if (type === "browser_action_request") {
       const parsed = BrowserActionRequestSchema.safeParse(event);
       if (!parsed.success) return;
+      this.#busy = true;
+      this.#workActivity = { phase: "tool", label: `Using ${displayToolName(parsed.data.tool)}…` };
+      this.#broadcast();
       const result = await this.#executeBrowserAction(parsed.data);
       this.#runtime.send(result);
+      this.#workActivity = { phase: "thinking", label: "Thinking about the page…" };
+      this.#broadcast();
       return;
     }
     if (type === "permission_request") {
@@ -3095,27 +3124,45 @@ export class BrowserController {
         tool: String(event.tool ?? "Tool"),
         summary: typeof preview === "string" ? preview : JSON.stringify(preview, null, 2),
       };
+      this.#busy = true;
+      this.#workActivity = { phase: "tool", label: `Waiting to use ${displayToolName(String(event.tool ?? "tool"))}…` };
       this.#workOpen = true;
       this.#layout(true);
-    } else if (this.#stopRequested && (type === "message_start" || type === "token" || type === "text_delta" || type === "message_delta" || type === "assistant_delta")) {
+    } else if (this.#stopRequested && (type === "message_start" || type === "thinking" || type === "token" || type === "text_delta" || type === "message_delta" || type === "assistant_delta")) {
       return;
     } else if (type === "message_start") {
       this.#busy = true;
+      this.#workActivity = { phase: "thinking", label: "Thinking…" };
       this.#messages.push({ id: String(event.id ?? randomUUID()), role: "assistant", text: "", streaming: true });
+    } else if (type === "thinking") {
+      this.#busy = true;
+      this.#workActivity = { phase: "thinking", label: "Thinking…" };
+      const message = [...this.#messages].reverse().find((item) => item.role === "assistant" && item.streaming);
+      if (message) message.reasoningText = `${message.reasoningText ?? ""}${String(event.text ?? "")}`;
     } else if (type === "token" || type === "text_delta" || type === "message_delta" || type === "assistant_delta") {
+      this.#busy = true;
+      this.#workActivity = { phase: "responding", label: "Responding…" };
       const message = [...this.#messages].reverse().find((item) => item.role === "assistant" && item.streaming);
       if (message) message.text += String(event.text ?? event.delta ?? event.content ?? "");
-    } else if (type === "message_end" || type === "turn_end" || type === "turn_done") {
-      this.#busy = false;
-      this.#stopRequested = false;
+    } else if (type === "message_end") {
       const message = [...this.#messages].reverse().find((item) => item.streaming);
       if (message) {
         if (!message.text && event.content) message.text = String(event.content);
         message.streaming = false;
       }
+      const runningTool = [...this.#workTerminal].reverse().find((entry) => entry.status === "running" || entry.status === "waiting");
+      this.#workActivity = runningTool
+        ? { phase: "tool", label: `Using ${displayToolName(runningTool.tool)}…` }
+        : { phase: "thinking", label: "Thinking…" };
+    } else if (isTerminalWorkTurnEvent(type)) {
+      this.#busy = false;
+      this.#workActivity = { phase: "idle", label: "Ready" };
+      this.#stopRequested = false;
+      for (const message of this.#messages) if (message.streaming) message.streaming = false;
       void this.#refreshConversations();
     } else if (type === "error") {
       this.#busy = false;
+      this.#workActivity = { phase: "idle", label: "Error" };
       this.#stopRequested = false;
       this.#messages.push({ id: randomUUID(), role: "system", text: String(event.message ?? event.error ?? "Agent error") });
     }
@@ -3130,6 +3177,7 @@ export class BrowserController {
     }
     this.#runtimeState = "offline";
     this.#busy = false;
+    this.#workActivity = { phase: "idle", label: "Agent offline" };
     this.#pendingPermission = undefined;
     this.#workTerminal = interruptRunningWorkTerminal(this.#workTerminal);
     clearTimeout(this.#runtimeRecoveryTimer);
@@ -3210,6 +3258,7 @@ export class BrowserController {
     this.#attachments.clear();
     this.#pendingPermission = undefined;
     this.#busy = false;
+    this.#workActivity = { phase: "idle", label: "Ready" };
     this.#stopRequested = false;
   }
 
@@ -3713,6 +3762,15 @@ export class BrowserController {
       try { browserContext = await this.#liveBrowserContext(text); }
       catch { browserContext = undefined; }
     }
+    if (!browserContext && referencesCurrentPage(text)) {
+      this.#messages.push({
+        id: randomUUID(),
+        role: "system",
+        text: "Share the current tab with Read only or Allow interaction, then send that request again. Locus will not read a private tab automatically.",
+      });
+      this.#workActivity = { phase: "idle", label: "Tab access needed" };
+      return;
+    }
     const sent = this.#runtime.send({
       type: "user_message",
       text,
@@ -3722,9 +3780,11 @@ export class BrowserController {
     });
     if (!sent) {
       this.#messages.push({ id: randomUUID(), role: "system", text: "The local agent is offline. Your message was not sent." });
+      this.#workActivity = { phase: "idle", label: "Agent offline" };
     } else {
       this.#attachments.clear();
       this.#busy = true;
+      this.#workActivity = { phase: "thinking", label: "Thinking…" };
     }
   }
 
@@ -3754,24 +3814,33 @@ export class BrowserController {
   }
 
   async #liveBrowserContext(text: string, allowFrames?: boolean): Promise<BrowserObservationContext | undefined> {
-    if (!this.#recording?.state().id) return undefined;
+    const recordingActive = Boolean(this.#recording?.state().id);
     const target = this.#recordingTarget().target;
+    if (!target) {
+      return recordingActive ? await this.#recording?.observationContext(text, "", false) : undefined;
+    }
     let pageText = "";
-    if (target) {
-      try {
-        const snapshot = await target.webContents.executeJavaScriptInIsolatedWorld(BRIDGE_WORLD, [
-          { code: `${browserBridgeSource}\n${bridgeInvocation.snapshot({ filter: "all", maxChars: 12_000, limit: 700 })}` },
-        ]) as { text?: unknown };
-        if (typeof snapshot.text === "string") pageText = snapshot.text;
-      } catch {
-        // The coordinator will pause if the page changes while context is gathered.
-      }
+    try {
+      const snapshot = await target.webContents.executeJavaScriptInIsolatedWorld(BRIDGE_WORLD, [
+        { code: `${browserBridgeSource}\n${bridgeInvocation.snapshot({ filter: "all", maxChars: 12_000, limit: 700 })}` },
+      ]) as { text?: unknown };
+      if (typeof snapshot.text === "string") pageText = snapshot.text;
+    } catch {
+      // The agent can still use the shared tab title and URL when extraction fails.
+    }
+    if (!recordingActive) {
+      return sharedBrowserContext({
+        id: target.tabId,
+        title: target.title,
+        url: target.url,
+        accessLevel: target.accessLevel,
+      }, pageText);
     }
     const provider = this.#workModel.providers.find((item) => item.id === this.#workModel.activeProvider);
     const model = provider?.models.find((item) => item.id === this.#workModel.activeModel);
     const visionCapable = model?.vision !== false;
     const includeFrames = visionCapable && (allowFrames ?? (this.#workModel.activeProvider === "local" || this.#screenshotConsentForSession));
-    return await this.#recording.observationContext(text, pageText, includeFrames);
+    return await this.#recording?.observationContext(text, pageText, includeFrames);
   }
 
   #recordingTarget(): RecordingTargetResult {
@@ -3818,6 +3887,7 @@ export class BrowserController {
       this.#workFiles = initialWorkFilesState();
       this.#pendingPermission = undefined;
       this.#stopRequested = false;
+      this.#workActivity = { phase: "idle", label: "Ready" };
       this.#workPanel = "chat";
       this.#workOpen = true;
       this.#layout(true);
@@ -4361,14 +4431,14 @@ function welcomeWorkMessage(): WorkMessage {
 
 const welcomeWorkMessageText = "Work Mode is ready. Share this tab when you want Locus to read or interact with it.";
 
-function agentWorkMessage(message: { role: string; content: unknown }): WorkMessage | undefined {
+function agentWorkMessage(message: { role: string; content: unknown; reasoning?: string | undefined }): WorkMessage | undefined {
   const role = message.role === "user" || message.role === "assistant" || message.role === "system"
     ? message.role
     : undefined;
   if (!role) return undefined;
   const text = agentContentText(message.content).trim();
   if (!text) return undefined;
-  return { id: randomUUID(), role, text };
+  return { id: randomUUID(), role, text, ...(role === "assistant" && message.reasoning ? { reasoningText: message.reasoning } : {}) };
 }
 
 function agentContentText(content: unknown): string {
@@ -4455,6 +4525,24 @@ function isSearchEngine(value: unknown): value is SearchEngine {
 
 function isSleepInterval(value: unknown): value is BrowserSettingsState["sleepAfterMinutes"] {
   return value === 0 || value === 15 || value === 30 || value === 60;
+}
+
+function isThinkingVisibility(value: unknown): value is BrowserSettingsState["thinkingVisibility"] {
+  return value === "hidden" || value === "collapsed" || value === "expanded";
+}
+
+function isToolActivityVisibility(value: unknown): value is BrowserSettingsState["toolActivityVisibility"] {
+  return value === "verbose" || value === "collapsed" || value === "hidden";
+}
+
+function displayToolName(value: string): string {
+  return value.replace(/^browser_/, "browser ").replaceAll("_", " ");
+}
+
+function agentActivityLabel(event: AgentEvent): string {
+  const tool = typeof event.tool === "string" && event.tool ? displayToolName(event.tool) : "a tool";
+  const summary = typeof event.summary === "string" ? event.summary.trim() : "";
+  return summary ? `${summary.slice(0, 120)}…` : `Using ${tool}…`;
 }
 
 function permissionOrigin(primary: string | null | undefined, details: unknown): string {

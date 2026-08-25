@@ -963,6 +963,18 @@ function ModelSettings({ state }: { state: BrowserAppState }) {
           <span className={`settings-switch ${state.settings.localModelsEnabled ? "on" : ""}`} aria-hidden="true"><span /></span>
         </button>
         <p className="local-model-note">This setting affects Work Mode only. On-device speech transcription remains available separately.</p>
+        <div className="ai-display-settings">
+          <SettingRow label="Thinking" detail="How model reasoning appears in Chat">
+            <select value={state.settings.thinkingVisibility} onChange={(event) => void command({ type: "set-thinking-visibility", visibility: event.target.value as BrowserAppState["settings"]["thinkingVisibility"] })}>
+              <option value="hidden">Hidden</option><option value="collapsed">Collapsed</option><option value="expanded">Expanded</option>
+            </select>
+          </SettingRow>
+          <SettingRow label="Tool activity" detail="How agent tool runs appear in Chat">
+            <select value={state.settings.toolActivityVisibility} onChange={(event) => void command({ type: "set-tool-activity-visibility", visibility: event.target.value as BrowserAppState["settings"]["toolActivityVisibility"] })}>
+              <option value="verbose">Verbose</option><option value="collapsed">Collapsed</option><option value="hidden">Hidden</option>
+            </select>
+          </SettingRow>
+        </div>
       </div>
     </section>
   );
