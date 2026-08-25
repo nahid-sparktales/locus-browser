@@ -164,7 +164,7 @@ def page_cover(c):
     c.setFont("Helvetica", 9)
     c.drawString(48, 176, "This document describes the implemented Apple Silicon macOS canary and the boundaries that keep browsing, AI, and cloud services separate.")
     x = 48
-    for label in ["macOS 14+", "Apple Silicon", "Electron + React", "Apache-2.0", "Canary 0.1.0-canary.5"]:
+    for label in ["macOS 14+", "Apple Silicon", "Electron + React", "Apache-2.0", "Canary 0.1.0-canary.6"]:
         x += pill(c, x, 126, label, LIME, dark=True) + 7
     c.setFillColor(HexColor("#85877b"))
     c.setFont("Helvetica", 7.5)
