@@ -1,6 +1,6 @@
 import type { LocusBrowserAPI } from "../preload/index.js";
 import type { BrowserCommand } from "../shared/ipc.js";
-import type { BrowserAppState } from "../shared/types.js";
+import type { BrowserAppState, ReaderArticleState, ResearchBoardState } from "../shared/types.js";
 
 const previewParams = new URLSearchParams(window.location.search);
 const previewOnboarding = previewParams.has("onboarding");
@@ -9,6 +9,35 @@ const previewSync = previewParams.has("sync");
 const previewPairing = previewParams.has("pairing");
 const previewExtensions = previewParams.has("extensions");
 const previewRecording = previewParams.has("recording");
+const previewSettings = previewParams.has("settings");
+const previewSplit = previewParams.has("split");
+const previewPalette = previewParams.has("palette");
+const previewRecall = previewParams.has("recall");
+const previewResearch = previewParams.has("research");
+const previewSteward = previewParams.has("steward");
+
+const previewResearchBoard: ResearchBoardState = {
+  id: "research-preview", workSessionId: "preview-session", prompt: "Compare the browser architecture sources.", format: "comparison",
+  title: "Secure browser architecture", summary: "The strongest design keeps remote pages isolated while a local broker owns permissions, encrypted context, and agent actions.",
+  status: "ready", message: "Every factual claim is linked to captured evidence.", createdAt: 1_787_408_000_000, updatedAt: 1_787_408_400_000,
+  sources: [{
+    sourceId: "source-electron", tabId: "platform", title: "Electron WebContentsView", url: "https://www.electronjs.org/docs/latest/api/web-contents-view",
+    capturedAt: "2026-08-24T20:00:00.000Z", contentHash: "a".repeat(64),
+    passages: [{ passageId: "source-electron:p1", text: "WebContentsView provides a composable view whose webContents lifecycle remains owned by the host application." }],
+  }, {
+    sourceId: "source-locus", tabId: "welcome", title: "Locus Browser privacy", url: "https://locushost.co/privacy",
+    capturedAt: "2026-08-24T20:01:00.000Z", contentHash: "b".repeat(64),
+    passages: [{ passageId: "source-locus:p1", text: "Private Recall and Research Boards remain encrypted on the device and are excluded from browser sync." }],
+  }],
+  sections: [{ heading: "Recommended boundary", claims: [{ text: "Remote pages should remain sandboxed and all agent access should be mediated by explicit per-tab grants.", citations: [{ sourceId: "source-electron", passageId: "source-electron:p1" }, { sourceId: "source-locus", passageId: "source-locus:p1" }] }] }],
+};
+
+const previewReaderArticle: ReaderArticleState = {
+  tabId: "welcome", title: "Designing a private, agent-assisted browser", byline: "Locus Browser", url: "https://locushost.co/browser-intelligence", lang: "en",
+  text: "A useful browser should help people recover context without turning their history into a cloud dataset. Private Semantic Recall keeps extraction, embeddings, and search on the Mac. Research Boards preserve exact passages so every factual claim can point back to captured evidence. Reader Mode reduces visual noise and uses the system voice for Read Aloud.",
+  html: "<p>A useful browser should help people recover context without turning their history into a cloud dataset.</p><h2>Private by construction</h2><p>Private Semantic Recall keeps extraction, embeddings, and search on the Mac.</p><p>Research Boards preserve exact passages so every factual claim can point back to captured evidence.</p><h2>Comfortable reading</h2><p>Reader Mode reduces visual noise and uses the system voice for Read Aloud.</p>",
+  preferences: { theme: "locus", textScale: 1, columnWidth: "medium", lineSpacing: 1.6, rate: 1 },
+};
 
 const previewState: BrowserAppState = {
   windowId: "preview",
@@ -31,7 +60,8 @@ const previewState: BrowserAppState = {
       mediaPlaying: false,
       mediaAvailable: false,
       groupId: "locus-projects",
-      grants: previewRecording ? [{ sessionId: "preview-session", tabId: "welcome", level: "interact", source: "user_share", grantedAt: "2026-08-23T22:00:00.000Z" }] : [],
+      ...(previewSplit ? { pane: "primary" as const, focused: true } : {}),
+      grants: previewRecording || previewResearch ? [{ sessionId: "preview-session", tabId: "welcome", level: "interact", source: "user_share", grantedAt: "2026-08-23T22:00:00.000Z" }] : [],
     },
     {
       id: "platform",
@@ -49,7 +79,8 @@ const previewState: BrowserAppState = {
       mediaPlaying: false,
       mediaAvailable: false,
       groupId: "locus-projects",
-      grants: [],
+      ...(previewSplit ? { pane: "secondary" as const, focused: false } : {}),
+      grants: previewResearch ? [{ sessionId: "preview-session", tabId: "platform", level: "read", source: "user_share", grantedAt: "2026-08-23T22:00:00.000Z" }] : [],
     },
   ],
   groups: [{ id: "locus-projects", name: "Locus projects", color: "lime", collapsed: false, position: 0 }],
@@ -57,7 +88,7 @@ const previewState: BrowserAppState = {
   currentProfile: { id: "default", name: "Personal", partitionName: "persist:locus-profile-default", createdAt: 1_787_408_000 },
   activeTabId: "welcome",
   sidebarOpen: true,
-  sidebarSection: "tabs",
+  sidebarSection: previewRecall ? "history" : "tabs",
   bookmarks: [
     { id: "locus", title: "Locus Browser", url: "https://github.com/nahid-sparktales/locus-browser", createdAt: 1_787_408_000, updatedAt: 1_787_408_000 },
   ],
@@ -142,9 +173,14 @@ const previewState: BrowserAppState = {
       : { status: "disconnected", pendingRecords: 0, devices: [] },
   remoteTabs: previewSync ? [{ id: "ipad:tab-1", deviceId: "ipad-7d3e2a", title: "Locus protocol notes", url: "https://example.com/protocol", updatedAt: 1_787_408_000 }] : [],
   onboardingRequired: previewOnboarding,
+  settingsOpen: previewSettings,
+  paletteOpen: previewPalette,
+  ...(previewSettings ? { internalSurface: { type: "settings" as const } } : previewResearch ? { internalSurface: { type: "research" as const, boardId: previewResearchBoard.id } } : previewSteward ? { internalSurface: { type: "tab-steward" as const } } : {}),
   settings: {
     appearance: "system", searchEngine: "duckduckgo", sleepAfterMinutes: 30,
     downloadDirectory: "/Users/nahid/Downloads", onboardingComplete: !previewOnboarding,
+    localModelsEnabled: false,
+    semanticRecallEnabled: previewRecall,
     speech: { engine: "local", language: "auto", localModelStatus: "ready", message: "On-device transcription is ready" },
   },
   activePageBookmarked: false,
@@ -166,6 +202,17 @@ const previewState: BrowserAppState = {
   } : {
     status: "idle", elapsedMs: 0, sources: { tabAudio: true, microphone: true }, saveVideo: false,
     transcriptPreview: [], transcripts: [], engine: "local",
+  },
+  splitView: previewSplit ? { enabled: true, primaryTabId: "welcome", secondaryTabId: "platform", focusedPane: "primary", ratio: 0.52 } : { enabled: false, primaryTabId: "welcome", focusedPane: "primary", ratio: 0.5 },
+  semanticRecall: {
+    enabled: previewRecall, status: previewRecall ? "ready" : "disabled", documentCount: previewRecall ? 127 : 0, storageBytes: previewRecall ? 18_874_368 : 0,
+    capBytes: 500 * 1024 * 1024, excludedOrigins: previewRecall ? ["https://bank.example.com"] : [], message: previewRecall ? "Private recall is ready." : "Private recall is off.",
+  },
+  research: { boards: previewResearch ? [{ id: previewResearchBoard.id, title: previewResearchBoard.title, status: "ready", sourceCount: 2, createdAt: previewResearchBoard.createdAt, updatedAt: previewResearchBoard.updatedAt }] : [], ...(previewResearch ? { activeBoardId: previewResearchBoard.id } : {}), generating: false, message: "Select shared tabs to create a cited research board." },
+  tabSteward: { suggestionCount: previewSteward ? 2 : 0, bundleCount: previewSteward ? 1 : 0 },
+  reader: {
+    available: true, active: false, loading: false,
+    preferences: { theme: "locus", textScale: 1, columnWidth: "medium", lineSpacing: 1.6, rate: 1 },
   },
   work: {
     sessionId: "preview-session",
@@ -194,10 +241,9 @@ const previewState: BrowserAppState = {
       providers: [
         { id: "chatgpt-plan", name: "ChatGPT Plan", detail: "Use included ChatGPT subscription usage", mark: "P", configured: false, status: "needs-sign-in", statusMessage: "Sign in required", models: [{ id: "gpt-5.3-codex", name: "gpt-5.3-codex" }] },
         { id: "openai-api", name: "ChatGPT API", detail: "OpenAI API key and usage billing", mark: "O", configured: true, status: "ready", statusMessage: "Key saved on this Mac", models: [{ id: "gpt-5.6", name: "gpt-5.6" }, { id: "gpt-5", name: "gpt-5" }] },
-        { id: "kimi", name: "Kimi", detail: "Moonshot API models", mark: "K", configured: false, status: "needs-key", statusMessage: "API key required", models: [{ id: "kimi-k3", name: "kimi-k3" }] },
         { id: "claude-api", name: "Claude API", detail: "Anthropic API key", mark: "C", configured: false, status: "needs-key", statusMessage: "API key required", models: [{ id: "claude-sonnet-5", name: "claude-sonnet-5" }] },
+        { id: "kimi", name: "Kimi", detail: "Moonshot API models", mark: "K", configured: false, status: "needs-key", statusMessage: "API key required", models: [{ id: "kimi-k3", name: "kimi-k3" }] },
         { id: "vllm", name: "vLLM", detail: "Your OpenAI-compatible endpoint", mark: "V", configured: false, status: "needs-setup", statusMessage: "Endpoint setup required", models: [] },
-        { id: "local", name: "Local Models", detail: "Models installed in Ollama", mark: "L", configured: true, status: "ready", statusMessage: "2 installed", models: [{ id: "qwen3.6:27b", name: "qwen3.6:27b", detail: "27.8B" }, { id: "gemma3:12b", name: "gemma3:12b", detail: "12.2B" }] },
       ],
     },
     plan: {
@@ -240,6 +286,7 @@ const previewState: BrowserAppState = {
 
 export function installPreviewBridge(): void {
   if (typeof window.locusBrowser !== "undefined") return;
+  document.documentElement.dataset.locusPreview = "true";
   const listeners = new Set<(state: BrowserAppState) => void>();
   const focusListeners = new Set<() => void>();
   const publish = () => {
@@ -251,6 +298,21 @@ export function installPreviewBridge(): void {
       applyPreviewCommand(value);
       publish();
       return structuredClone(previewState);
+    },
+    query: async (query) => {
+      if (query.type === "research-board-get") return structuredClone(previewResearchBoard);
+      if (query.type === "reader-current") return structuredClone(previewReaderArticle);
+      if (query.type === "tab-steward-preview") return {
+        generatedAt: Date.now(), suggestions: [{ id: "duplicates", type: "duplicate", title: "Close 1 duplicate tab", detail: "https://example.com/research", tabIds: ["welcome", "platform"], confidence: 1 }, { id: "group", type: "group", title: "Group 3 related tabs", detail: "Browser Architecture", tabIds: ["welcome", "platform"], groupName: "Browser Architecture", confidence: 0.91 }],
+      };
+      if (query.type === "resume-bundles") return [{ id: "bundle-preview", name: "Browser architecture", tabCount: 4, createdAt: Date.now() - 86_400_000 }];
+      if (query.type === "palette-search") return [
+        { id: "tab:welcome", kind: "tab", label: "Google", detail: "https://www.google.com/", score: 4, action: { type: "select-tab", tabId: "welcome" } },
+        { id: "command:split", kind: "command", label: "Toggle Split View", detail: "Show two live pages side by side", score: 3, action: { type: "toggle-split" } },
+        { id: "recall:local-models", kind: "recall", label: "Running local models in a browser", detail: "An article you read last week · encrypted on this Mac", score: 2.7, action: { type: "open-url", url: "https://example.com/local-models" } },
+      ];
+      if (query.type === "semantic-recall-search") return [{ id: "recall-preview", title: "Running local models in a browser", url: "https://example.com/local-models", visitedAt: Date.now() - 604_800_000, snippet: "Local inference can compete with browser tabs for memory and compute…", score: 0.91, source: "history" }];
+      return [];
     },
     subscribe: (listener) => {
       listeners.add(listener);
@@ -272,6 +334,21 @@ function applyPreviewCommand(command: BrowserCommand): void {
     case "set-sidebar-section":
       previewState.sidebarOpen = true;
       previewState.sidebarSection = command.section;
+      break;
+    case "open-settings":
+      previewState.settingsOpen = true;
+      previewState.internalSurface = { type: "settings" };
+      previewState.sidebarOpen = false;
+      break;
+    case "close-settings":
+      previewState.settingsOpen = false;
+      delete previewState.internalSurface;
+      break;
+    case "open-command-palette":
+      previewState.paletteOpen = true;
+      break;
+    case "close-command-palette":
+      previewState.paletteOpen = false;
       break;
     case "toggle-work":
       previewState.workOpen = !previewState.workOpen;
@@ -413,6 +490,7 @@ function applyPreviewCommand(command: BrowserCommand): void {
       previewState.zoomFactor = 1;
       break;
     case "select-tab":
+      previewState.settingsOpen = false;
       previewState.activeTabId = command.tabId;
       previewState.tabs = previewState.tabs.map((tab) => ({ ...tab, active: tab.id === command.tabId }));
       break;
@@ -454,6 +532,16 @@ function applyPreviewCommand(command: BrowserCommand): void {
     case "set-sleep-after":
       previewState.settings.sleepAfterMinutes = command.minutes;
       break;
+    case "set-local-models-enabled": {
+      previewState.settings.localModelsEnabled = command.enabled;
+      const withoutLocal = previewState.work.model.providers.filter((provider) => provider.id !== "local");
+      previewState.work.model.providers = command.enabled ? [...withoutLocal, {
+        id: "local", name: "Local Models", detail: "Models installed in Ollama", mark: "L",
+        configured: true, status: "ready", statusMessage: "2 installed",
+        models: [{ id: "qwen3.6:27b", name: "qwen3.6:27b", detail: "27.8B" }, { id: "gemma3:12b", name: "gemma3:12b", detail: "12.2B" }],
+      }] : withoutLocal;
+      break;
+    }
     case "set-extension-developer-mode":
       previewState.extensions.developerMode = command.enabled;
       previewState.extensions.message = command.enabled ? "Developer Mode is on. Unpacked extensions can inspect granted sites." : "Developer Mode is off. Unpacked extensions are not loaded.";

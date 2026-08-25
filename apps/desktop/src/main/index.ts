@@ -6,7 +6,7 @@ import { AppUpdater } from "./AppUpdater.js";
 import { BrowserController, platformRootFromApp } from "./BrowserController.js";
 import { snapshotDatabaseForVersion } from "./DatabaseSnapshot.js";
 import { requiresShellSender } from "./BrowserCommandPolicy.js";
-import { BrowserCommandSchema, ipcChannels } from "../shared/ipc.js";
+import { BrowserCommandSchema, BrowserQuerySchema, ipcChannels } from "../shared/ipc.js";
 
 app.name = "Locus Browser";
 app.setPath("userData", process.env.LOCUS_BROWSER_USER_DATA || join(app.getPath("appData"), "Locus Browser"));
@@ -51,6 +51,15 @@ async function captureReadmeScreenshot(controller: BrowserController, outputPath
     await controller.command({ type: "complete-onboarding", appearance: "dark", searchEngine: "google", sleepAfterMinutes: 30 });
     await controller.command({ type: "navigate", value: "https://www.google.com/" });
     await new Promise((resolve) => setTimeout(resolve, 3_000));
+    if (process.env.LOCUS_README_SCREENSHOT_MODE === "split") {
+      await controller.command({ type: "new-tab", url: "https://www.google.com/search?q=private+AI+browser+research" });
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      await controller.command({ type: "toggle-split-view" });
+      await controller.command({ type: "focus-pane", pane: "primary" });
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      await writeFile(outputPath, await controller.captureDocumentationImage(), { mode: 0o644 });
+      return;
+    }
     await controller.command({ type: "share-active-tab", level: "interact" });
     if (!controller.state().workOpen) await controller.command({ type: "toggle-work" });
     await controller.command({
@@ -80,6 +89,7 @@ function installMenu(): void {
       submenu: [
         { role: "about" },
         { label: "Check for Updates…", enabled: app.isPackaged, click: () => void updater.check(true) },
+        { label: "Settings…", accelerator: "CmdOrCtrl+,", click: () => void focusedController()?.command({ type: "open-settings" }) },
         { type: "separator" },
         { role: "hide" },
         { role: "hideOthers" },
@@ -101,6 +111,10 @@ function installMenu(): void {
         { type: "separator" },
         { label: "Close Tab", accelerator: "CmdOrCtrl+W", click: () => {
           const controller = focusedController();
+          if (controller?.state().settingsOpen) {
+            void controller.command({ type: "close-settings" });
+            return;
+          }
           const id = controller?.state().activeTabId;
           if (id) void controller.command({ type: "close-tab", tabId: id });
         } },
@@ -111,7 +125,10 @@ function installMenu(): void {
       label: "View",
       submenu: [
         { label: "Focus Address Bar", accelerator: "CmdOrCtrl+L", click: () => focusedController()?.focusAddress() },
+        { label: "Command Palette", accelerator: "CmdOrCtrl+K", click: () => void focusedController()?.command({ type: "open-command-palette" }) },
         { label: "Find in Page", accelerator: "CmdOrCtrl+F", click: () => void focusedController()?.command({ type: "toggle-find" }) },
+        { label: "Toggle Split View", accelerator: "CmdOrCtrl+Shift+\\", click: () => void focusedController()?.command({ type: "toggle-split-view" }) },
+        { label: "Reader Mode", click: () => void focusedController()?.command({ type: "toggle-reader" }) },
         { label: "Toggle Work Mode", accelerator: "CmdOrCtrl+Alt+L", click: () => focusedController()?.toggleWork() },
         { label: "Use Live Recording Context", accelerator: "CmdOrCtrl+Enter", click: () => void focusedController()?.command({ type: "recording-assist" }) },
         { type: "separator" },
@@ -174,6 +191,14 @@ function installIpc(): void {
       throw new Error("This command requires trusted browser chrome");
     }
     return await controller.command(command);
+  });
+  ipcMain.handle(ipcChannels.query, async (event, raw) => {
+    const controller = controllerForSender(event);
+    const query = BrowserQuerySchema.parse(raw);
+    if (query.type === "reader-current") {
+      if (!controller.ownsReaderSender(event.sender.id)) throw new Error("Reader data requires the bound Reader surface");
+    } else if (!controller.ownsShellSender(event.sender.id)) throw new Error("This query requires trusted browser chrome");
+    return await controller.query(query, event.sender.id);
   });
   ipcMain.on(ipcChannels.recorderMessage, (event, raw) => {
     controllerForRecorderSender(event)?.handleRecorderMessage(raw);

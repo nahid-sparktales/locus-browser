@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BrowserCommandSchema } from "./ipc.js";
+import { BrowserCommandSchema, BrowserQuerySchema } from "./ipc.js";
 
 describe("Work model commands", () => {
   it("accepts the six model sources and validates configurable endpoints", () => {
@@ -12,6 +12,13 @@ describe("Work model commands", () => {
       baseUrl: "http://127.0.0.1:8000/v1",
       model: "organization/model",
     }).success).toBe(true);
+  });
+
+  it("validates full-page settings and the local-model opt-in", () => {
+    expect(BrowserCommandSchema.safeParse({ type: "open-settings" }).success).toBe(true);
+    expect(BrowserCommandSchema.safeParse({ type: "close-settings" }).success).toBe(true);
+    expect(BrowserCommandSchema.safeParse({ type: "set-local-models-enabled", enabled: true }).success).toBe(true);
+    expect(BrowserCommandSchema.safeParse({ type: "set-local-models-enabled", enabled: "yes" }).success).toBe(false);
   });
 
   it("strips credentials from renderer commands before they reach the broker", () => {
@@ -72,5 +79,26 @@ describe("extension management commands", () => {
 
   it("rejects oversized extension identifiers", () => {
     expect(BrowserCommandSchema.safeParse({ type: "remove-extension", extensionId: "x".repeat(256) }).success).toBe(false);
+  });
+});
+
+describe("browser intelligence and productivity commands", () => {
+  it("bounds Split View, Recall, Research, Steward, Reader and palette messages", () => {
+    for (const value of [
+      { type: "set-split-ratio", ratio: 0.5 },
+      { type: "set-semantic-recall-enabled", enabled: true },
+      { type: "generate-research-board", tabIds: ["tab-1"], prompt: "Compare the evidence", format: "comparison" },
+      { type: "save-resume-bundle", name: "Later", tabIds: ["tab-1"], closeAfter: false },
+      { type: "set-reader-preferences", theme: "paper", textScale: 1.2, rate: 1.1 },
+      { type: "execute-palette-action", action: { type: "toggle-split" } },
+    ]) expect(BrowserCommandSchema.safeParse(value).success).toBe(true);
+    expect(BrowserCommandSchema.safeParse({ type: "set-split-ratio", ratio: 0.9 }).success).toBe(false);
+    expect(BrowserCommandSchema.safeParse({ type: "generate-research-board", tabIds: Array.from({ length: 11 }, (_, index) => `tab-${index}`), prompt: "x", format: "brief" }).success).toBe(false);
+  });
+
+  it("keeps bulky intelligence data behind typed queries", () => {
+    expect(BrowserQuerySchema.safeParse({ type: "palette-search", query: "split", limit: 30 }).success).toBe(true);
+    expect(BrowserQuerySchema.safeParse({ type: "semantic-recall-search", query: "local models last week", limit: 20 }).success).toBe(true);
+    expect(BrowserQuerySchema.safeParse({ type: "palette-search", query: "x", limit: 101 }).success).toBe(false);
   });
 });

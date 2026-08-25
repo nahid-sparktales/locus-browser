@@ -2,9 +2,10 @@ import type { BrowserObservationContext, TabAccessGrant } from "@locus/protocol"
 
 export type WorkMode = "ask" | "work" | "plan" | "build";
 export type WorkModelProviderId = "chatgpt-plan" | "openai-api" | "kimi" | "claude-api" | "vllm" | "local";
-export type SidebarSection = "tabs" | "bookmarks" | "history" | "downloads" | "spaces" | "conversations" | "settings";
+export type SidebarSection = "tabs" | "bookmarks" | "history" | "downloads" | "spaces" | "conversations";
 export type SearchEngine = "duckduckgo" | "brave" | "google" | "bing";
 export type Appearance = "system" | "light" | "dark";
+export type BrowserPaneId = "primary" | "secondary";
 export type SpeechEngine = "local" | "openai" | "custom";
 export type SitePermissionDecision = "allow" | "deny";
 export type WorkPanel =
@@ -31,7 +32,46 @@ export interface BrowserTabState {
   mediaPlaying: boolean;
   mediaAvailable: boolean;
   groupId?: string;
+  pane?: BrowserPaneId;
+  focused?: boolean;
   grants: TabAccessGrant[];
+}
+
+export interface SplitViewState {
+  enabled: boolean;
+  primaryTabId?: string;
+  secondaryTabId?: string;
+  focusedPane: BrowserPaneId;
+  ratio: number;
+}
+
+export interface ReaderPreferencesState {
+  theme: "locus" | "paper" | "dark";
+  textScale: number;
+  columnWidth: "narrow" | "medium" | "wide";
+  lineSpacing: number;
+  voice?: string;
+  rate: number;
+}
+
+export interface ReaderState {
+  tabId?: string;
+  available: boolean;
+  active: boolean;
+  loading: boolean;
+  message?: string;
+  preferences: ReaderPreferencesState;
+}
+
+export interface ReaderArticleState {
+  tabId: string;
+  title: string;
+  byline?: string;
+  url: string;
+  lang?: string;
+  html: string;
+  text: string;
+  preferences: ReaderPreferencesState;
 }
 
 export interface BrowserProfileState {
@@ -69,8 +109,150 @@ export interface BrowserSettingsState {
   sleepAfterMinutes: 0 | 15 | 30 | 60;
   downloadDirectory: string;
   onboardingComplete: boolean;
+  localModelsEnabled: boolean;
+  semanticRecallEnabled: boolean;
   speech: SpeechSettings;
 }
+
+export interface SemanticRecallState {
+  enabled: boolean;
+  status: "disabled" | "starting" | "ready" | "indexing" | "paused" | "error";
+  documentCount: number;
+  storageBytes: number;
+  capBytes: number;
+  excludedOrigins: string[];
+  message: string;
+}
+
+export interface SemanticRecallResultState {
+  id: string;
+  title: string;
+  url: string;
+  visitedAt: number;
+  snippet: string;
+  score: number;
+  source: "open-tab" | "bookmark" | "history";
+  openTabId?: string;
+}
+
+export interface ResearchPassageState {
+  passageId: string;
+  text: string;
+}
+
+export interface ResearchSourceState {
+  sourceId: string;
+  tabId: string;
+  title: string;
+  url: string;
+  capturedAt: string;
+  contentHash: string;
+  passages: ResearchPassageState[];
+}
+
+export interface ResearchCitationState {
+  sourceId: string;
+  passageId: string;
+}
+
+export interface ResearchClaimState {
+  text: string;
+  citations: ResearchCitationState[];
+}
+
+export interface ResearchSectionState {
+  heading: string;
+  claims: ResearchClaimState[];
+}
+
+export interface ResearchBoardState {
+  id: string;
+  workSessionId: string;
+  prompt: string;
+  format: "comparison" | "brief" | "evidence";
+  title: string;
+  summary: string;
+  sections: ResearchSectionState[];
+  sources: ResearchSourceState[];
+  status: "draft" | "generating" | "ready" | "error";
+  message?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ResearchBoardSummaryState {
+  id: string;
+  title: string;
+  status: ResearchBoardState["status"];
+  sourceCount: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ResearchState {
+  boards: ResearchBoardSummaryState[];
+  activeBoardId?: string;
+  generating: boolean;
+  message: string;
+}
+
+export interface TabStewardSuggestionState {
+  id: string;
+  type: "duplicate" | "group";
+  title: string;
+  detail: string;
+  tabIds: string[];
+  groupName?: string;
+  confidence: number;
+}
+
+export interface TabStewardPreviewState {
+  suggestions: TabStewardSuggestionState[];
+  generatedAt: number;
+}
+
+export interface ResumeBundleState {
+  id: string;
+  name: string;
+  tabCount: number;
+  createdAt: number;
+}
+
+export interface TabStewardState {
+  suggestionCount: number;
+  bundleCount: number;
+}
+
+export type InternalSurfaceState =
+  | { type: "settings" }
+  | { type: "research"; boardId?: string }
+  | { type: "tab-steward" };
+
+export interface PaletteResultState {
+  id: string;
+  kind: "tab" | "bookmark" | "history" | "conversation" | "research" | "bundle" | "setting" | "command" | "recall";
+  label: string;
+  detail: string;
+  score: number;
+  action: PaletteActionState;
+}
+
+export type PaletteActionState =
+  | { type: "select-tab"; tabId: string }
+  | { type: "open-url"; url: string }
+  | { type: "select-conversation"; sessionId: string }
+  | { type: "open-research"; boardId: string }
+  | { type: "open-bundle"; bundleId: string }
+  | { type: "open-settings" }
+  | { type: "open-settings-section"; section: string }
+  | { type: "set-sidebar-section"; section: SidebarSection }
+  | { type: "toggle-work" }
+  | { type: "toggle-split" }
+  | { type: "toggle-reader" }
+  | { type: "toggle-tab-mute"; tabId: string }
+  | { type: "open-tab-steward" }
+  | { type: "new-research" }
+  | { type: "start-recording" };
 
 export interface SpeechSettings {
   engine: SpeechEngine;
@@ -428,6 +610,7 @@ export interface BrowserAppState {
   profiles: BrowserProfileState[];
   currentProfile: BrowserProfileState;
   activeTabId?: string;
+  splitView: SplitViewState;
   sidebarOpen: boolean;
   sidebarSection: SidebarSection;
   bookmarks: BookmarkState[];
@@ -444,6 +627,9 @@ export interface BrowserAppState {
   configuredSyncServiceUrl?: string;
   remoteTabs: RemoteTabState[];
   onboardingRequired: boolean;
+  settingsOpen: boolean;
+  paletteOpen: boolean;
+  internalSurface?: InternalSurfaceState;
   settings: BrowserSettingsState;
   activePageBookmarked: boolean;
   find: FindState;
@@ -453,5 +639,9 @@ export interface BrowserAppState {
   workOverlay: boolean;
   searchEngine: SearchEngine;
   recording: RecordingSessionState;
+  semanticRecall: SemanticRecallState;
+  research: ResearchState;
+  tabSteward: TabStewardState;
+  reader: ReaderState;
   work: WorkState;
 }

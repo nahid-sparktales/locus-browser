@@ -41,18 +41,6 @@ export const WORK_MODEL_PROVIDERS: WorkModelProviderDefinition[] = [
     requiresApiKey: true,
   },
   {
-    id: "kimi",
-    name: "Kimi",
-    shortName: "Kimi",
-    detail: "Moonshot API models",
-    mark: "K",
-    curatedModels: ["kimi-k3", "kimi-k2.7-code-highspeed", "kimi-k2.7-code", "kimi-k2.6"],
-    baseUrl: "https://api.moonshot.ai/v1",
-    authStyle: "bearer",
-    listsModels: true,
-    requiresApiKey: true,
-  },
-  {
     id: "claude-api",
     name: "Claude API",
     shortName: "Claude",
@@ -61,6 +49,18 @@ export const WORK_MODEL_PROVIDERS: WorkModelProviderDefinition[] = [
     curatedModels: ["claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-haiku-4-5"],
     baseUrl: "https://api.anthropic.com/v1",
     authStyle: "anthropic",
+    listsModels: true,
+    requiresApiKey: true,
+  },
+  {
+    id: "kimi",
+    name: "Kimi",
+    shortName: "Kimi",
+    detail: "Moonshot API models",
+    mark: "K",
+    curatedModels: ["kimi-k3", "kimi-k2.7-code-highspeed", "kimi-k2.7-code", "kimi-k2.6"],
+    baseUrl: "https://api.moonshot.ai/v1",
+    authStyle: "bearer",
     listsModels: true,
     requiresApiKey: true,
   },
@@ -103,7 +103,7 @@ const StoredProviderConfigSchema = z.object({
   encryptedApiKey: z.string().max(64_000).optional(),
 });
 const StoredSettingsSchema = z.object({
-  activeProvider: z.enum(["chatgpt-plan", "openai-api", "kimi", "claude-api", "vllm", "local"]).default("local"),
+  activeProvider: z.enum(["chatgpt-plan", "openai-api", "kimi", "claude-api", "vllm", "local"]).default("chatgpt-plan"),
   providers: z.record(z.string(), StoredProviderConfigSchema).default(() => ({})),
 });
 const SETTINGS_KEY = "workModelProvidersV1";
@@ -119,7 +119,7 @@ export class WorkModelProviderStore {
     const parsed = StoredSettingsSchema.safeParse(database.setting(profileId, SETTINGS_KEY));
     this.#settings = parsed.success
       ? { activeProvider: parsed.data.activeProvider, providers: parsed.data.providers }
-      : { activeProvider: "local", providers: {} };
+      : { activeProvider: "chatgpt-plan", providers: {} };
   }
 
   activeProvider(): WorkModelProviderId {
@@ -177,6 +177,12 @@ export class WorkModelProviderStore {
 
 export function workModelProvider(providerId: WorkModelProviderId): WorkModelProviderDefinition {
   return WORK_MODEL_PROVIDERS.find((provider) => provider.id === providerId)!;
+}
+
+export function enabledWorkModelProviders(localModelsEnabled: boolean): WorkModelProviderDefinition[] {
+  return localModelsEnabled
+    ? WORK_MODEL_PROVIDERS
+    : WORK_MODEL_PROVIDERS.filter((provider) => provider.id !== "local");
 }
 
 export function normalizeProviderSetup(

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.0-canary.5 — unreleased
+
+Intelligence and Productivity Canary:
+
+- opt-in Private Semantic Recall with Apple Natural Language embeddings,
+  encrypted per-profile content, hybrid ranking, exclusions, deletion controls,
+  bounded storage, and keyword fallback;
+- encrypted Cited Research Boards made from up to ten explicitly shared tabs,
+  with immutable evidence, exact passage citations, strict citation validation,
+  and Markdown/PDF export;
+- provider-independent AI Tab Steward previews for exact duplicates, related-tab
+  groups, and local Resume Later bundles;
+- two live webpage panes with focused-pane controls, independent grants/audio,
+  persisted 30–70% layout, recording safety, and Reader support in either pane;
+- a keyboard-first Command Palette for tabs, history, bookmarks, conversations,
+  settings, research, Recall, bundles, and allowlisted browser actions;
+- Locus-themed Reader Mode with double-sanitized articles, local preferences,
+  installed macOS voices, sentence navigation, and Read Aloud highlighting;
+- a dedicated intelligence utility process and OS-key-protected encrypted vault,
+  plus a signed Apple-native semantic helper from `locus-platform`;
+- twelve responsive accessibility/Reduced Motion fixtures, updated public
+  screenshots, and a six-page architecture and feature guide.
+
 ## 0.1.0-canary.4 — unreleased
 
 Initial Apple Silicon macOS canary candidate:

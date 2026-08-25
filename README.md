@@ -50,6 +50,43 @@ active work continues safely in the background.
   before reaching the sync service. Passwords, cookies, workspaces, provider
   credentials, AI conversations, and recordings never sync.
 
+## Intelligence and productivity
+
+The current canary adds six browser-native tools without turning browsing data
+into a hosted AI dataset:
+
+- **Private Semantic Recall** searches open tabs, bookmarks, and eligible pages
+  visited after you opt in. Page text and Apple-native embeddings are encrypted
+  per profile on the Mac; private windows and protected pages are excluded.
+- **Cited Research Boards** turn up to ten explicitly shared tabs into a local,
+  persistent comparison or brief. Every factual claim must link to an exact
+  captured passage or the result is rejected.
+- **AI Tab Steward** quietly finds exact duplicates and high-confidence groups,
+  previews every change, and saves Resume Later bundles without sending tab
+  metadata to a model.
+- **Two-Page Split View** keeps two ordinary live tabs side by side with
+  independent navigation, audio, sharing grants, Reader state, and a persisted
+  30–70% divider.
+- **Universal Command Palette** opens with **⌘K** and searches tabs, history,
+  bookmarks, conversations, Settings, Research Boards, bundles, Recall, and
+  safe browser commands. Existing canonical URLs are reused.
+- **Reader Mode with Read Aloud** provides Locus, paper, and dark appearances,
+  adjustable typography, sentence navigation, and installed macOS voices—no AI
+  account is required.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/locus-browser-split-view-live.png" alt="Locus Browser Two-Page Split View showing two live Google pages"><br><strong>Two live Google panes</strong></td>
+    <td width="50%"><img src="docs/images/locus-browser-command-palette.png" alt="Locus Browser Universal Command Palette"><br><strong>Universal Command Palette</strong></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/locus-browser-private-recall.png" alt="Private Semantic Recall beside Google"><br><strong>Private Semantic Recall</strong></td>
+    <td width="50%"><img src="docs/images/locus-browser-research-board.png" alt="Cited Multi-Tab Research Board"><br><strong>Cited Research Board</strong></td>
+  </tr>
+</table>
+
+![Locus Browser Reader Mode with macOS Read Aloud controls](docs/images/locus-browser-reader-mode.png)
+
 ### Browse normally
 
 ![Locus Browser browsing Google with Work closed](docs/images/locus-browser-browse.png)
@@ -131,12 +168,13 @@ pnpm audit --audit-level high
 ```
 
 The Browser CI workflow runs the same source gate against the immutable
-[`locus-platform` v0.1.0-canary.4 tag](https://github.com/nahid-sparktales/locus-platform/tree/v0.1.0-canary.4).
+[`locus-platform` v0.1.0-canary.5 tag](https://github.com/nahid-sparktales/locus-platform/tree/v0.1.0-canary.5).
 
 ## Repository layout
 
 - `apps/desktop` — Electron main process, sandboxed browser surfaces, trusted
-  shell, React UI, Work dock, recording coordinator, and agent connection.
+  shell, React UI, Work dock, recording coordinator, encrypted intelligence
+  utility, Reader, Split View, and agent connection.
 - `packages/extensions` — tested MV3 capability registry and signed `.locusx`
   verification.
 - `packages/sync-crypto` — client-side encrypted sync records and device keys.

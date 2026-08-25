@@ -14,12 +14,34 @@ agent rather than every team and orchestration surface in native Locus.
 - Locus light/dark semantic theme, the lime **L** app identity, keyboard and
   VoiceOver semantics, Reduced Motion/Transparency behavior, and 200% text
   scaling checks.
+- Two live webpage panes with independent tab state, audio, grants, Reader
+  surfaces, and a persisted 30–70% divider. The focused pane drives browser and
+  recording controls, and neither visible pane sleeps.
+- Universal Command Palette search across open tabs, bookmarks, history,
+  conversations, Settings, Research Boards, Resume Later bundles, allowlisted
+  actions, and optional Recall results, with canonical-URL tab reuse.
+- Reader Mode with isolated extraction, a second host sanitization pass, Locus,
+  paper and dark appearances, adjustable typography, validated link routing,
+  installed macOS voices, sentence navigation, and Read Aloud highlighting.
+- Opt-in Private Semantic Recall with a dedicated utility process, strict
+  content extraction, Apple Natural Language sentence embeddings, keyword
+  fallback, XChaCha20-Poly1305 per-record encryption, OS-protected profile
+  keys, 500 MB eviction, exclusions, result deletion, and full clearing.
+- Cited Research Boards with up to ten explicitly shared current-window tabs,
+  immutable encrypted snapshots, 120,000-character local passage bounds,
+  typed read-only model requests, mandatory exact passage citations, and local
+  Markdown/PDF export.
+- Provider-independent AI Tab Steward suggestions for exact duplicates and
+  high-confidence clusters, full mutation previews, separate close
+  confirmations, and encrypted local Resume Later bundles.
 - A resizable right Work dock focused on Chat, Plan, Changes, Files, and
   Terminal. It preserves the page canvas, keeps active work alive while hidden,
   and restores the exact conversation after a runtime or browser restart.
-- ChatGPT Plan, ChatGPT API, Kimi, Claude API, vLLM/OpenAI-compatible, and
-  discovered Ollama models. Provider secrets use native entry and macOS-backed
-  encryption and never cross renderer state or IPC.
+- ChatGPT Plan, ChatGPT API, Kimi, Claude API, and vLLM/OpenAI-compatible as the
+  primary providers. Ollama Work models are optional and disabled until enabled
+  in Settings; Private Recall and Read Aloud do not depend on Ollama. Provider
+  secrets use native entry and macOS-backed encryption and never cross renderer
+  state or IPC.
 - Explicit per-session tab grants, visible control indicators and revoke,
   protected credential/payment fields, hosted-screenshot consent, background
   input, console/network capture, and quarantined agent downloads.
@@ -40,6 +62,10 @@ agent rather than every team and orchestration surface in native Locus.
   executable size/hash, Apple Silicon architecture, exact version, and upstream
   signing identity are verified before nested Mach-O files are signed under the
   app's hardened runtime identity.
+- A signed Apple-native semantic helper is built from the tagged
+  `locus-platform` Swift package, staged with the agent runtime, verified as an
+  Apple Silicon Mach-O, and probed by the release gate. Unsupported embedding
+  languages degrade to deterministic local keyword ranking.
 - Apple Silicon DMG/ZIP packaging, Developer ID signing, notarization/stapling
   hooks, canary update checks, install-on-quit, database snapshots, and two-
   version rollback retention.
@@ -105,7 +131,7 @@ agent rather than every team and orchestration surface in native Locus.
 ## Automated gate status
 
 The local candidate currently passes its unit/integration/fuzz suites, the full
-production build, the Electron compatibility fixture, five responsive UI
+production build, the Electron compatibility fixture, twelve responsive UI
 surfaces, warm tab switching under the 150 ms p95 gate, Reduced Motion, 200%
 scaling, a complete dependency-graph audit with no high/critical findings, and a
 CycloneDX 1.6 SBOM. A locally signed app also passed deep code-sign verification

@@ -4,6 +4,17 @@ import { requiresShellSender } from "./BrowserCommandPolicy.js";
 
 describe("browser command sender policy", () => {
   it.each<BrowserCommand>([
+    { type: "open-settings" },
+    { type: "close-settings" },
+    { type: "set-local-models-enabled", enabled: true },
+    { type: "set-semantic-recall-enabled", enabled: true },
+    { type: "clear-semantic-recall" },
+    { type: "delete-recall-document", documentId: "recall-1" },
+    { type: "generate-research-board", tabIds: ["tab-1"], prompt: "Compare", format: "comparison" },
+    { type: "export-research-board", boardId: "board-1", format: "pdf" },
+    { type: "apply-tab-steward", suggestionIds: ["suggestion-1"] },
+    { type: "save-resume-bundle", name: "Later", tabIds: ["tab-1"], closeAfter: false },
+    { type: "execute-palette-action", action: { type: "toggle-split" } },
     { type: "complete-onboarding", searchEngine: "brave", appearance: "dark", sleepAfterMinutes: 30 },
     { type: "autofill-credential", credentialId: "login-1" },
     { type: "save-pending-credential" },

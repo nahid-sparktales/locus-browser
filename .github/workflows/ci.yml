@@ -45,7 +45,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: nahid-sparktales/locus-platform
-          ref: v0.1.0-canary.4
+          ref: v0.1.0-canary.5
           path: locus-platform
       - uses: pnpm/action-setup@v4
         with:

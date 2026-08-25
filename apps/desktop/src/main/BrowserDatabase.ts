@@ -28,6 +28,11 @@ export interface StoredWindow {
   sidebarOpen: boolean;
   workOpen: boolean;
   workWidth: number;
+  splitEnabled?: boolean;
+  splitRatio?: number;
+  primaryTabId?: string;
+  secondaryTabId?: string;
+  focusedPane?: "primary" | "secondary";
 }
 
 export interface StoredCredential {
@@ -243,7 +248,10 @@ export class BrowserDatabase {
   loadWindow(id: string): StoredWindow | undefined {
     return this.#database.prepare(`
       SELECT id, profile_id AS profileId, sidebar_open AS sidebarOpen,
-             work_open AS workOpen, work_width AS workWidth
+             work_open AS workOpen, work_width AS workWidth,
+             split_enabled AS splitEnabled, split_ratio AS splitRatio,
+             primary_tab_id AS primaryTabId, secondary_tab_id AS secondaryTabId,
+             focused_pane AS focusedPane
       FROM browser_windows WHERE id = ?
     `).get(id) as unknown as StoredWindow | undefined;
   }
@@ -268,13 +276,20 @@ export class BrowserDatabase {
     this.#database.exec("BEGIN IMMEDIATE");
     try {
       this.#database.prepare(`
-        INSERT INTO browser_windows(id, profile_id, sidebar_open, work_open, work_width, updated_at)
-        VALUES (?, ?, ?, ?, ?, unixepoch())
+        INSERT INTO browser_windows(
+          id, profile_id, sidebar_open, work_open, work_width,
+          split_enabled, split_ratio, primary_tab_id, secondary_tab_id, focused_pane, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
         ON CONFLICT(id) DO UPDATE SET
           profile_id = excluded.profile_id,
           sidebar_open = excluded.sidebar_open,
           work_open = excluded.work_open,
           work_width = excluded.work_width,
+          split_enabled = excluded.split_enabled,
+          split_ratio = excluded.split_ratio,
+          primary_tab_id = excluded.primary_tab_id,
+          secondary_tab_id = excluded.secondary_tab_id,
+          focused_pane = excluded.focused_pane,
           updated_at = excluded.updated_at
       `).run(
         window.id,
@@ -282,6 +297,11 @@ export class BrowserDatabase {
         Number(window.sidebarOpen),
         Number(window.workOpen),
         window.workWidth,
+        Number(Boolean(window.splitEnabled)),
+        window.splitRatio ?? 0.5,
+        window.primaryTabId ?? null,
+        window.secondaryTabId ?? null,
+        window.focusedPane ?? "primary",
       );
 
       const upsert = this.#database.prepare(`
@@ -994,6 +1014,11 @@ export class BrowserDatabase {
         sidebar_open INTEGER NOT NULL DEFAULT 0,
         work_open INTEGER NOT NULL DEFAULT 0,
         work_width REAL NOT NULL DEFAULT 420,
+        split_enabled INTEGER NOT NULL DEFAULT 0,
+        split_ratio REAL NOT NULL DEFAULT 0.5,
+        primary_tab_id TEXT,
+        secondary_tab_id TEXT,
+        focused_pane TEXT NOT NULL DEFAULT 'primary',
         updated_at INTEGER NOT NULL,
         FOREIGN KEY(profile_id) REFERENCES browser_profiles(id)
       );
@@ -1208,6 +1233,11 @@ export class BrowserDatabase {
     this.#ensureColumn("downloads", "received_bytes", "INTEGER NOT NULL DEFAULT 0");
     this.#ensureColumn("downloads", "total_bytes", "INTEGER NOT NULL DEFAULT 0");
     this.#ensureColumn("browser_tabs", "group_id", "TEXT");
+    this.#ensureColumn("browser_windows", "split_enabled", "INTEGER NOT NULL DEFAULT 0");
+    this.#ensureColumn("browser_windows", "split_ratio", "REAL NOT NULL DEFAULT 0.5");
+    this.#ensureColumn("browser_windows", "primary_tab_id", "TEXT");
+    this.#ensureColumn("browser_windows", "secondary_tab_id", "TEXT");
+    this.#ensureColumn("browser_windows", "focused_pane", "TEXT NOT NULL DEFAULT 'primary'");
     this.#ensureColumn("history_visits", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
     this.#ensureColumn("bookmarks", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
     this.#ensureColumn("downloads", "profile_id", "TEXT NOT NULL DEFAULT 'default'");
@@ -1229,6 +1259,7 @@ export class BrowserDatabase {
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (6, unixepoch());
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (7, unixepoch());
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (8, unixepoch());
+      INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (9, unixepoch());
     `);
   }
 

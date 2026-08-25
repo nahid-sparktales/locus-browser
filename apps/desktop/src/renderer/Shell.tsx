@@ -1,13 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bookmark, Bot, Check, ChevronDown,
   CircleAlert, Clock3, Cloud, CloudOff, Copy, Download, EyeOff, FileDown, FolderPlus, Globe2, History,
   KeyRound, Laptop, Layers3, LayoutList, LockKeyhole, LogIn, LogOut, Minus, Monitor, Moon, MoreHorizontal, PanelLeft,
-  Mic, Pause, Play, Plus, Printer, Puzzle, RefreshCw, Search, Settings, ShieldCheck,
-  Sparkles, Square, Sun, UserRound, UsersRound, Video, Volume2, VolumeX, X,
+  BookOpenText, Columns2, Command as CommandIcon, LibraryBig, Mic, Pause, Play, Plus, Printer, Puzzle, RefreshCw, Search, Settings, ShieldCheck,
+  Sparkles, Square, Sun, Trash2, UserRound, UsersRound, Video, Volume2, VolumeX, X,
 } from "lucide-react";
 import type { BrowserCommand } from "../shared/ipc.js";
-import type { Appearance, BrowserAppState, BrowserTabState, SearchEngine, SidebarSection } from "../shared/types.js";
+import type { Appearance, BrowserAppState, BrowserTabState, PaletteResultState, ResearchBoardState, SearchEngine, SemanticRecallResultState, SidebarSection, TabStewardPreviewState } from "../shared/types.js";
 import { useBrowserState } from "./useBrowserState.js";
 
 const searchProviders: Array<{ id: SearchEngine; name: string; detail: string; mark: string }> = [
@@ -29,8 +29,8 @@ export function Shell() {
   const active = state?.tabs.find((tab) => tab.id === state.activeTabId);
 
   useEffect(() => {
-    if (!addressFocused) setAddress(active?.url === "about:blank" ? "" : active?.url ?? "");
-  }, [active?.url, addressFocused]);
+    if (!addressFocused) setAddress(state?.internalSurface?.type === "settings" ? "locus://settings" : state?.internalSurface?.type === "research" ? `locus://research/${state.internalSurface.boardId || "new"}` : state?.internalSurface?.type === "tab-steward" ? "locus://tabs/steward" : active?.url === "about:blank" ? "" : active?.url ?? "");
+  }, [active?.url, addressFocused, state?.internalSurface]);
 
   useEffect(() => window.locusBrowser.onFocusAddress(() => {
     addressRef.current?.focus();
@@ -71,10 +71,23 @@ export function Shell() {
     };
   }, [menuOpen, passwordMenuOpen, profileOpen, recordOpen]);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.metaKey && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        void command({ type: state?.paletteOpen ? "close-command-palette" : "open-command-palette" });
+      } else if (event.key === "Escape" && state?.paletteOpen) {
+        event.preventDefault(); void command({ type: "close-command-palette" });
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [state?.paletteOpen]);
+
   if (!state) return <LoadingSurface />;
   if (state.onboardingRequired) return <OnboardingSurface state={state} />;
 
-  const sharedGrant = active?.grants.find((grant) => grant.sessionId === state.work.sessionId);
+  const sharedGrant = state.settingsOpen ? undefined : active?.grants.find((grant) => grant.sessionId === state.work.sessionId);
   const workTone = state.work.pendingPermission ? "attention" : state.work.busy ? "working" : "idle";
   const chromeHeight = 92
     + (state.find.open ? 38 : 0)
@@ -98,8 +111,9 @@ export function Shell() {
           <div className="tab-strip" role="tablist" aria-label="Browser tabs">
             {visibleTabs.map((tab) => {
               const groupColor = state.groups.find((group) => group.id === tab.groupId)?.color;
-              return <TabItem key={tab.id} tab={tab} {...(groupColor ? { groupColor } : {})} />;
+              return <TabItem key={tab.id} tab={state.settingsOpen && tab.active ? { ...tab, active: false } : tab} {...(groupColor ? { groupColor } : {})} />;
             })}
+            {state.settingsOpen ? <SettingsTab /> : null}
             <button className="chrome-button new-tab" title="New tab (⌘T)" onClick={() => void command({ type: "new-tab" })}>
               <Plus size={15} strokeWidth={2.2} />
             </button>
@@ -113,21 +127,21 @@ export function Shell() {
             <PanelLeft size={17} />
           </button>
           <div className="nav-controls">
-            <button className="chrome-button" title="Back" disabled={!active?.canGoBack} onClick={() => void command({ type: "back" })}><ArrowLeft size={17} /></button>
-            <button className="chrome-button" title="Forward" disabled={!active?.canGoForward} onClick={() => void command({ type: "forward" })}><ArrowRight size={17} /></button>
-            <button className="chrome-button" title={active?.loading ? "Stop" : "Reload"} onClick={() => void command({ type: active?.loading ? "stop" : "reload" })}>
+            <button className="chrome-button" title="Back" disabled={!state.settingsOpen && !active?.canGoBack} onClick={() => void command({ type: "back" })}><ArrowLeft size={17} /></button>
+            <button className="chrome-button" title="Forward" disabled={state.settingsOpen || !active?.canGoForward} onClick={() => void command({ type: "forward" })}><ArrowRight size={17} /></button>
+            <button className="chrome-button" title={active?.loading ? "Stop" : "Reload"} disabled={state.settingsOpen} onClick={() => void command({ type: active?.loading ? "stop" : "reload" })}>
               {active?.loading ? <Square size={12} fill="currentColor" /> : <RefreshCw size={15} />}
             </button>
           </div>
 
           <form className={`omnibox ${addressFocused ? "focused" : ""}`} onSubmit={navigate}>
-            <span className="site-security" title={state.privateWindow ? "Private window" : active?.url.startsWith("https:") ? "Secure connection" : "Page information"}>
-              {state.privateWindow ? <EyeOff size={14} /> : active?.url.startsWith("https:") ? <LockKeyhole size={13} /> : <Globe2 size={14} />}
+            <span className="site-security" title={state.settingsOpen ? "Locus Browser settings" : state.privateWindow ? "Private window" : active?.url.startsWith("https:") ? "Secure connection" : "Page information"}>
+              {state.settingsOpen ? <Settings size={14} /> : state.privateWindow ? <EyeOff size={14} /> : active?.url.startsWith("https:") ? <LockKeyhole size={13} /> : <Globe2 size={14} />}
             </span>
             <input ref={addressRef} value={address} aria-label="Address and search" placeholder="Search or enter a web address" spellCheck={false}
               onFocus={(event) => { setAddressFocused(true); event.currentTarget.select(); }}
               onBlur={() => setAddressFocused(false)} onChange={(event) => setAddress(event.target.value)} />
-            {addressFocused ? <Search className="omnibox-search" size={14} /> : (
+            {addressFocused ? <Search className="omnibox-search" size={14} /> : state.settingsOpen ? null : (
               <button type="button" className={`omnibox-action ${state.activePageBookmarked ? "bookmarked" : ""}`}
                 title={state.activePageBookmarked ? "Remove bookmark" : "Bookmark this page"}
                 onClick={() => void command({ type: "toggle-bookmark" })}>
@@ -135,6 +149,15 @@ export function Shell() {
               </button>
             )}
           </form>
+
+          <button className={`chrome-button ${state.splitView.enabled ? "selected" : ""}`} title="Two-page Split View" onClick={() => void command({ type: "toggle-split-view" })}><Columns2 size={16} /></button>
+          {state.splitView.enabled ? <div className="split-toolbar" aria-label="Split View controls">
+            {(["primary", "secondary"] as const).map((pane) => <button key={pane} className={state.splitView.focusedPane === pane ? "active" : ""} onClick={() => void command({ type: "focus-pane", pane })} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const tabId = event.dataTransfer.getData("text/locus-tab"); if (tabId) void command({ type: "assign-tab-to-pane", tabId, pane }); }}>{pane === "primary" ? "L" : "R"}</button>)}
+            <input type="range" min="0.3" max="0.7" step="0.01" value={state.splitView.ratio} onChange={(event) => void command({ type: "set-split-ratio", ratio: Number(event.target.value) })} aria-label="Split View divider" />
+          </div> : null}
+          <button className={`chrome-button ${state.reader.active ? "selected" : ""}`} disabled={!state.reader.available && !state.reader.active || state.settingsOpen} title={state.reader.message || "Reader Mode with Read Aloud"} onClick={() => void command({ type: "toggle-reader" })}><BookOpenText size={16} /></button>
+          {!state.privateWindow ? <button className="chrome-button steward-button" title="AI Tab Steward" onClick={() => void command({ type: "open-tab-steward" })}><Layers3 size={16} />{state.tabSteward.suggestionCount ? <span>{state.tabSteward.suggestionCount}</span> : null}</button> : null}
+          <button className={`chrome-button ${state.paletteOpen ? "selected" : ""}`} title="Command Palette (⌘K)" onClick={() => void command({ type: "open-command-palette" })}><CommandIcon size={16} /></button>
 
           {state.credentialSuggestions.length > 0 && (
             <div className="toolbar-popover-wrap">
@@ -207,11 +230,28 @@ export function Shell() {
         {state.pendingCredential && <CredentialSaveBar state={state} />}
       </header>
 
-      {state.sidebarOpen && <BrowserSidebar state={state} top={chromeHeight} />}
+      {document.documentElement.dataset.locusPreview === "true" && !state.internalSurface && !state.paletteOpen
+        ? <PreviewPageCanvas state={state} top={chromeHeight} /> : null}
+      {state.internalSurface?.type === "settings" ? <SettingsSurface state={state} top={chromeHeight} /> : null}
+      {state.internalSurface?.type === "research" ? <ResearchSurface state={state} top={chromeHeight} {...(state.internalSurface.boardId ? { boardId: state.internalSurface.boardId } : {})} /> : null}
+      {state.internalSurface?.type === "tab-steward" ? <TabStewardSurface state={state} top={chromeHeight} /> : null}
+      {state.paletteOpen ? <CommandPalette state={state} top={chromeHeight} /> : null}
+      {state.sidebarOpen && !state.internalSurface && !state.paletteOpen && <BrowserSidebar state={state} top={chromeHeight} />}
       {state.workOpen && state.workOverlay && <div className="dock-scrim" style={{ top: chromeHeight }} aria-hidden="true" />}
-      <div className="page-drop-shadow" style={{ left: state.sidebarOpen ? 248 : 0, top: chromeHeight }} aria-hidden="true" />
+      {!state.internalSurface && !state.paletteOpen ? <div className="page-drop-shadow" style={{ left: state.sidebarOpen ? 248 : 0, top: chromeHeight }} aria-hidden="true" /> : null}
     </div>
   );
+}
+
+function PreviewPageCanvas({ state, top }: { state: BrowserAppState; top: number }) {
+  const left = state.sidebarOpen ? 248 : 0;
+  const pages = state.splitView.enabled ? ["Search privately with Locus", "private AI browser research"] : ["Search privately with Locus"];
+  return <div className={`preview-page-canvas ${state.splitView.enabled ? "split" : ""}`} style={{ top, left }} aria-hidden="true">
+    {pages.map((query, index) => <section key={query} className={index === 0 && state.splitView.focusedPane === "primary" || index === 1 && state.splitView.focusedPane === "secondary" ? "focused" : ""}>
+      <nav><span>About</span><span>Store</span><i /><span>Gmail</span><span>Images</span><b>G</b></nav>
+      <div className="preview-google"><h2><i>G</i><i>o</i><i>o</i><i>g</i><i>l</i><i>e</i></h2><p><Search size={17} /><span>{query}</span><Mic size={15} /></p>{index === 1 ? <div className="preview-search-results"><strong>Private AI browser research</strong><span>Compare sources with local evidence and exact citations.</span><strong>Locus Browser Intelligence</strong><span>Recall, Research Boards, Split View, Reader and a universal palette.</span></div> : <div className="preview-google-actions"><span>Google Search</span><span>I'm Feeling Lucky</span></div>}</div>
+    </section>)}
+  </div>;
 }
 
 function RecordingMenu({ state, close }: { state: BrowserAppState; close: () => void }) {
@@ -444,9 +484,17 @@ function BrowserMenu({ state, close }: { state: BrowserAppState; close: () => vo
         <button title="Zoom in" onClick={() => void command({ type: "zoom-in" })}><Plus size={14} /></button>
       </div>
       <div className="popover-rule" />
+      <button role="menuitem" onClick={() => run({ type: "open-command-palette" })}><CommandIcon size={15} /><span>Command Palette</span><kbd>⌘K</kbd></button>
+      <button role="menuitem" onClick={() => run({ type: "toggle-split-view" })}><Columns2 size={15} /><span>{state.splitView.enabled ? "Exit Split View" : "Split View"}</span></button>
+      <button role="menuitem" disabled={!state.reader.available && !state.reader.active} onClick={() => run({ type: "toggle-reader" })}><BookOpenText size={15} /><span>Reader Mode</span></button>
+      {!state.privateWindow ? <button role="menuitem" onClick={() => run({ type: "open-research-board" })}><LibraryBig size={15} /><span>Research Board</span></button> : null}
+      {!state.privateWindow ? <button role="menuitem" onClick={() => run({ type: "open-tab-steward" })}><Layers3 size={15} /><span>Tab Steward</span></button> : null}
+      <div className="popover-rule" />
       <button role="menuitem" onClick={() => run({ type: "toggle-find" })}><Search size={15} /><span>Find in page</span><kbd>⌘F</kbd></button>
       <button role="menuitem" onClick={() => run({ type: "print-page" })}><Printer size={15} /><span>Print</span><kbd>⌘P</kbd></button>
       <button role="menuitem" onClick={() => run({ type: "save-page-pdf" })}><FileDown size={15} /><span>Save page as PDF</span></button>
+      <div className="popover-rule" />
+      <button role="menuitem" onClick={() => run({ type: "open-settings" })}><Settings size={15} /><span>Settings</span><kbd>⌘,</kbd></button>
     </div>
   );
 }
@@ -475,7 +523,7 @@ function FindBar({ state }: { state: BrowserAppState }) {
 function TabItem({ tab, groupColor }: { tab: BrowserTabState; groupColor?: string }) {
   const dragging = useRef(false);
   return (
-    <div className={`tab ${tab.active ? "active" : ""} ${tab.grants.length ? "agent-access" : ""} ${groupColor ? `group-${groupColor}` : ""}`}
+    <div className={`tab ${tab.active ? "active" : ""} ${tab.pane ? `pane-${tab.pane}` : ""} ${tab.grants.length ? "agent-access" : ""} ${groupColor ? `group-${groupColor}` : ""}`}
       role="tab" aria-selected={tab.active} tabIndex={tab.active ? 0 : -1} draggable
       onClick={() => { if (!dragging.current) void command({ type: "select-tab", tabId: tab.id }); }}
       onKeyDown={(event) => {
@@ -493,8 +541,19 @@ function TabItem({ tab, groupColor }: { tab: BrowserTabState; groupColor?: strin
         {tab.loading && <span className="loading-ring" />}
       </span>
       <span className="tab-title">{tab.title || "New Tab"}</span>
+      {tab.pane ? <span className="tab-pane-mark" title={`${tab.pane} Split View pane`}>{tab.pane === "primary" ? "L" : "R"}</span> : null}
       {tab.grants.length > 0 && <Bot className="tab-agent-indicator" size={12} aria-label="Shared with Locus" />}
       <button className="tab-close" title="Close tab" onClick={(event) => { event.stopPropagation(); void command({ type: "close-tab", tabId: tab.id }); }}><X size={12} /></button>
+    </div>
+  );
+}
+
+function SettingsTab() {
+  return (
+    <div className="tab active settings-tab" role="tab" aria-selected="true" tabIndex={0}>
+      <span className="tab-icon"><Settings size={13} /></span>
+      <span className="tab-title">Settings</span>
+      <button className="tab-close" title="Close settings" onClick={() => void command({ type: "close-settings" })}><X size={12} /></button>
     </div>
   );
 }
@@ -512,7 +571,7 @@ function BrowserSidebar({ state, top }: { state: BrowserAppState; top: number })
         <SidebarItem section="conversations" active={state.sidebarSection === "conversations"} icon={<Clock3 size={16} />} label="Conversations" />
       </nav>
       <SidebarContent state={state} />
-      <button className={`sidebar-settings ${state.sidebarSection === "settings" ? "active" : ""}`} onClick={() => void command({ type: "set-sidebar-section", section: "settings" })}><Settings size={15} /><span>Settings</span></button>
+      <button className="sidebar-settings" onClick={() => void command({ type: "open-settings" })}><Settings size={15} /><span>Settings</span></button>
     </aside>
   );
 }
@@ -530,11 +589,7 @@ function SidebarContent({ state }: { state: BrowserAppState }) {
     )) : <EmptyLibrary icon={<Bookmark size={18} />} text="Bookmark a page to keep it here." />}</SidebarList>;
   }
   if (state.sidebarSection === "history") {
-    return <SidebarList title={state.privateWindow ? "History hidden" : "Recent history"} count={state.history.length}>{state.history.length ? state.history.map((entry) => (
-      <button className="sidebar-row library-row" key={entry.id} onClick={() => void command({ type: "open-library-item", url: entry.url })}>
-        <History size={13} /><span><strong>{entry.title || entry.url}</strong><small>{formatTime(entry.visitedAt)}</small></span>
-      </button>
-    )) : <EmptyLibrary icon={<History size={18} />} text={state.privateWindow ? "History stays hidden in private windows." : "Pages you visit will appear here."} />}</SidebarList>;
+    return <HistoryRecallPanel state={state} />;
   }
   if (state.sidebarSection === "downloads") {
     return <SidebarList title="Downloads" count={state.downloads.length}>{state.downloads.length ? state.downloads.map((download) => (
@@ -547,7 +602,6 @@ function SidebarContent({ state }: { state: BrowserAppState }) {
       </div>
     )) : <EmptyLibrary icon={<Download size={18} />} text="Your downloads will appear here." />}</SidebarList>;
   }
-  if (state.sidebarSection === "settings") return <SettingsPanel state={state} />;
   const spaces = state.sidebarSection === "spaces";
   if (spaces) {
     return <SidebarList title="Profiles" count={state.profiles.length}>{state.profiles.map((profile) => (
@@ -586,6 +640,39 @@ function SidebarContent({ state }: { state: BrowserAppState }) {
       ) : null}
     </>
   );
+}
+
+function HistoryRecallPanel({ state }: { state: BrowserAppState }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<SemanticRecallResultState[]>([]);
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    if (!query.trim() || state.privateWindow) { setResults([]); return; }
+    let alive = true; setLoading(true);
+    const timer = setTimeout(() => void window.locusBrowser.query({ type: "semantic-recall-search", query, limit: 30 }).then((value) => {
+      if (alive) setResults(value as SemanticRecallResultState[]);
+    }).finally(() => { if (alive) setLoading(false); }), 160);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [query, state.privateWindow, state.semanticRecall.documentCount]);
+  if (state.privateWindow) return <SidebarList title="History hidden" count={0}><EmptyLibrary icon={<History size={18} />} text="History and Private Recall stay hidden in private windows." /></SidebarList>;
+  const openResult = (result: SemanticRecallResultState) => result.openTabId
+    ? command({ type: "select-tab", tabId: result.openTabId }) : command({ type: "open-library-item", url: result.url });
+  return <>
+    <div className="sidebar-heading"><span>History & Recall</span><span>{state.history.length}</span></div>
+    <div className="recall-search-wrap"><Search size={13} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={state.semanticRecall.enabled ? "Find something you read…" : "Search title or URL…"} aria-label="Search history with Private Recall" />{loading ? <span className="loading-ring" /> : null}</div>
+    {state.semanticRecall.enabled ? <p className="recall-status"><ShieldCheck size={11} />{state.semanticRecall.documentCount} private pages · {formatBytes(state.semanticRecall.storageBytes)}</p> : <button className="recall-opt-in" onClick={() => void command({ type: "set-semantic-recall-enabled", enabled: true })}><Sparkles size={12} /><span>Enable on-device Private Recall</span></button>}
+    <div className="sidebar-list">
+      {query.trim() ? results.map((result) => <div className="recall-result" key={result.id}>
+        <button onClick={() => void openResult(result)}><span><strong>{result.title}</strong><small>{result.snippet}</small><i>{result.source === "open-tab" ? "Open tab" : result.source === "bookmark" ? "Bookmark" : new Date(result.visitedAt).toLocaleDateString()}</i></span></button>
+        {!result.id.startsWith("tab:") && !result.id.startsWith("bookmark:") && !result.id.startsWith("history:") ? <button title="Delete this recalled page" onClick={() => void command({ type: "delete-recall-document", documentId: result.id })}><Trash2 size={11} /></button> : null}
+      </div>) : state.history.length ? state.history.map((entry) => (
+        <button className="sidebar-row library-row" key={entry.id} onClick={() => void command({ type: "open-library-item", url: entry.url })}>
+          <History size={13} /><span><strong>{entry.title || entry.url}</strong><small>{formatTime(entry.visitedAt)}</small></span>
+        </button>
+      )) : <EmptyLibrary icon={<History size={18} />} text="Pages you visit will appear here." />}
+      {query.trim() && !loading && !results.length ? <EmptyLibrary icon={<Search size={18} />} text="No matching page was found." /> : null}
+    </div>
+  </>;
 }
 
 function TabsPanel({ state }: { state: BrowserAppState }) {
@@ -645,56 +732,239 @@ function SidebarTabRow({ state, tab }: { state: BrowserAppState; tab: BrowserTab
   );
 }
 
-function SettingsPanel({ state }: { state: BrowserAppState }) {
-  return (
-    <div className="settings-panel">
-      <div className="sidebar-heading"><span>Settings</span></div>
-      <SettingRow label="Appearance" detail="Uses the Locus palette">
-        <select value={state.settings.appearance} onChange={(event) => void command({ type: "set-appearance", appearance: event.target.value as BrowserAppState["settings"]["appearance"] })}>
-          <option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option>
-        </select>
-      </SettingRow>
-      <SettingRow label="Search engine" detail="Used for omnibox searches">
-        <select value={state.settings.searchEngine} onChange={(event) => void command({ type: "set-search-engine", searchEngine: event.target.value as BrowserAppState["settings"]["searchEngine"] })}>
-          <option value="duckduckgo">DuckDuckGo</option><option value="brave">Brave</option><option value="google">Google</option><option value="bing">Bing</option>
-        </select>
-      </SettingRow>
-      <SettingRow label="Sleep background tabs" detail="Never sleeps audio, downloads, or shared tabs">
-        <select value={state.settings.sleepAfterMinutes} onChange={(event) => void command({ type: "set-sleep-after", minutes: Number(event.target.value) as 0 | 15 | 30 | 60 })}>
-          <option value={0}>Never</option><option value={15}>After 15 minutes</option><option value={30}>After 30 minutes</option><option value={60}>After 1 hour</option>
-        </select>
-      </SettingRow>
-      <SettingRow label="Downloads" detail={state.settings.downloadDirectory}>
-        <button type="button" onClick={() => void command({ type: "choose-download-directory" })}>Choose folder…</button>
-      </SettingRow>
-      <SpeechSettings state={state} />
-      <ExtensionSettings state={state} />
-      {!state.privateWindow ? <SyncSettings state={state} /> : null}
-      <div className="settings-subheading">Profiles</div>
-      {state.profiles.map((profile) => (
-        <div className="permission-setting" key={profile.id}>
-          <span><strong>{profile.name}</strong><small>{profile.id === state.profileId ? "Current profile" : "Separate cookies and browsing data"}</small></span>
-          {profile.id !== "default" && profile.id !== state.profileId
-            ? <button title={`Delete ${profile.name}`} onClick={() => deleteProfile(profile.id, profile.name)}><X size={11} /></button>
-            : null}
-        </div>
-      ))}
-      <div className="settings-subheading">Passwords</div>
-      {!state.passwordManagerAvailable && <p className="settings-empty">OS-backed password encryption is unavailable on this Mac.</p>}
-      {state.savedCredentials.length ? state.savedCredentials.map((credential) => (
-        <div className="permission-setting credential-setting" key={credential.id}>
-          <span><strong>{credential.username || "No username"}</strong><small>{safeHostname(credential.origin)} · Updated {formatTime(credential.updatedAt)}</small></span>
-          <button title={`Delete saved login for ${safeHostname(credential.origin)}`} onClick={() => deleteCredential(credential.id, credential.origin)}><X size={11} /></button>
-        </div>
-      )) : state.passwordManagerAvailable ? <p className="settings-empty">Saved logins will appear here. Passwords are never shown in browser chrome or Work Mode.</p> : null}
-      <div className="settings-subheading">Site permissions</div>
-      {state.sitePermissions.length ? state.sitePermissions.map((permission) => (
-        <div className="permission-setting" key={`${permission.origin}:${permission.permission}`}>
-          <span><strong>{safeHostname(permission.origin)}</strong><small>{permission.permission} · {permission.decision}</small></span>
-          <button title="Ask again" onClick={() => void command({ type: "reset-site-permission", origin: permission.origin, permission: permission.permission })}><X size={11} /></button>
-        </div>
-      )) : <p className="settings-empty">Sites you allow or block will appear here.</p>}
+function CommandPalette({ state, top }: { state: BrowserAppState; top: number }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<PaletteResultState[]>([]);
+  const [selected, setSelected] = useState(0);
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => { input.current?.focus(); }, []);
+  useEffect(() => {
+    let alive = true;
+    const timer = setTimeout(() => void window.locusBrowser.query({ type: "palette-search", query, limit: 30 }).then((value) => {
+      if (alive) { setResults(value as PaletteResultState[]); setSelected(0); }
+    }), 45);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [query, state.tabs.length, state.semanticRecall.documentCount]);
+  const execute = (result?: PaletteResultState) => result && void command({ type: "execute-palette-action", action: result.action });
+  return <div className="palette-surface" style={{ top }} onMouseDown={(event) => { if (event.target === event.currentTarget) void command({ type: "close-command-palette" }); }}>
+    <section className="command-palette" role="dialog" aria-modal="true" aria-label="Universal command palette">
+      <header><Search size={18} /><input ref={input} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search tabs, history, settings, conversations, or run a command…" aria-label="Command palette search" onKeyDown={(event) => {
+        if (event.key === "ArrowDown") { event.preventDefault(); setSelected((value) => Math.min(results.length - 1, value + 1)); }
+        if (event.key === "ArrowUp") { event.preventDefault(); setSelected((value) => Math.max(0, value - 1)); }
+        if (event.key === "Enter") { event.preventDefault(); execute(results[selected]); }
+        if (event.key === "Escape") { event.preventDefault(); void command({ type: "close-command-palette" }); }
+      }} /><kbd>⌘K</kbd></header>
+      <div className="palette-results" role="listbox">
+        {results.map((result, index) => <button key={result.id} className={index === selected ? "selected" : ""} role="option" aria-selected={index === selected} onMouseEnter={() => setSelected(index)} onClick={() => execute(result)}>
+          <span className={`palette-kind kind-${result.kind}`}>{result.kind === "tab" ? <Globe2 size={14} /> : result.kind === "recall" ? <Sparkles size={14} /> : result.kind === "command" ? <CommandIcon size={14} /> : result.kind === "research" ? <LibraryBig size={14} /> : <Search size={14} />}</span>
+          <span><strong>{result.label}</strong><small>{result.detail}</small></span><i>{result.kind.replace("-", " ")}</i>
+        </button>)}
+        {!results.length ? <div className="palette-empty">No matching command or browser item.</div> : null}
+      </div>
+      <footer><span><kbd>↑</kbd><kbd>↓</kbd> navigate</span><span><kbd>↵</kbd> open</span><span>Private Recall stays on this Mac</span></footer>
+    </section>
+  </div>;
+}
+
+function ResearchSurface({ state, top, boardId }: { state: BrowserAppState; top: number; boardId?: string }) {
+  const [board, setBoard] = useState<ResearchBoardState>();
+  const [prompt, setPrompt] = useState("Compare these sources and produce a concise, decision-useful brief.");
+  const [format, setFormat] = useState<ResearchBoardState["format"]>("comparison");
+  const eligible = useMemo(() => state.tabs.filter((tab) => !tab.private && /^https?:\/\//.test(tab.url) && tab.grants.some((grant) => grant.sessionId === state.work.sessionId)), [state.tabs, state.work.sessionId]);
+  const [selected, setSelected] = useState<string[]>(() => eligible.slice(0, 10).map((tab) => tab.id));
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!boardId) { setBoard(undefined); return; }
+    let alive = true;
+    void window.locusBrowser.query({ type: "research-board-get", boardId }).then((value) => { if (alive) setBoard(value as ResearchBoardState | undefined); });
+    return () => { alive = false; };
+  }, [boardId, state.research.boards.find((item) => item.id === boardId)?.updatedAt]);
+  const generate = async (event: React.FormEvent) => {
+    event.preventDefault(); setError("");
+    try { await command({ type: "generate-research-board", tabIds: selected, prompt, format }); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Research could not start"); }
+  };
+  return <main className="internal-page research-surface" style={{ top, right: state.workOpen && !state.workOverlay ? state.workWidth : 0 }}>
+    <header className="internal-page-heading"><span className="research-mark"><LibraryBig size={20} /></span><span><h1>{board?.title || "Research Board"}</h1><p>{board ? `${board.sources.length} immutable local source snapshots` : "A cited, persistent brief built from explicitly shared tabs."}</p></span><button title="Close Research Board" onClick={() => void command({ type: "close-internal-surface" })}><X size={16} /></button></header>
+    {!board ? <div className="research-create-layout">
+      <form className="research-create-card" onSubmit={generate}>
+        <label><span>Research goal</span><textarea rows={5} value={prompt} onChange={(event) => setPrompt(event.target.value)} maxLength={20_000} /></label>
+        <label><span>Artifact</span><select value={format} onChange={(event) => setFormat(event.target.value as ResearchBoardState["format"])}><option value="comparison">Comparison</option><option value="brief">Research brief</option><option value="evidence">Evidence board</option></select></label>
+        <fieldset><legend>Shared sources · up to 10</legend>{eligible.map((tab) => <label key={tab.id} className="research-source-choice"><input type="checkbox" aria-label={`Use ${tab.title} as research evidence`} checked={selected.includes(tab.id)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, tab.id].slice(0, 10) : current.filter((id) => id !== tab.id))} /><Globe2 size={13} /><span><strong>{tab.title}</strong><small>{tab.url}</small></span></label>)}</fieldset>
+        {!eligible.length ? <p className="research-empty"><ShieldCheck size={14} />Share tabs with the current Work conversation before adding them as evidence.</p> : null}
+        {error ? <p className="recording-error">{error}</p> : null}
+        <button className="research-generate" disabled={!selected.length || state.work.runtime !== "online"}><Sparkles size={14} />Generate cited board</button>
+      </form>
+      <aside className="research-board-list"><h2>Saved boards</h2>{state.research.boards.map((item) => <button key={item.id} onClick={() => void command({ type: "open-research-board", boardId: item.id })}><span><strong>{item.title}</strong><small>{item.sourceCount} sources · {new Date(item.updatedAt).toLocaleDateString()}</small></span><i className={item.status}>{item.status}</i></button>)}</aside>
+    </div> : <ResearchArtifact board={board} />}
+  </main>;
+}
+
+function ResearchArtifact({ board }: { board: ResearchBoardState }) {
+  const sources = new Map(board.sources.map((source) => [source.sourceId, source]));
+  return <div className="research-artifact-layout">
+    <article className="research-artifact">
+      {board.status === "generating" ? <div className="research-progress"><span className="loading-ring" /><strong>Building a cited artifact</strong><p>{board.message}</p></div> : board.status === "error" ? <div className="research-progress error"><CircleAlert size={20} /><strong>Research stopped</strong><p>{board.message}</p></div> : <>
+        <p className="research-summary">{board.summary}</p>
+        {board.sections.map((section, sectionIndex) => <section key={`${section.heading}-${sectionIndex}`}><h2>{section.heading}</h2>{section.claims.map((claim, claimIndex) => <p className="research-claim" key={claimIndex}>{claim.text} <span>{claim.citations.map((citation, citationIndex) => {
+          const source = sources.get(citation.sourceId); const number = board.sources.findIndex((item) => item.sourceId === citation.sourceId) + 1;
+          return <a key={`${citation.passageId}-${citationIndex}`} href={`#source-${citation.sourceId}`} title={source?.passages.find((passage) => passage.passageId === citation.passageId)?.text}>[{number}]</a>;
+        })}</span></p>)}</section>)}
+      </>}
+    </article>
+    <aside className="research-evidence"><header><h2>Evidence</h2><div><button disabled={board.status !== "ready"} onClick={() => void command({ type: "export-research-board", boardId: board.id, format: "markdown" })}>Markdown</button><button disabled={board.status !== "ready"} onClick={() => void command({ type: "export-research-board", boardId: board.id, format: "pdf" })}>PDF</button></div></header>{board.sources.map((source, index) => <details key={source.sourceId} id={`source-${source.sourceId}`}><summary><span>{index + 1}</span><span><strong>{source.title}</strong><small>{safeHostname(source.url)} · captured {new Date(source.capturedAt).toLocaleString()}</small></span><ChevronDown size={13} /></summary>{source.passages.map((passage) => <blockquote key={passage.passageId} id={passage.passageId}>{passage.text}</blockquote>)}</details>)}</aside>
+  </div>;
+}
+
+function TabStewardSurface({ state, top }: { state: BrowserAppState; top: number }) {
+  const [preview, setPreview] = useState<TabStewardPreviewState>({ suggestions: [], generatedAt: Date.now() });
+  const [selected, setSelected] = useState<string[]>([]);
+  const [bundleName, setBundleName] = useState("Resume later");
+  const [bundleTabs, setBundleTabs] = useState<string[]>([]);
+  const [bundles, setBundles] = useState<Array<{ id: string; name: string; tabCount: number; createdAt: number }>>([]);
+  useEffect(() => { void Promise.all([window.locusBrowser.query({ type: "tab-steward-preview" }), window.locusBrowser.query({ type: "resume-bundles" })]).then(([suggestions, saved]) => { setPreview(suggestions as TabStewardPreviewState); setBundles(saved as typeof bundles); }); }, [state.tabs.length, state.groups.length, state.tabSteward.bundleCount]);
+  return <main className="internal-page steward-surface" style={{ top, right: state.workOpen && !state.workOverlay ? state.workWidth : 0 }}>
+    <header className="internal-page-heading"><span className="steward-mark"><Layers3 size={20} /></span><span><h1>AI Tab Steward</h1><p>Private, local suggestions. Nothing is moved or closed without your review.</p></span><button title="Close Tab Steward" onClick={() => void command({ type: "close-internal-surface" })}><X size={16} /></button></header>
+    <div className="steward-layout"><section><h2>Suggestions <span>{preview.suggestions.length}</span></h2>{preview.suggestions.length ? preview.suggestions.map((suggestion) => <label className="steward-suggestion" key={suggestion.id}><input type="checkbox" aria-label={`Select ${suggestion.title}`} checked={selected.includes(suggestion.id)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, suggestion.id] : current.filter((id) => id !== suggestion.id))} /><span className={`steward-type ${suggestion.type}`}><Layers3 size={15} /></span><span><strong>{suggestion.title}</strong><small>{suggestion.detail} · {Math.round(suggestion.confidence * 100)}% confidence</small><i>{suggestion.tabIds.map((id) => state.tabs.find((tab) => tab.id === id)?.title).filter(Boolean).join(" · ")}</i></span></label>) : <div className="steward-empty"><Check size={22} /><strong>Your tabs look tidy</strong><p>Suggestions appear only for exact duplicates or high-confidence groups of at least three.</p></div>}<button className="steward-apply" disabled={!selected.length} onClick={() => void command({ type: "apply-tab-steward", suggestionIds: selected }).then(() => setSelected([]))}>Preview and apply {selected.length || ""}</button></section>
+      <aside><h2>Resume Later</h2><input value={bundleName} onChange={(event) => setBundleName(event.target.value)} aria-label="Bundle name" /> <div className="bundle-tab-list">{state.tabs.filter((tab) => !tab.private && /^https?:\/\//.test(tab.url)).map((tab) => <label key={tab.id}><input type="checkbox" aria-label={`Include ${tab.title} in Resume Later bundle`} checked={bundleTabs.includes(tab.id)} onChange={(event) => setBundleTabs((current) => event.target.checked ? [...current, tab.id] : current.filter((id) => id !== tab.id))} /><span>{tab.title}</span></label>)}</div><div className="bundle-actions"><button disabled={!bundleTabs.length} onClick={() => void command({ type: "save-resume-bundle", name: bundleName, tabIds: bundleTabs, closeAfter: false }).then(() => setBundleTabs([]))}>Save bundle</button><button disabled={!bundleTabs.length} onClick={() => void command({ type: "save-resume-bundle", name: bundleName, tabIds: bundleTabs, closeAfter: true }).then(() => setBundleTabs([]))}>Save & close…</button></div><div className="saved-bundles">{bundles.map((bundle) => <div key={bundle.id}><button onClick={() => void command({ type: "open-resume-bundle", bundleId: bundle.id })}><strong>{bundle.name}</strong><small>{bundle.tabCount} tabs</small></button><button title="Delete bundle" onClick={() => void command({ type: "delete-resume-bundle", bundleId: bundle.id })}><Trash2 size={11} /></button></div>)}</div></aside>
     </div>
+  </main>;
+}
+
+function SettingsSurface({ state, top }: { state: BrowserAppState; top: number }) {
+  const openSection = (id: string) => document.getElementById(id)?.scrollIntoView({ block: "start" });
+  return (
+    <main className="settings-surface" style={{ top, right: state.workOpen && !state.workOverlay ? state.workWidth : 0 }} aria-label="Locus Browser settings">
+      <header className="settings-page-heading">
+        <span className="settings-page-mark"><Settings size={19} /></span>
+        <span><h1>Settings</h1><p>Personalize Locus Browser and control what runs on this Mac.</p></span>
+        <button type="button" title="Close settings" onClick={() => void command({ type: "close-settings" })}><X size={16} /></button>
+      </header>
+      <div className="settings-page-layout">
+        <nav className="settings-page-nav" aria-label="Settings sections">
+          <button type="button" onClick={() => openSection("settings-general")}><Settings size={15} /><span>General</span></button>
+          <button type="button" onClick={() => openSection("settings-models")}><Bot size={15} /><span>AI models</span></button>
+          <button type="button" onClick={() => openSection("settings-speech")}><Mic size={15} /><span>Speech</span></button>
+          <button type="button" onClick={() => openSection("settings-extensions")}><Puzzle size={15} /><span>Extensions</span></button>
+          <button type="button" onClick={() => openSection("settings-profiles")}><UserRound size={15} /><span>Profiles</span></button>
+          <button type="button" onClick={() => openSection("settings-privacy")}><ShieldCheck size={15} /><span>Privacy</span></button>
+          {!state.privateWindow ? <button type="button" onClick={() => openSection("settings-sync")}><Cloud size={15} /><span>Sync</span></button> : null}
+        </nav>
+        <div className="settings-page-scroll">
+          <section className="settings-page-section" id="settings-general">
+            <SettingsSectionHeading title="General" detail="Browser appearance, search, downloads, and background tabs." />
+            <div className="settings-card settings-general-grid">
+              <SettingRow label="Appearance" detail="Uses the Locus palette">
+                <select value={state.settings.appearance} onChange={(event) => void command({ type: "set-appearance", appearance: event.target.value as BrowserAppState["settings"]["appearance"] })}>
+                  <option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option>
+                </select>
+              </SettingRow>
+              <SettingRow label="Search engine" detail="Used for omnibox searches">
+                <select value={state.settings.searchEngine} onChange={(event) => void command({ type: "set-search-engine", searchEngine: event.target.value as BrowserAppState["settings"]["searchEngine"] })}>
+                  <option value="duckduckgo">DuckDuckGo</option><option value="brave">Brave</option><option value="google">Google</option><option value="bing">Bing</option>
+                </select>
+              </SettingRow>
+              <SettingRow label="Sleep background tabs" detail="Never sleeps audio, downloads, or shared tabs">
+                <select value={state.settings.sleepAfterMinutes} onChange={(event) => void command({ type: "set-sleep-after", minutes: Number(event.target.value) as 0 | 15 | 30 | 60 })}>
+                  <option value={0}>Never</option><option value={15}>After 15 minutes</option><option value={30}>After 30 minutes</option><option value={60}>After 1 hour</option>
+                </select>
+              </SettingRow>
+              <SettingRow label="Downloads" detail={state.settings.downloadDirectory}>
+                <button type="button" onClick={() => void command({ type: "choose-download-directory" })}>Choose folder…</button>
+              </SettingRow>
+            </div>
+          </section>
+
+          <ModelSettings state={state} />
+
+          <section className="settings-page-section settings-component-section" id="settings-speech">
+            <SettingsSectionHeading title="Speech" detail="Choose how live browser audio is transcribed." />
+            <div className="settings-card"><SpeechSettings state={state} /></div>
+          </section>
+
+          <section className="settings-page-section settings-component-section" id="settings-extensions">
+            <SettingsSectionHeading title="Extensions" detail="Manage verified gallery extensions and Developer Mode." />
+            <div className="settings-card"><ExtensionSettings state={state} /></div>
+          </section>
+
+          <section className="settings-page-section" id="settings-profiles">
+            <SettingsSectionHeading title="Profiles" detail="Keep cookies, browsing data, and extensions separate." />
+            <div className="settings-card settings-list-card">
+              {state.profiles.map((profile) => (
+                <div className="permission-setting" key={profile.id}>
+                  <span><strong>{profile.name}</strong><small>{profile.id === state.profileId ? "Current profile" : "Separate cookies and browsing data"}</small></span>
+                  {profile.id !== "default" && profile.id !== state.profileId
+                    ? <button title={`Delete ${profile.name}`} onClick={() => deleteProfile(profile.id, profile.name)}><X size={11} /></button>
+                    : null}
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="settings-page-section" id="settings-privacy">
+            <SettingsSectionHeading title="Privacy and security" detail="Passwords stay OS-encrypted and are never available to agents." />
+            <div className="settings-card settings-list-card">
+              <div className="settings-subheading">Private Semantic Recall</div>
+              <button type="button" role="switch" aria-checked={state.settings.semanticRecallEnabled} className="local-model-toggle" disabled={state.privateWindow} onClick={() => void command({ type: "set-semantic-recall-enabled", enabled: !state.settings.semanticRecallEnabled })}>
+                <span><strong>Recall pages on this Mac</strong><small>Opt-in. Eligible pages visited from now on are encrypted locally; private pages, fields, local files, and internal pages are excluded.</small></span>
+                <span className={`settings-switch ${state.settings.semanticRecallEnabled ? "on" : ""}`} aria-hidden="true"><span /></span>
+              </button>
+              <div className="recall-settings-status"><span><strong>{state.semanticRecall.documentCount} indexed pages</strong><small>{formatBytes(state.semanticRecall.storageBytes)} of {formatBytes(state.semanticRecall.capBytes)} · {state.semanticRecall.message}</small></span><button type="button" onClick={() => addRecallExclusion()}>Exclude site…</button><button type="button" className="danger" disabled={!state.semanticRecall.documentCount} onClick={() => clearRecallData()}>Clear Recall Data</button></div>
+              {state.semanticRecall.excludedOrigins.length ? <div className="recall-exclusions">{state.semanticRecall.excludedOrigins.map((origin) => <span key={origin}>{origin}<button title={`Allow recall on ${origin}`} onClick={() => void command({ type: "remove-recall-exclusion", origin })}><X size={10} /></button></span>)}</div> : null}
+              <div className="settings-subheading">Passwords</div>
+              {!state.passwordManagerAvailable && <p className="settings-empty">OS-backed password encryption is unavailable on this Mac.</p>}
+              {state.savedCredentials.length ? state.savedCredentials.map((credential) => (
+                <div className="permission-setting credential-setting" key={credential.id}>
+                  <span><strong>{credential.username || "No username"}</strong><small>{safeHostname(credential.origin)} · Updated {formatTime(credential.updatedAt)}</small></span>
+                  <button title={`Delete saved login for ${safeHostname(credential.origin)}`} onClick={() => deleteCredential(credential.id, credential.origin)}><X size={11} /></button>
+                </div>
+              )) : state.passwordManagerAvailable ? <p className="settings-empty">Saved logins will appear here. Passwords are never shown in browser chrome or Work Mode.</p> : null}
+              <div className="settings-subheading">Site permissions</div>
+              {state.sitePermissions.length ? state.sitePermissions.map((permission) => (
+                <div className="permission-setting" key={`${permission.origin}:${permission.permission}`}>
+                  <span><strong>{safeHostname(permission.origin)}</strong><small>{permission.permission} · {permission.decision}</small></span>
+                  <button title="Ask again" onClick={() => void command({ type: "reset-site-permission", origin: permission.origin, permission: permission.permission })}><X size={11} /></button>
+                </div>
+              )) : <p className="settings-empty">Sites you allow or block will appear here.</p>}
+            </div>
+          </section>
+
+          {!state.privateWindow ? (
+            <section className="settings-page-section settings-component-section" id="settings-sync">
+              <SettingsSectionHeading title="Locus encrypted sync" detail="Optional end-to-end encrypted sync for browser data." />
+              <div className="settings-card"><SyncSettings state={state} /></div>
+            </section>
+          ) : null}
+        </div>
+      </div>
+    </main>
+  );
+}
+
+function SettingsSectionHeading({ title, detail }: { title: string; detail: string }) {
+  return <header className="settings-section-heading"><h2>{title}</h2><p>{detail}</p></header>;
+}
+
+function ModelSettings({ state }: { state: BrowserAppState }) {
+  const primaryProviders = state.work.model.providers.filter((provider) => provider.id !== "local");
+  return (
+    <section className="settings-page-section" id="settings-models">
+      <SettingsSectionHeading title="AI models" detail="Choose which model sources appear in Work Mode." />
+      <div className="settings-card model-settings-card">
+        <div className="model-context-guidance" role="note">
+          <CircleAlert size={16} />
+          <span><strong>Use a large-context model for browser work</strong><small>128K context is the practical minimum for shorter sessions. 200K or more is recommended for long pages, recordings, and multi-step work.</small></span>
+        </div>
+        <div className="primary-model-sources" aria-label="Primary model sources">
+          {primaryProviders.map((provider) => <span key={provider.id}><i>{provider.mark}</i>{provider.name}</span>)}
+        </div>
+        <button type="button" role="switch" aria-checked={state.settings.localModelsEnabled} className="local-model-toggle" onClick={() => void command({ type: "set-local-models-enabled", enabled: !state.settings.localModelsEnabled })}>
+          <span><strong>Local Work models</strong><small>Show Ollama models in the Work model picker. Off by default because local inference can slow browsing.</small></span>
+          <span className={`settings-switch ${state.settings.localModelsEnabled ? "on" : ""}`} aria-hidden="true"><span /></span>
+        </button>
+        <p className="local-model-note">This setting affects Work Mode only. On-device speech transcription remains available separately.</p>
+      </div>
+    </section>
   );
 }
 
@@ -1019,6 +1289,17 @@ function deleteRecordingTranscript(recordingId: string): void {
   if (window.confirm("Delete this encrypted transcript from this Mac? This cannot be undone.")) {
     void command({ type: "delete-recording-transcript", recordingId });
   }
+}
+
+function addRecallExclusion(): void {
+  const value = window.prompt("Exclude a website from Private Recall", "https://");
+  if (!value?.trim()) return;
+  try { void command({ type: "add-recall-exclusion", origin: new URL(value.trim()).origin }); }
+  catch { window.alert("Enter a valid http or https website address."); }
+}
+
+function clearRecallData(): void {
+  if (window.confirm("Delete every encrypted Private Recall page from this profile? Bookmarks and normal history will stay.")) void command({ type: "clear-semantic-recall" });
 }
 
 function navigateRadioGroup(event: React.KeyboardEvent<HTMLButtonElement>): void {

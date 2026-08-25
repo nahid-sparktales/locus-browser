@@ -1,6 +1,21 @@
 import type { BrowserCommand } from "../shared/ipc.js";
 
 const SHELL_ONLY_COMMANDS = new Set<BrowserCommand["type"]>([
+  "open-settings",
+  "close-settings",
+  "set-local-models-enabled",
+  "set-semantic-recall-enabled",
+  "clear-semantic-recall",
+  "delete-recall-document",
+  "add-recall-exclusion",
+  "remove-recall-exclusion",
+  "generate-research-board",
+  "export-research-board",
+  "delete-research-board",
+  "apply-tab-steward",
+  "save-resume-bundle",
+  "delete-resume-bundle",
+  "execute-palette-action",
   "complete-onboarding",
   "autofill-credential",
   "save-pending-credential",
