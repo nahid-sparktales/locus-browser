@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-canary.5 — unreleased
+## 0.1.0-canary.6 — unreleased
 
 Intelligence and Productivity Canary:
 
@@ -20,6 +20,8 @@ Intelligence and Productivity Canary:
   installed macOS voices, sentence navigation, and Read Aloud highlighting;
 - a dedicated intelligence utility process and OS-key-protected encrypted vault,
   plus a signed Apple-native semantic helper from `locus-platform`;
+- hardened-runtime Developer ID signing and secure timestamps for the packaged
+  Apple semantic helper, enforced by the nested-runtime signing regression gate;
 - twelve responsive accessibility/Reduced Motion fixtures, updated public
   screenshots, and a six-page architecture and feature guide.
 

@@ -6,6 +6,10 @@ const script = await readFile(
   new URL("./prepare-agent-runtime.sh", import.meta.url),
   "utf8",
 );
+const signingScript = await readFile(
+  new URL("./sign-agent-runtime.mjs", import.meta.url),
+  "utf8",
+);
 
 test("the distributable speech runtime uses a portable Apple Silicon baseline", () => {
   assert.match(script, /speech_cpu_baseline="armv8\.2-a\+dotprod"/);
@@ -26,4 +30,12 @@ test("the speech cache is invalidated when the build contract changes", () => {
     script,
     /print -r -- "\$\{speech_build_contract\}" > "\$\{speech_cache\}\/\.stamp"/,
   );
+});
+
+test("every standalone managed runtime executable enters the hardened signing pass", () => {
+  for (const name of ["codex", "whisper-cli", "locus-semantic-helper"]) {
+    assert.match(signingScript, new RegExp(`name === ["']${name}["']`));
+  }
+  assert.match(signingScript, /--options", "runtime/);
+  assert.match(signingScript, /--timestamp/);
 });
