@@ -36,6 +36,11 @@ describe("BrowserDatabase", () => {
       sidebarOpen: true,
       workOpen: false,
       workWidth: 420,
+      splitEnabled: true,
+      splitRatio: 0.42,
+      primaryTabId: "tab-1",
+      secondaryTabId: "tab-2",
+      focusedPane: "secondary",
     }, [{
       id: "tab-1",
       windowId: "main",
@@ -50,6 +55,7 @@ describe("BrowserDatabase", () => {
     }]);
 
     expect(database.loadWindow("main")?.sidebarOpen).toBe(1);
+    expect(database.loadWindow("main")).toMatchObject({ splitEnabled: 1, splitRatio: 0.42, primaryTabId: "tab-1", secondaryTabId: "tab-2", focusedPane: "secondary" });
     expect(database.loadTabs("main")[0]?.url).toBe("https://example.com");
     database.close();
   });

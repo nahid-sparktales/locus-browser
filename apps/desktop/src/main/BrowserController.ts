@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
@@ -10,6 +10,7 @@ import {
   clipboard,
   dialog,
   nativeTheme,
+  powerMonitor,
   session,
   shell,
   type Rectangle,
@@ -17,8 +18,14 @@ import {
 } from "electron";
 import {
   BrowserActionRequestSchema,
+  ResearchBoardErrorSchema,
+  ResearchBoardProgressSchema,
+  ResearchBoardRequestSchema,
+  ResearchBoardResultSchema,
+  validateResearchArtifactCitations,
   type BrowserActionRequest,
   type BrowserActionResult,
+  type ResearchSource,
 } from "@locus/protocol";
 import { bridgeInvocation, browserBridgeSource } from "@locus/browser-bridge";
 import {
@@ -31,12 +38,20 @@ import {
 import { z } from "zod";
 import { ipcChannels } from "../shared/channels.js";
 import type { BrowserCommand } from "../shared/ipc.js";
+import type { BrowserQuery } from "../shared/ipc.js";
 import type {
   Appearance,
   BrowserAppState,
   BrowserSettingsState,
   BrowserObservationContext,
   BrowserTabState,
+  BrowserPaneId,
+  PaletteResultState,
+  ReaderArticleState,
+  ReaderPreferencesState,
+  ResearchBoardState,
+  SemanticRecallResultState,
+  TabStewardPreviewState,
   ExtensionGalleryState,
   ExtensionManagerState,
   PendingPermission,
@@ -74,9 +89,9 @@ import {
 } from "./WorkAttachmentPolicy.js";
 import { promptForNativeSecret } from "./NativeSecretPrompt.js";
 import {
-  WORK_MODEL_PROVIDERS,
   WorkModelProviderStore,
   deduplicatedWorkModels,
+  enabledWorkModelProviders,
   normalizeProviderSetup,
   publishedContextWindow,
   workModelProvider,
@@ -89,6 +104,9 @@ import { loadReleaseConfiguration } from "./ReleaseConfiguration.js";
 import { RecordingCoordinator, type RecordingTargetResult } from "./RecordingCoordinator.js";
 import { SpeechRuntime, SpeechSettingsStore } from "./SpeechRuntime.js";
 import { TranscriptVault } from "./TranscriptVault.js";
+import { LocalIntelligenceClient } from "./LocalIntelligenceClient.js";
+import { extractReadableArticle } from "./ReaderExtraction.js";
+import { buildTabStewardPreview, canonicalBrowserUrl } from "./TabSteward.js";
 
 const CHROME_HEIGHT = 92;
 const SIDEBAR_WIDTH = 248;
@@ -220,6 +238,7 @@ interface TabRecord {
   agentDownloadArmedUntil: number;
   lastActiveAt: number;
   credentialBindingName: string;
+  recallTimer?: NodeJS.Timeout;
 }
 
 interface WorkAttachmentRecord extends WorkAttachmentState {
@@ -269,6 +288,9 @@ export class BrowserController {
   readonly #speechRuntime: SpeechRuntime;
   readonly #transcriptVault: TranscriptVault;
   readonly #recording: RecordingCoordinator | undefined;
+  readonly #intelligence: LocalIntelligenceClient | undefined;
+  readonly #rendererUrl: string;
+  readonly #preloadPath: string;
   readonly #extensions: ExtensionManager | undefined;
   #extensionGallery: ExtensionGalleryClient | undefined;
   readonly #grants = new TabAccessRegistry();
@@ -285,8 +307,23 @@ export class BrowserController {
   #sessionId: string = randomUUID();
   #workView: WebContentsView | undefined;
   #activeTabId: string | undefined;
+  #primaryTabId: string | undefined;
+  #secondaryTabId: string | undefined;
+  #focusedPane: BrowserPaneId = "primary";
+  #splitRatio = 0.5;
   #sidebarOpen = false;
   #sidebarSection: SidebarSection = "tabs";
+  #settingsOpen = false;
+  #paletteOpen = false;
+  #internalSurface: BrowserAppState["internalSurface"];
+  readonly #readerArticles = new Map<string, ReaderArticleState>();
+  readonly #readerViews = new Map<string, WebContentsView>();
+  readonly #researchBoards = new Map<string, ResearchBoardState>();
+  readonly #researchRequests = new Map<string, string>();
+  #activeResearchBoardId: string | undefined;
+  #readerLoadingTabId: string | undefined;
+  #readerMessage = "";
+  #readerPreferences: ReaderPreferencesState;
   #settings: BrowserSettingsState;
   #workOpen = false;
   #workWidth = WORK_DEFAULT;
@@ -331,9 +368,12 @@ export class BrowserController {
   #extensionGalleryEntries: ExtensionGalleryEntry[] = [];
   #extensionGalleryRefreshedAt: number | undefined;
   #trustedSurfaceCrashes: number[] = [];
+  #recallQueue: Promise<void> = Promise.resolve();
   #disposed = false;
 
   constructor(rendererUrl: string, preloadPath: string, platformRoot: string, options: BrowserControllerOptions = {}) {
+    this.#rendererUrl = rendererUrl;
+    this.#preloadPath = preloadPath;
     this.#privateWindow = Boolean(options.privateWindow);
     this.#onNewPrivateWindow = options.onNewPrivateWindow;
     this.#onOpenProfile = options.onOpenProfile;
@@ -355,6 +395,19 @@ export class BrowserController {
     }
     this.#windowId = options.windowId ?? (this.#privateWindow ? `private-${randomUUID()}` : this.#profileId === "default" ? "primary" : `primary-${this.#profileId}`);
     this.#settings = this.#loadSettings();
+    this.#readerPreferences = this.#loadReaderPreferences();
+    this.#intelligence = this.#privateWindow ? undefined : new LocalIntelligenceClient(
+      this.#database,
+      electronCredentialCipher,
+      this.#profileId,
+      join(app.getPath("userData"), "Local Intelligence"),
+      platformRoot,
+      () => this.#settings.semanticRecallEnabled,
+      () => this.#broadcast(),
+    );
+    if (!this.#settings.localModelsEnabled && this.#workModelProviders.activeProvider() === "local") {
+      this.#workModelProviders.setActive("chatgpt-plan");
+    }
     this.#runtime = new AgentRuntime(platformRoot, join(app.getPath("userData"), "agent"));
     const stored = this.#privateWindow ? undefined : this.#database.loadWindow(this.#windowId);
     this.#sidebarOpen = Boolean(stored?.sidebarOpen);
@@ -474,8 +527,17 @@ export class BrowserController {
       tabs: [...this.#tabs.values()].map((tab) => ({
         ...tab.state,
         active: tab.state.id === this.#activeTabId,
+        ...(tab.state.id === this.#primaryTabId ? { pane: "primary" as const, focused: this.#focusedPane === "primary" } : {}),
+        ...(tab.state.id === this.#secondaryTabId ? { pane: "secondary" as const, focused: this.#focusedPane === "secondary" } : {}),
         grants: this.#grants.grantsForTab(tab.state.id),
       })),
+      splitView: {
+        enabled: Boolean(this.#primaryTabId && this.#secondaryTabId),
+        ...(this.#primaryTabId ? { primaryTabId: this.#primaryTabId } : {}),
+        ...(this.#secondaryTabId ? { secondaryTabId: this.#secondaryTabId } : {}),
+        focusedPane: this.#focusedPane,
+        ratio: this.#splitRatio,
+      },
       groups: [...this.#groups.values()].sort((a, b) => a.position - b.position),
       profiles: this.#database.listProfiles(),
       currentProfile: this.#database.profile(this.#profileId)!,
@@ -505,6 +567,9 @@ export class BrowserController {
       ...(this.#configuredSyncServiceUrl ? { configuredSyncServiceUrl: this.#configuredSyncServiceUrl } : {}),
       remoteTabs: this.#sync?.remoteTabs() ?? [],
       onboardingRequired: !this.#privateWindow && !this.#settings.onboardingComplete,
+      settingsOpen: this.#settingsOpen,
+      paletteOpen: this.#paletteOpen,
+      ...(this.#internalSurface ? { internalSurface: this.#internalSurface } : {}),
       settings: this.#settings,
       activePageBookmarked: Boolean(!this.#privateWindow && activeUrl && this.#database.bookmarkForUrl(this.#profileId, activeUrl)),
       find: this.#find,
@@ -514,6 +579,27 @@ export class BrowserController {
       workOverlay: this.#workOverlay,
       searchEngine: this.#settings.searchEngine,
       recording: this.#recording?.state() ?? idleRecordingState(this.#settings.speech.engine),
+      semanticRecall: this.#intelligence?.status() ?? {
+        enabled: false, status: "disabled", documentCount: 0, storageBytes: 0,
+        capBytes: 500 * 1024 * 1024, excludedOrigins: [], message: "Private recall is unavailable in Private Windows.",
+      },
+      research: {
+        boards: this.#intelligence?.boards() ?? [], generating: this.#intelligence?.boards().some((board) => board.status === "generating") ?? false,
+        ...(this.#activeResearchBoardId ? { activeBoardId: this.#activeResearchBoardId } : {}),
+        message: "Select up to ten shared tabs to create a cited research board.",
+      },
+      tabSteward: {
+        suggestionCount: this.#privateWindow ? 0 : buildTabStewardPreview(this.#tabStates()).suggestions.length,
+        bundleCount: this.#intelligence?.bundles().length ?? 0,
+      },
+      reader: {
+        ...(this.#activeTabId ? { tabId: this.#activeTabId } : {}),
+        available: Boolean(this.#activeTabId && this.#readerArticles.has(this.#activeTabId)),
+        active: Boolean(this.#activeTabId && this.#readerViews.has(this.#activeTabId)),
+        loading: this.#readerLoadingTabId === this.#activeTabId,
+        ...(this.#readerMessage ? { message: this.#readerMessage } : {}),
+        preferences: this.#readerPreferences,
+      },
       work: {
         sessionId: this.#sessionId,
         mode: this.#workMode,
@@ -545,12 +631,17 @@ export class BrowserController {
     const width = contentSize[0]!;
     const height = contentSize[1]!;
     const chromeHeight = this.#chromeHeight();
-    const page = this.#active()?.view;
-    if (!page) throw new Error("No browser page is available to capture");
-    const shellImage = await this.window.webContents.capturePage({ x: 0, y: 0, width, height: chromeHeight });
-    const pageImage = await page.webContents.capturePage();
+    const shellImage = await this.window.webContents.capturePage({ x: 0, y: 0, width, height });
+    const chromeImage = await this.window.webContents.capturePage({ x: 0, y: 0, width, height: chromeHeight });
+    const visibleSurfaces = this.#internalSurface || this.#paletteOpen ? [] : [this.#primaryTabId, this.#secondaryTabId]
+      .filter((id): id is string => Boolean(id))
+      .map((id) => this.#readerViews.get(id) ?? this.#tabs.get(id)?.view)
+      .filter((view): view is WebContentsView => Boolean(view));
+    const pageImages = await Promise.all(visibleSurfaces.map(async (view) => ({
+      image: await view.webContents.capturePage(),
+      bounds: view.getBounds(),
+    })));
     const workImage = this.#workOpen && this.#workView ? await this.#workView.webContents.capturePage() : undefined;
-    const pageBounds = page.getBounds();
     const workBounds = this.#workView?.getBounds();
     const compositor = new BrowserWindow({
       show: false,
@@ -569,9 +660,10 @@ export class BrowserController {
     });
     const image = (data: Buffer, bounds: Rectangle) => `<img alt="" src="data:image/png;base64,${data.toString("base64")}" style="position:absolute;left:${bounds.x}px;top:${bounds.y}px;width:${bounds.width}px;height:${bounds.height}px">`;
     const html = `<!doctype html><html><body style="margin:0;overflow:hidden;background:#11130f">
-      ${image(pageImage.toPNG(), pageBounds)}
+      ${image(shellImage.toPNG(), { x: 0, y: 0, width, height })}
+      ${pageImages.map((item) => image(item.image.toPNG(), item.bounds)).join("")}
       ${workImage && workBounds ? image(workImage.toPNG(), workBounds) : ""}
-      ${image(shellImage.toPNG(), { x: 0, y: 0, width, height: chromeHeight })}
+      ${image(chromeImage.toPNG(), { x: 0, y: 0, width, height: chromeHeight })}
     </body></html>`;
     try {
       await compositor.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
@@ -591,15 +683,37 @@ export class BrowserController {
   }
 
   ownsSender(senderId: number): boolean {
-    return this.window.webContents.id === senderId || this.#workView?.webContents.id === senderId;
+    return this.window.webContents.id === senderId || this.#workView?.webContents.id === senderId
+      || [...this.#readerViews.values()].some((view) => view.webContents.id === senderId);
   }
 
   ownsShellSender(senderId: number): boolean {
     return this.window.webContents.id === senderId;
   }
 
+  ownsReaderSender(senderId: number): boolean {
+    return [...this.#readerViews.values()].some((view) => view.webContents.id === senderId);
+  }
+
   ownsRecorderSender(senderId: number): boolean {
     return Boolean(this.#recording?.ownsSender(senderId));
+  }
+
+  async query(query: BrowserQuery, senderId?: number): Promise<unknown> {
+    switch (query.type) {
+      case "semantic-recall-search":
+        return await this.#searchRecall(query.query, query.limit);
+      case "palette-search":
+        return await this.#searchPalette(query.query, query.limit);
+      case "research-board-get":
+        return this.#researchBoards.get(query.boardId) ?? await this.#intelligence?.board(query.boardId);
+      case "tab-steward-preview":
+        return this.#privateWindow ? { suggestions: [], generatedAt: Date.now() } : buildTabStewardPreview(this.#tabStates());
+      case "resume-bundles":
+        return this.#intelligence?.bundles() ?? [];
+      case "reader-current":
+        return this.#readerArticleForSender(senderId);
+    }
   }
 
   handleRecorderMessage(raw: unknown): void {
@@ -609,6 +723,9 @@ export class BrowserController {
   async command(command: BrowserCommand): Promise<BrowserAppState> {
     switch (command.type) {
       case "new-tab":
+        this.#settingsOpen = false;
+        this.#internalSurface = undefined;
+        this.#paletteOpen = false;
         this.#createTab(command.url ?? searchHome(this.#settings.searchEngine), { active: true, private: this.#privateWindow });
         break;
       case "new-private-window":
@@ -632,7 +749,26 @@ export class BrowserController {
         await this.#deleteProfile(command.profileId);
         break;
       case "select-tab":
+        this.#settingsOpen = false;
+        this.#internalSurface = undefined;
+        this.#paletteOpen = false;
         await this.#selectTab(command.tabId);
+        break;
+      case "toggle-split-view":
+        await this.#toggleSplitView();
+        break;
+      case "exit-split-view":
+        this.#exitSplitView();
+        break;
+      case "assign-tab-to-pane":
+        await this.#assignTabToPane(command.tabId, command.pane);
+        break;
+      case "focus-pane":
+        await this.#focusPane(command.pane);
+        break;
+      case "set-split-ratio":
+        this.#splitRatio = clampFloat(command.ratio, 0.3, 0.7);
+        this.#layout(false);
         break;
       case "close-tab":
         this.#closeTab(command.tabId);
@@ -665,10 +801,20 @@ export class BrowserController {
         this.#deleteTabGroup(command.groupId);
         break;
       case "navigate":
+        this.#settingsOpen = false;
+        this.#internalSurface = undefined;
+        this.#paletteOpen = false;
         await this.#navigateActive(command.value);
         break;
       case "back":
-        this.#active()?.view?.webContents.navigationHistory.goBack();
+        if (this.#internalSurface) {
+          this.#settingsOpen = false;
+          this.#internalSurface = undefined;
+          await this.#recording?.refreshTarget();
+          this.#layout(false);
+        } else {
+          this.#active()?.view?.webContents.navigationHistory.goBack();
+        }
         break;
       case "forward":
         this.#active()?.view?.webContents.navigationHistory.goForward();
@@ -688,6 +834,33 @@ export class BrowserController {
         this.#sidebarOpen = true;
         this.#layout(true);
         break;
+      case "open-settings":
+        this.#settingsOpen = true;
+        this.#internalSurface = { type: "settings" };
+        this.#sidebarOpen = false;
+        this.#closeFind();
+        await this.#recording?.refreshTarget();
+        this.#layout(false);
+        break;
+      case "close-settings":
+        this.#settingsOpen = false;
+        this.#internalSurface = undefined;
+        await this.#recording?.refreshTarget();
+        this.#layout(false);
+        break;
+      case "close-internal-surface":
+        this.#settingsOpen = false;
+        this.#internalSurface = undefined;
+        this.#layout(false);
+        break;
+      case "open-command-palette":
+        this.#paletteOpen = true;
+        this.#layout(false);
+        break;
+      case "close-command-palette":
+        this.#paletteOpen = false;
+        this.#layout(false);
+        break;
       case "toggle-bookmark":
         this.#toggleBookmark();
         break;
@@ -695,6 +868,9 @@ export class BrowserController {
         this.#database.removeBookmark(this.#profileId, command.bookmarkId);
         break;
       case "open-library-item":
+        this.#settingsOpen = false;
+        this.#internalSurface = undefined;
+        this.#paletteOpen = false;
         this.#createTab(command.url, { active: true, private: this.#privateWindow });
         break;
       case "reveal-download": {
@@ -766,6 +942,100 @@ export class BrowserController {
         this.#settings = { ...this.#settings, sleepAfterMinutes: command.minutes };
         this.#database.setSetting(this.#profileId, "sleepAfterMinutes", command.minutes);
         this.#sleepEligibleTabs();
+        break;
+      case "set-local-models-enabled":
+        this.#settings = { ...this.#settings, localModelsEnabled: command.enabled };
+        this.#database.setSetting(this.#profileId, "localModelsEnabled", command.enabled);
+        if (command.enabled) {
+          await this.#refreshLocalModelCatalog();
+          this.#workModelMessage = "Local Work models are enabled on this Mac";
+        } else {
+          this.#workModelCatalogs.delete("local");
+          if (this.#workModelProviders.activeProvider() === "local") {
+            this.#workModelProviders.setActive("chatgpt-plan");
+          }
+          this.#workModelMessage = "Local Work models are off. Choose ChatGPT Plan or an API provider.";
+        }
+        this.#rebuildWorkModelState();
+        break;
+      case "set-semantic-recall-enabled":
+        if (this.#privateWindow) throw new Error("Private Recall is unavailable in Private Windows");
+        this.#settings = { ...this.#settings, semanticRecallEnabled: command.enabled };
+        this.#database.setSetting(this.#profileId, "semanticRecallEnabled", command.enabled);
+        await this.#intelligence?.refresh();
+        if (command.enabled) this.#scheduleRecallForVisibleTabs();
+        break;
+      case "clear-semantic-recall":
+        await this.#intelligence?.clearRecall();
+        break;
+      case "delete-recall-document":
+        await this.#intelligence?.deleteDocument(command.documentId);
+        break;
+      case "add-recall-exclusion":
+        await this.#intelligence?.setExcluded(command.origin, true);
+        break;
+      case "remove-recall-exclusion":
+        await this.#intelligence?.setExcluded(command.origin, false);
+        break;
+      case "open-research-board":
+        if (this.#privateWindow) throw new Error("Research Boards are unavailable in Private Windows");
+        this.#settingsOpen = false;
+        this.#activeResearchBoardId = command.boardId;
+        this.#internalSurface = command.boardId ? { type: "research", boardId: command.boardId } : { type: "research" };
+        this.#layout(false);
+        break;
+      case "generate-research-board":
+        await this.#generateResearchBoard(command.tabIds, command.prompt, command.format);
+        break;
+      case "export-research-board":
+        await this.#exportResearchBoard(command.boardId, command.format);
+        break;
+      case "delete-research-board":
+        await this.#intelligence?.deleteBoard(command.boardId);
+        this.#researchBoards.delete(command.boardId);
+        if (this.#activeResearchBoardId === command.boardId) this.#activeResearchBoardId = undefined;
+        break;
+      case "open-tab-steward":
+        if (this.#privateWindow) throw new Error("Tab Steward is unavailable in Private Windows");
+        this.#settingsOpen = false;
+        this.#internalSurface = { type: "tab-steward" };
+        this.#layout(false);
+        break;
+      case "apply-tab-steward":
+        await this.#applyTabSteward(command.suggestionIds);
+        break;
+      case "save-resume-bundle":
+        await this.#saveResumeBundle(command.name, command.tabIds, command.closeAfter);
+        break;
+      case "open-resume-bundle":
+        await this.#openResumeBundle(command.bundleId);
+        break;
+      case "delete-resume-bundle":
+        await this.#intelligence?.deleteBundle(command.bundleId);
+        break;
+      case "execute-palette-action":
+        this.#paletteOpen = false;
+        await this.#executePaletteAction(command.action);
+        break;
+      case "toggle-reader":
+        await this.#toggleReader();
+        break;
+      case "reader-open-link":
+        this.#exitReader(this.#activeTabId);
+        await this.#navigateActive(command.url);
+        break;
+      case "set-reader-preferences":
+        this.#readerPreferences = {
+          ...this.#readerPreferences,
+          ...(command.theme !== undefined ? { theme: command.theme } : {}),
+          ...(command.textScale !== undefined ? { textScale: command.textScale } : {}),
+          ...(command.columnWidth !== undefined ? { columnWidth: command.columnWidth } : {}),
+          ...(command.lineSpacing !== undefined ? { lineSpacing: command.lineSpacing } : {}),
+          ...(command.voice !== undefined ? { voice: command.voice } : {}),
+          ...(command.rate !== undefined ? { rate: command.rate } : {}),
+        };
+        this.#database.setSetting(this.#profileId, "readerPreferences", this.#readerPreferences);
+        for (const article of this.#readerArticles.values()) article.preferences = this.#readerPreferences;
         break;
       case "configure-speech":
         this.#speechSettings.save({
@@ -1057,6 +1327,379 @@ export class BrowserController {
     return this.state();
   }
 
+  async #searchRecall(query: string, limit: number): Promise<SemanticRecallResultState[]> {
+    if (this.#privateWindow) return [];
+    const words = query.toLowerCase().match(/[\p{L}\p{N}]{2,}/gu) ?? [];
+    const score = (value: string) => {
+      const lower = value.toLowerCase();
+      return words.length ? words.filter((word) => lower.includes(word)).length / words.length : 0;
+    };
+    const conventional: SemanticRecallResultState[] = [];
+    for (const tab of this.#tabs.values()) {
+      const rank = score(`${tab.state.title} ${tab.state.url}`);
+      if (rank) conventional.push({
+        id: `tab:${tab.state.id}`, title: tab.state.title, url: tab.state.url, visitedAt: tab.lastActiveAt,
+        snippet: tab.state.url, score: 1 + rank, source: "open-tab", openTabId: tab.state.id,
+      });
+    }
+    for (const bookmark of this.#database.listBookmarks(this.#profileId)) {
+      const rank = score(`${bookmark.title} ${bookmark.url}`);
+      if (rank) conventional.push({
+        id: `bookmark:${bookmark.id}`, title: bookmark.title, url: bookmark.url, visitedAt: bookmark.updatedAt * 1_000,
+        snippet: bookmark.url, score: 0.8 + rank, source: "bookmark",
+      });
+    }
+    for (const history of this.#database.listHistory(this.#profileId)) {
+      const rank = score(`${history.title} ${history.url}`);
+      if (rank) conventional.push({
+        id: `history:${history.id}`, title: history.title, url: history.url, visitedAt: history.visitedAt * 1_000,
+        snippet: history.url, score: 0.5 + rank, source: "history",
+      });
+    }
+    const semantic = this.#settings.semanticRecallEnabled ? await this.#intelligence?.search(query, limit) ?? [] : [];
+    const merged = new Map<string, SemanticRecallResultState>();
+    for (const item of [...conventional, ...semantic]) {
+      const key = canonicalBrowserUrl(item.url) ?? item.url;
+      const existing = merged.get(key);
+      if (!existing || existing.score < item.score) merged.set(key, item);
+      else if (!existing.openTabId && item.openTabId) merged.set(key, { ...existing, openTabId: item.openTabId, source: "open-tab" });
+    }
+    return [...merged.values()].sort((left, right) => right.score - left.score || right.visitedAt - left.visitedAt).slice(0, limit);
+  }
+
+  async #searchPalette(rawQuery: string, limit: number): Promise<PaletteResultState[]> {
+    const query = rawQuery.trim().toLowerCase();
+    const results: PaletteResultState[] = [];
+    const add = (item: Omit<PaletteResultState, "score">, text: string, boost = 0) => {
+      const score = paletteScore(query, text) + boost;
+      if (!query || score > 0) results.push({ ...item, score });
+    };
+    for (const tab of this.#tabs.values()) add({
+      id: `tab:${tab.state.id}`, kind: "tab", label: tab.state.title, detail: tab.state.url,
+      action: { type: "select-tab", tabId: tab.state.id },
+    }, `${tab.state.title} ${tab.state.url}`, 1.2);
+    const commands: Array<{ id: string; label: string; detail: string; action: PaletteResultState["action"] }> = [
+      { id: "split", label: "Toggle Split View", detail: "Show two live pages side by side", action: { type: "toggle-split" } },
+      { id: "reader", label: "Reader Mode", detail: "Read this page without distractions", action: { type: "toggle-reader" } },
+      { id: "work", label: "Toggle Work Mode", detail: "Open or close the Locus agent dock", action: { type: "toggle-work" } },
+      { id: "settings", label: "Open Settings", detail: "Browser, privacy, models, speech and sync", action: { type: "open-settings" } },
+      { id: "history", label: "Open History", detail: "Search browsing history and Private Recall", action: { type: "set-sidebar-section", section: "history" } },
+      { id: "downloads", label: "Open Downloads", detail: "View downloads", action: { type: "set-sidebar-section", section: "downloads" } },
+      { id: "steward", label: "Open Tab Steward", detail: "Review duplicate and grouping suggestions", action: { type: "open-tab-steward" } },
+      { id: "research", label: "New Research Board", detail: "Create a cited brief from shared tabs", action: { type: "new-research" } },
+      { id: "record", label: "Start Recording", detail: "Capture shared tab context with visible controls", action: { type: "start-recording" } },
+    ];
+    for (const command of commands.filter((item) => !this.#privateWindow || ["split", "reader"].includes(item.id))) {
+      add({ id: `command:${command.id}`, kind: "command", label: command.label, detail: command.detail, action: command.action }, `${command.label} ${command.detail}`, 0.8);
+    }
+    if (!this.#privateWindow) {
+      for (const bookmark of this.#database.listBookmarks(this.#profileId)) add({
+        id: `bookmark:${bookmark.id}`, kind: "bookmark", label: bookmark.title, detail: bookmark.url,
+        action: { type: "open-url", url: bookmark.url },
+      }, `${bookmark.title} ${bookmark.url}`, 0.5);
+      for (const history of this.#database.listHistory(this.#profileId).slice(0, 500)) add({
+        id: `history:${history.id}`, kind: "history", label: history.title, detail: history.url,
+        action: { type: "open-url", url: history.url },
+      }, `${history.title} ${history.url}`, 0.3);
+      for (const conversation of this.#conversations) add({
+        id: `conversation:${conversation.id}`, kind: "conversation", label: conversation.title, detail: conversation.preview,
+        action: { type: "select-conversation", sessionId: conversation.id },
+      }, `${conversation.title} ${conversation.preview}`, 0.45);
+      for (const board of this.#intelligence?.boards() ?? []) add({
+        id: `research:${board.id}`, kind: "research", label: board.title, detail: `${board.sourceCount} cited sources`,
+        action: { type: "open-research", boardId: board.id },
+      }, board.title, 0.55);
+      for (const bundle of this.#intelligence?.bundles() ?? []) add({
+        id: `bundle:${bundle.id}`, kind: "bundle", label: bundle.name, detail: `${bundle.tabCount} tabs · Resume Later`,
+        action: { type: "open-bundle", bundleId: bundle.id },
+      }, bundle.name, 0.5);
+      if (query && this.#settings.semanticRecallEnabled) {
+        for (const recall of await this.#searchRecall(query, Math.min(limit, 20))) add({
+          id: `recall:${recall.id}`, kind: "recall", label: recall.title, detail: recall.snippet,
+          action: recall.openTabId ? { type: "select-tab", tabId: recall.openTabId } : { type: "open-url", url: recall.url },
+        }, `${recall.title} ${recall.url} ${recall.snippet}`, 0.4 + recall.score);
+      }
+    }
+    return dedupePalette(results).sort((left, right) => right.score - left.score).slice(0, limit);
+  }
+
+  async #executePaletteAction(action: PaletteResultState["action"]): Promise<void> {
+    switch (action.type) {
+      case "select-tab": await this.#selectTab(action.tabId); break;
+      case "open-url": {
+        const existing = [...this.#tabs.values()].find((tab) => canonicalBrowserUrl(tab.state.url) === canonicalBrowserUrl(action.url));
+        if (existing) await this.#selectTab(existing.state.id);
+        else this.#createTab(action.url, { active: true, private: this.#privateWindow });
+        break;
+      }
+      case "select-conversation": await this.#selectWorkConversation(action.sessionId); this.#workOpen = true; break;
+      case "open-research": this.#internalSurface = { type: "research", boardId: action.boardId }; this.#layout(false); break;
+      case "open-bundle": await this.#openResumeBundle(action.bundleId); break;
+      case "open-settings": this.#settingsOpen = true; this.#internalSurface = { type: "settings" }; this.#sidebarOpen = false; this.#layout(false); break;
+      case "open-settings-section": this.#settingsOpen = true; this.#internalSurface = { type: "settings" }; this.#layout(false); break;
+      case "set-sidebar-section": this.#sidebarSection = action.section; this.#sidebarOpen = true; this.#layout(true); break;
+      case "toggle-work": this.#workOpen = !this.#workOpen; this.#layout(true); break;
+      case "toggle-split": await this.#toggleSplitView(); break;
+      case "toggle-reader": await this.#toggleReader(); break;
+      case "toggle-tab-mute": await this.command({ type: "toggle-tab-mute", tabId: action.tabId }); break;
+      case "open-tab-steward": this.#internalSurface = { type: "tab-steward" }; this.#layout(false); break;
+      case "new-research": this.#internalSurface = { type: "research" }; this.#layout(false); break;
+      case "start-recording": await this.command({ type: "start-recording", shareLevel: "read", tabAudio: true, microphone: true, saveVideo: false }); break;
+    }
+  }
+
+  async #applyTabSteward(suggestionIds: string[]): Promise<void> {
+    if (this.#privateWindow) return;
+    const preview = buildTabStewardPreview(this.#tabStates());
+    for (const suggestion of preview.suggestions.filter((item) => suggestionIds.includes(item.id))) {
+      if (suggestion.type === "duplicate") {
+        const tabs = suggestion.tabIds.flatMap((id) => this.#tabs.get(id) ? [this.#tabs.get(id)!] : []);
+        if (tabs.length < 2) continue;
+        const keep = tabs.find((tab) => tab.state.id === this.#activeTabId) ?? tabs[0]!;
+        const closing = tabs.filter((tab) => tab !== keep);
+        const result = await dialog.showMessageBox(this.window, {
+          type: "warning", title: "Close duplicate tabs?", message: `Keep “${keep.state.title}” and close ${closing.length} duplicate ${closing.length === 1 ? "tab" : "tabs"}?`,
+          detail: closing.map((tab) => `• ${tab.state.title}\n  ${tab.state.url}`).join("\n"),
+          buttons: ["Close Duplicates", "Cancel"], defaultId: 1, cancelId: 1, noLink: true,
+        });
+        if (result.response === 0) for (const tab of closing) this.#closeTab(tab.state.id);
+      } else {
+        const tabs = suggestion.tabIds.flatMap((id) => this.#tabs.get(id) ? [this.#tabs.get(id)!] : []);
+        if (tabs.length < 3) continue;
+        const id = randomUUID();
+        this.#groups.set(id, { id, name: suggestion.groupName || "Related tabs", color: GROUP_COLORS[this.#groups.size % GROUP_COLORS.length]!, collapsed: false, position: this.#groups.size });
+        for (const tab of tabs) tab.state.groupId = id;
+      }
+    }
+  }
+
+  async #saveResumeBundle(name: string, tabIds: string[], closeAfter: boolean): Promise<void> {
+    if (this.#privateWindow || !this.#intelligence) return;
+    const tabs = tabIds.flatMap((id) => {
+      const tab = this.#tabs.get(id);
+      return tab && !tab.state.private && /^https?:\/\//.test(tab.state.url) ? [tab] : [];
+    });
+    if (!tabs.length) throw new Error("Choose at least one normal web tab");
+    if (closeAfter) {
+      const result = await dialog.showMessageBox(this.window, {
+        type: "warning", title: "Save and close these tabs?", message: `Create “${name}” and close ${tabs.length} ${tabs.length === 1 ? "tab" : "tabs"}?`,
+        detail: tabs.map((tab) => `• ${tab.state.title}`).join("\n"), buttons: ["Save and Close", "Cancel"], defaultId: 1, cancelId: 1, noLink: true,
+      });
+      if (result.response !== 0) return;
+    }
+    await this.#intelligence.saveBundle({ name, tabs: tabs.map((tab) => ({ title: tab.state.title, url: tab.state.url })) });
+    if (closeAfter) for (const tab of tabs) this.#closeTab(tab.state.id);
+  }
+
+  async #openResumeBundle(bundleId: string): Promise<void> {
+    const bundle = await this.#intelligence?.bundle(bundleId);
+    if (!bundle) return;
+    const open = new Set([...this.#tabs.values()].flatMap((tab) => canonicalBrowserUrl(tab.state.url) ?? []));
+    for (const tab of bundle.tabs) {
+      const canonical = canonicalBrowserUrl(tab.url);
+      if (canonical && open.has(canonical)) continue;
+      this.#createTab(tab.url, { active: false, title: tab.title, private: false });
+      if (canonical) open.add(canonical);
+    }
+  }
+
+  async #generateResearchBoard(tabIds: string[], prompt: string, format: ResearchBoardState["format"]): Promise<void> {
+    if (this.#privateWindow || !this.#intelligence) throw new Error("Research Boards are unavailable in Private Windows");
+    if (this.#runtimeState !== "online") throw new Error("Connect a Work model before generating a Research Board");
+    const uniqueIds = [...new Set(tabIds)].slice(0, 10);
+    const tabs = uniqueIds.map((id) => this.#tabs.get(id)).filter((tab): tab is TabRecord => Boolean(tab));
+    if (!tabs.length) throw new Error("Choose at least one shared tab");
+    for (const tab of tabs) {
+      const created = tab.sessionCreatedBy === this.#sessionId;
+      if (!created && !this.#grants.can(this.#sessionId, tab.state.id, "read")) {
+        throw new Error(`Share “${tab.state.title}” with this Work conversation first`);
+      }
+      if (TabAccessRegistry.isProtectedUrl(tab.state.url, tab.state.private) || !/^https?:\/\//.test(tab.state.url)) {
+        throw new Error(`“${tab.state.title}” cannot be used as a research source`);
+      }
+    }
+    const sources: ResearchBoardState["sources"] = [];
+    let remaining = 120_000;
+    for (const tab of tabs) {
+      if (remaining <= 0) break;
+      const snapshot = await this.#bridge(tab, bridgeInvocation.strictSnapshot({ maxChars: Math.min(100_000, remaining) })) as {
+        url?: string; title?: string; text?: string; capturedAt?: string;
+      };
+      const text = (snapshot.text || "").trim().slice(0, remaining);
+      if (text.length < 80 || snapshot.url !== tab.state.url) continue;
+      const sourceId = randomUUID();
+      const passages = researchPassages(sourceId, text);
+      sources.push({
+        sourceId, tabId: tab.state.id, title: snapshot.title || tab.state.title, url: tab.state.url,
+        capturedAt: snapshot.capturedAt || new Date().toISOString(),
+        contentHash: createHash("sha256").update(text).digest("hex"), passages,
+      });
+      remaining -= passages.reduce((total, passage) => total + passage.text.length, 0);
+    }
+    if (!sources.length) throw new Error("The selected pages did not contain eligible readable content");
+    const boardId = randomUUID();
+    const requestId = randomUUID();
+    const now = Date.now();
+    const board: ResearchBoardState = {
+      id: boardId, workSessionId: this.#sessionId, prompt, format, title: "Research in progress",
+      summary: "", sections: [], sources, status: "generating", message: "Capturing immutable source passages…",
+      createdAt: now, updatedAt: now,
+    };
+    this.#researchBoards.set(boardId, board);
+    this.#researchRequests.set(requestId, boardId);
+    this.#activeResearchBoardId = boardId;
+    this.#internalSurface = { type: "research", boardId };
+    await this.#intelligence.saveBoard(board);
+    const request = ResearchBoardRequestSchema.parse({
+      type: "research_board_request", request_id: requestId, prompt, format,
+      sources: sources.map((source) => ({
+        source_id: source.sourceId, tab_id: source.tabId, title: source.title, url: source.url,
+        captured_at: source.capturedAt, content_hash: source.contentHash,
+        passages: source.passages.map((passage) => ({ passage_id: passage.passageId, text: passage.text })),
+      })),
+    });
+    if (!this.#runtime.send(request)) {
+      board.status = "error"; board.message = "The selected Work model is offline."; board.updatedAt = Date.now();
+      await this.#intelligence.saveBoard(board);
+      this.#researchRequests.delete(requestId);
+    }
+    this.#layout(false);
+  }
+
+  async #handleResearchAgentEvent(event: AgentEvent): Promise<boolean> {
+    const type = String(event.type || "");
+    if (!["research_board_progress", "research_board_result", "research_board_error"].includes(type)) return false;
+    const requestId = String(event.request_id || "");
+    const boardId = this.#researchRequests.get(requestId);
+    if (!boardId) return true;
+    const board = this.#researchBoards.get(boardId) ?? await this.#intelligence?.board(boardId);
+    if (!board) return true;
+    this.#researchBoards.set(boardId, board);
+    if (type === "research_board_progress") {
+      const parsed = ResearchBoardProgressSchema.safeParse(event);
+      if (parsed.success) { board.message = parsed.data.message; board.updatedAt = Date.now(); await this.#intelligence?.saveBoard(board); }
+      this.#broadcast();
+      return true;
+    }
+    if (type === "research_board_error") {
+      const parsed = ResearchBoardErrorSchema.safeParse(event);
+      board.status = "error"; board.message = parsed.success ? parsed.data.error : "Research generation failed"; board.updatedAt = Date.now();
+      this.#researchRequests.delete(requestId); await this.#intelligence?.saveBoard(board); this.#broadcast(); return true;
+    }
+    const parsed = ResearchBoardResultSchema.safeParse(event);
+    const wireSources: ResearchSource[] = board.sources.map((source) => ({
+      source_id: source.sourceId, tab_id: source.tabId, title: source.title, url: source.url,
+      captured_at: source.capturedAt, content_hash: source.contentHash,
+      passages: source.passages.map((passage) => ({ passage_id: passage.passageId, text: passage.text })),
+    }));
+    if (!parsed.success || !validateResearchArtifactCitations(parsed.data.artifact, wireSources)) {
+      board.status = "error"; board.message = "The model returned an uncited or invalid result. Nothing was displayed.";
+    } else {
+      board.title = parsed.data.artifact.title; board.summary = parsed.data.artifact.summary;
+      board.sections = parsed.data.artifact.sections.map((section) => ({
+        heading: section.heading,
+        claims: section.claims.map((claim) => ({ text: claim.text, citations: claim.citations.map((citation) => ({ sourceId: citation.source_id, passageId: citation.passage_id })) })),
+      }));
+      board.status = "ready"; board.message = "Every factual claim is linked to captured evidence.";
+    }
+    board.updatedAt = Date.now(); this.#researchRequests.delete(requestId);
+    await this.#intelligence?.saveBoard(board); this.#broadcast(); return true;
+  }
+
+  async #exportResearchBoard(boardId: string, format: "markdown" | "pdf"): Promise<void> {
+    const board = this.#researchBoards.get(boardId) ?? await this.#intelligence?.board(boardId);
+    if (!board || board.status !== "ready") throw new Error("Finish generating this board before exporting it");
+    const safeTitle = (board.title || "Locus Research").replace(/[^a-zA-Z0-9 ._-]/g, "").trim().slice(0, 90) || "Locus Research";
+    const result = await dialog.showSaveDialog(this.window, {
+      title: `Export ${board.title}`, defaultPath: join(app.getPath("documents"), `${safeTitle}.${format === "pdf" ? "pdf" : "md"}`),
+      filters: [{ name: format === "pdf" ? "PDF document" : "Markdown document", extensions: [format === "pdf" ? "pdf" : "md"] }],
+    });
+    if (result.canceled || !result.filePath) return;
+    if (format === "markdown") {
+      await writeFile(result.filePath, researchMarkdown(board), "utf8");
+      return;
+    }
+    const compositor = new BrowserWindow({ show: false, width: 900, height: 1_200, webPreferences: { nodeIntegration: false, sandbox: true, contextIsolation: true, webSecurity: true } });
+    try {
+      await compositor.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(researchHtml(board))}`);
+      await writeFile(result.filePath, await compositor.webContents.printToPDF({ printBackground: true, pageSize: "A4" }));
+    } finally { compositor.destroy(); }
+  }
+
+  async #toggleReader(): Promise<void> {
+    const tab = this.#active();
+    if (!tab) return;
+    if (this.#readerViews.has(tab.state.id)) {
+      this.#exitReader(tab.state.id);
+      this.#readerMessage = "";
+      this.#layout(false);
+      return;
+    }
+    this.#readerLoadingTabId = tab.state.id;
+    this.#readerMessage = "Extracting this article…";
+    this.#broadcast();
+    const article = this.#readerArticles.get(tab.state.id) ?? await this.#extractReaderArticle(tab);
+    this.#readerLoadingTabId = undefined;
+    if (!article) {
+      this.#readerMessage = "Reader Mode is unavailable for this page.";
+      this.#broadcast();
+      return;
+    }
+    this.#readerArticles.set(tab.state.id, article);
+    const view = new WebContentsView({ webPreferences: trustedRendererPreferences(this.#preloadPath) });
+    view.setBackgroundColor(this.#surfaceBackground());
+    const url = surfaceUrl(this.#rendererUrl, "reader");
+    this.#bindTrustedSurfaceRecovery(view.webContents, url, "Reader Mode");
+    this.#readerViews.set(tab.state.id, view);
+    this.window.contentView.addChildView(view);
+    await view.webContents.loadURL(url);
+    this.#readerMessage = "";
+    this.#layout(false);
+  }
+
+  async #probeReader(tab: TabRecord): Promise<void> {
+    const contents = tab.view?.webContents;
+    if (!contents || contents.isDestroyed() || contents.isLoading() || !/^https?:\/\//.test(contents.getURL())) return;
+    const article = await this.#extractReaderArticle(tab).catch(() => undefined);
+    if (!article || contents.getURL() !== article.url) return;
+    this.#readerArticles.set(tab.state.id, article);
+    this.#broadcast();
+  }
+
+  async #extractReaderArticle(tab: TabRecord): Promise<ReaderArticleState | undefined> {
+    if (TabAccessRegistry.isProtectedUrl(tab.state.url, false) || !/^https?:\/\//.test(tab.state.url)) return undefined;
+    const value = await this.#bridge(tab, bridgeInvocation.readerDocument({ maxHtmlChars: 400_000 })) as {
+      available?: boolean; title?: string; url?: string; lang?: string; html?: string;
+    };
+    if (!value.available || !value.url || !value.html) return undefined;
+    if (value.url !== tab.view?.webContents.getURL()) return undefined;
+    const article = extractReadableArticle(value.html, value.url, value.title || tab.state.title);
+    if (!article) return undefined;
+    return {
+      tabId: tab.state.id, title: article.title, url: value.url, html: article.html,
+      text: article.text, preferences: this.#readerPreferences,
+      ...(article.byline ? { byline: article.byline } : {}),
+      ...(article.lang || value.lang ? { lang: (article.lang || value.lang || "").slice(0, 32) } : {}),
+    };
+  }
+
+  #exitReader(tabId?: string): void {
+    if (!tabId) return;
+    const view = this.#readerViews.get(tabId);
+    if (!view) return;
+    this.#readerViews.delete(tabId);
+    if (!view.webContents.isDestroyed()) {
+      this.window.contentView.removeChildView(view);
+      view.webContents.close();
+    }
+  }
+
+  #readerArticleForSender(senderId?: number): ReaderArticleState | undefined {
+    if (!senderId) return undefined;
+    const entry = [...this.#readerViews.entries()].find(([, view]) => view.webContents.id === senderId);
+    return entry ? this.#readerArticles.get(entry[0]) : undefined;
+  }
+
   #authorizedSyncService(raw: string): string {
     const requested = new URL(raw).origin;
     if (app.isPackaged && (!this.#configuredSyncServiceUrl || requested !== this.#configuredSyncServiceUrl)) {
@@ -1075,6 +1718,7 @@ export class BrowserController {
     this.#persistNow();
     this.#disposed = true;
     this.#sync?.dispose();
+    this.#intelligence?.dispose();
     this.#runtime.stop();
     const recordingShutdown = this.#recording?.dispose();
     this.#grants.revokeSession(this.#sessionId);
@@ -1087,9 +1731,13 @@ export class BrowserController {
     this.#sitePermissionWaiters.clear();
     this.#pendingCredential = undefined;
     for (const tab of this.#tabs.values()) {
+      clearTimeout(tab.recallTimer);
       if (tab.view && !tab.view.webContents.isDestroyed()) tab.view.webContents.close();
     }
     this.#tabs.clear();
+    for (const view of this.#readerViews.values()) if (!view.webContents.isDestroyed()) view.webContents.close();
+    this.#readerViews.clear();
+    this.#readerArticles.clear();
     this.#workView?.webContents.close();
     this.#workView = undefined;
     if (recordingShutdown) void recordingShutdown.finally(() => this.#database.close());
@@ -1138,13 +1786,26 @@ export class BrowserController {
     for (const stored of tabs) {
       this.#createTab(safeRestoreUrl(stored.url), {
         id: stored.id,
-        active: Boolean(stored.active),
+        active: false,
         title: stored.title,
         private: Boolean(stored.private),
         ...(stored.groupId ? { groupId: stored.groupId } : {}),
       });
     }
-    if (!this.#activeTabId) void this.#selectTab(tabs[0]!.id);
+    const storedWindow = this.#database.loadWindow(this.#windowId);
+    const fallbackPrimary = tabs.find((tab) => Boolean(tab.active))?.id ?? tabs[0]!.id;
+    this.#primaryTabId = storedWindow?.primaryTabId && this.#tabs.has(storedWindow.primaryTabId) ? storedWindow.primaryTabId : fallbackPrimary;
+    this.#secondaryTabId = Boolean(storedWindow?.splitEnabled) && storedWindow?.secondaryTabId
+      && storedWindow.secondaryTabId !== this.#primaryTabId && this.#tabs.has(storedWindow.secondaryTabId)
+      ? storedWindow.secondaryTabId : undefined;
+    this.#splitRatio = clampFloat(Number(storedWindow?.splitRatio) || 0.5, 0.3, 0.7);
+    this.#focusedPane = storedWindow?.focusedPane === "secondary" && this.#secondaryTabId ? "secondary" : "primary";
+    this.#activeTabId = this.#focusedPane === "secondary" ? this.#secondaryTabId : this.#primaryTabId;
+    const primary = this.#primaryTabId ? this.#tabs.get(this.#primaryTabId) : undefined;
+    const secondary = this.#secondaryTabId ? this.#tabs.get(this.#secondaryTabId) : undefined;
+    if (primary) void this.#wakeTab(primary);
+    if (secondary) void this.#wakeTab(secondary);
+    this.#layout(false);
   }
 
   #createTab(
@@ -1226,7 +1887,13 @@ export class BrowserController {
       this.#broadcast();
       this.#scheduleSave();
     };
-    contents.on("did-start-loading", () => { tab.state.mediaAvailable = false; tab.state.mediaPlaying = false; update(); });
+    contents.on("did-start-loading", () => {
+      clearTimeout(tab.recallTimer);
+      delete tab.recallTimer;
+      this.#readerArticles.delete(tab.state.id);
+      this.#exitReader(tab.state.id);
+      tab.state.mediaAvailable = false; tab.state.mediaPlaying = false; update();
+    });
     contents.on("did-stop-loading", update);
     contents.on("did-navigate", update);
     contents.on("did-navigate-in-page", update);
@@ -1262,6 +1929,8 @@ export class BrowserController {
     });
     contents.on("did-finish-load", () => {
       if (!this.#privateWindow) this.#database.recordVisit(this.#profileId, tab.state.id, contents.getURL(), contents.getTitle());
+      this.#scheduleRecallIndex(tab);
+      setTimeout(() => void this.#probeReader(tab), 450);
     });
     contents.on("found-in-page", (_event, result) => {
       if (tab.state.id !== this.#activeTabId) return;
@@ -1314,6 +1983,8 @@ export class BrowserController {
   #closeTab(id: string): void {
     const tab = this.#tabs.get(id);
     if (!tab) return;
+    this.#readerArticles.delete(id);
+    this.#exitReader(id);
     const ids = [...this.#tabs.keys()];
     const index = ids.indexOf(id);
     if (tab.view && !tab.view.webContents.isDestroyed()) {
@@ -1323,7 +1994,22 @@ export class BrowserController {
     this.#tabs.delete(id);
     this.#grants.revoke(this.#sessionId, id);
     if (this.#pendingCredential?.tabId === id) this.#pendingCredential = undefined;
-    if (this.#activeTabId === id) {
+    if (this.#secondaryTabId === id) {
+      this.#secondaryTabId = undefined;
+      this.#focusedPane = "primary";
+      this.#activeTabId = this.#primaryTabId;
+    }
+    if (this.#primaryTabId === id) {
+      if (this.#secondaryTabId) {
+        this.#primaryTabId = this.#secondaryTabId;
+        this.#secondaryTabId = undefined;
+        this.#focusedPane = "primary";
+        this.#activeTabId = this.#primaryTabId;
+      } else {
+        this.#primaryTabId = undefined;
+      }
+    }
+    if (this.#activeTabId === id || !this.#primaryTabId) {
       this.#activeTabId = undefined;
       const next = ids[index + 1] ?? ids[index - 1];
       if (next && this.#tabs.has(next)) void this.#selectTab(next);
@@ -1337,7 +2023,10 @@ export class BrowserController {
     if (!selected) return;
     this.#active()?.view?.webContents.stopFindInPage("clearSelection");
     this.#find = { open: this.#find.open, query: "", matches: 0, activeMatchOrdinal: 0 };
-    for (const tab of this.#tabs.values()) tab.view?.setVisible(false);
+    if (id === this.#primaryTabId) this.#focusedPane = "primary";
+    else if (id === this.#secondaryTabId) this.#focusedPane = "secondary";
+    else if (this.#focusedPane === "secondary" && this.#secondaryTabId) this.#secondaryTabId = id;
+    else this.#primaryTabId = id;
     this.#activeTabId = id;
     selected.lastActiveAt = Date.now();
     await this.#wakeTab(selected);
@@ -1351,6 +2040,62 @@ export class BrowserController {
       this.window.contentView.addChildView(this.#workView);
     }
     this.#layout(false);
+    await this.#recording?.refreshTarget();
+  }
+
+  async #toggleSplitView(): Promise<void> {
+    if (this.#secondaryTabId) {
+      this.#exitSplitView();
+      return;
+    }
+    const primary = this.#primaryTabId ?? this.#activeTabId;
+    if (!primary) return;
+    const secondary = [...this.#tabs.keys()].find((id) => id !== primary) ?? this.#createTab(searchHome(this.#settings.searchEngine), { active: false, private: this.#privateWindow }).state.id;
+    this.#primaryTabId = primary;
+    this.#secondaryTabId = secondary;
+    this.#focusedPane = "secondary";
+    this.#activeTabId = secondary;
+    await this.#wakeTab(this.#tabs.get(secondary)!);
+    this.#layout(true);
+    await this.#recording?.refreshTarget();
+  }
+
+  #exitSplitView(): void {
+    const keep = this.#focusedPane === "secondary" && this.#secondaryTabId ? this.#secondaryTabId : this.#primaryTabId;
+    this.#primaryTabId = keep;
+    this.#secondaryTabId = undefined;
+    this.#focusedPane = "primary";
+    this.#activeTabId = keep;
+    this.#layout(true);
+    void this.#recording?.refreshTarget();
+  }
+
+  async #assignTabToPane(tabId: string, pane: BrowserPaneId): Promise<void> {
+    if (!this.#tabs.has(tabId)) return;
+    if (pane === "primary") {
+      if (tabId === this.#secondaryTabId) this.#secondaryTabId = this.#primaryTabId;
+      this.#primaryTabId = tabId;
+    } else {
+      if (tabId === this.#primaryTabId) this.#primaryTabId = this.#secondaryTabId;
+      this.#secondaryTabId = tabId;
+      if (!this.#primaryTabId) this.#primaryTabId = [...this.#tabs.keys()].find((id) => id !== tabId) ?? tabId;
+    }
+    this.#focusedPane = pane;
+    this.#activeTabId = tabId;
+    await this.#wakeTab(this.#tabs.get(tabId)!);
+    this.#layout(true);
+    await this.#recording?.refreshTarget();
+  }
+
+  async #focusPane(pane: BrowserPaneId): Promise<void> {
+    const tabId = pane === "primary" ? this.#primaryTabId : this.#secondaryTabId;
+    if (!tabId) return;
+    this.#focusedPane = pane;
+    this.#activeTabId = tabId;
+    const tab = this.#tabs.get(tabId);
+    if (tab) { tab.lastActiveAt = Date.now(); await this.#wakeTab(tab); }
+    this.#layout(false);
+    await this.#recording?.refreshTarget();
   }
 
   #reorderTab(id: string, beforeId: string): void {
@@ -1438,6 +2183,56 @@ export class BrowserController {
     return this.#activeTabId ? this.#tabs.get(this.#activeTabId) : undefined;
   }
 
+  #tabStates(): BrowserTabState[] {
+    return [...this.#tabs.values()].map((tab) => ({
+      ...tab.state,
+      active: tab.state.id === this.#activeTabId,
+      grants: this.#grants.grantsForTab(tab.state.id),
+    }));
+  }
+
+  #scheduleRecallForVisibleTabs(): void {
+    for (const id of [this.#primaryTabId, this.#secondaryTabId]) {
+      const tab = id ? this.#tabs.get(id) : undefined;
+      if (tab) this.#scheduleRecallIndex(tab, 200);
+    }
+  }
+
+  #scheduleRecallIndex(tab: TabRecord, delay = 2_000): void {
+    clearTimeout(tab.recallTimer);
+    if (!this.#settings.semanticRecallEnabled || this.#privateWindow || !this.#intelligence) return;
+    tab.recallTimer = setTimeout(() => {
+      delete tab.recallTimer;
+      this.#recallQueue = this.#recallQueue.then(() => this.#indexTabForRecall(tab)).catch(() => undefined);
+    }, delay);
+  }
+
+  async #indexTabForRecall(tab: TabRecord): Promise<void> {
+    if (!this.#settings.semanticRecallEnabled || this.#privateWindow || this.#busy) return;
+    const recordingStatus = this.#recording?.state().status;
+    if (recordingStatus === "recording" || recordingStatus === "paused") {
+      this.#scheduleRecallIndex(tab, 15_000);
+      return;
+    }
+    if (["serious", "critical"].includes(powerMonitor.getCurrentThermalState())) {
+      this.#scheduleRecallIndex(tab, 30_000);
+      return;
+    }
+    const contents = tab.view?.webContents;
+    if (!contents || contents.isDestroyed() || contents.isLoading()) return;
+    const url = contents.getURL();
+    if (TabAccessRegistry.isProtectedUrl(url, tab.state.private) || !/^https?:\/\//i.test(url)) return;
+    const snapshot = await this.#bridge(tab, bridgeInvocation.strictSnapshot({ maxChars: 100_000 })) as {
+      url?: string; title?: string; text?: string; lang?: string;
+    };
+    if (!snapshot.text || snapshot.text.length < 80 || snapshot.url !== url) return;
+    await this.#intelligence?.index({
+      url, title: snapshot.title || tab.state.title, text: snapshot.text,
+      visitedAt: Date.now(), bookmarked: Boolean(this.#database.bookmarkForUrl(this.#profileId, url)),
+      ...(snapshot.lang ? { language: snapshot.lang } : {}),
+    });
+  }
+
   #layout(animate: boolean): void {
     if (this.window.isDestroyed()) return;
     if (!this.#privateWindow && !this.#settings.onboardingComplete) {
@@ -1448,19 +2243,36 @@ export class BrowserController {
       return;
     }
     const [width = 1, height = 1] = this.window.getContentSize();
-    const left = this.#sidebarOpen ? SIDEBAR_WIDTH : 0;
+    const splitEnabled = Boolean(this.#primaryTabId && this.#secondaryTabId);
+    const internalOpen = Boolean(this.#internalSurface) || this.#paletteOpen;
+    const left = internalOpen ? 0 : this.#sidebarOpen && !(splitEnabled && width < 1_180) ? SIDEBAR_WIDTH : 0;
     const availableWidth = Math.max(width - left, 1);
     const targetWork = clamp(this.#workWidth, WORK_MIN, this.#maximumWorkWidth());
     this.#workWidth = targetWork;
-    this.#workOverlay = this.#workOpen && availableWidth - targetWork < MIN_PAGE_SPLIT;
+    this.#workOverlay = this.#workOpen && (availableWidth - targetWork < MIN_PAGE_SPLIT || splitEnabled && availableWidth - targetWork < 1_040);
     const pageWidth = this.#workOpen && !this.#workOverlay
       ? Math.max(availableWidth - targetWork, MIN_PAGE_EXPANDED)
       : availableWidth;
     const chromeHeight = this.#chromeHeight();
     const pageBounds = { x: left, y: chromeHeight, width: pageWidth, height: Math.max(height - chromeHeight, 1) };
-    const activeView = this.#active()?.view;
-    activeView?.setBounds(pageBounds);
-    activeView?.setVisible(true);
+    for (const tab of this.#tabs.values()) tab.view?.setVisible(false);
+    for (const view of this.#readerViews.values()) view.setVisible(false);
+    const primaryView = this.#primaryTabId ? this.#tabs.get(this.#primaryTabId)?.view : undefined;
+    const secondaryView = this.#secondaryTabId ? this.#tabs.get(this.#secondaryTabId)?.view : undefined;
+    if (primaryView && secondaryView) {
+      const gap = 6;
+      const primaryWidth = Math.round((pageBounds.width - gap) * this.#splitRatio);
+      const primarySurface = this.#primaryTabId ? this.#readerViews.get(this.#primaryTabId) ?? primaryView : primaryView;
+      const secondarySurface = this.#secondaryTabId ? this.#readerViews.get(this.#secondaryTabId) ?? secondaryView : secondaryView;
+      primarySurface.setBounds({ ...pageBounds, width: primaryWidth });
+      secondarySurface.setBounds({ x: pageBounds.x + primaryWidth + gap, y: pageBounds.y, width: Math.max(1, pageBounds.width - primaryWidth - gap), height: pageBounds.height });
+      primarySurface.setVisible(!internalOpen);
+      secondarySurface.setVisible(!internalOpen);
+    } else {
+      const activeView = this.#activeTabId ? this.#readerViews.get(this.#activeTabId) ?? this.#active()?.view : undefined;
+      activeView?.setBounds(pageBounds);
+      activeView?.setVisible(!internalOpen);
+    }
 
     const openBounds = {
       x: width - targetWork,
@@ -1471,12 +2283,15 @@ export class BrowserController {
     const closedBounds = { ...openBounds, x: width };
     const work = this.#workView;
     if (!work) return;
-    const target = this.#workOpen ? openBounds : closedBounds;
+    this.window.contentView.removeChildView(work);
+    this.window.contentView.addChildView(work);
+    const revealWork = this.#workOpen && !this.#paletteOpen;
+    const target = revealWork ? openBounds : closedBounds;
     if (!animate || this.#reducedMotion) {
       work.setBounds(target);
-      work.setVisible(this.#workOpen);
+      work.setVisible(revealWork);
     } else {
-      this.#animateWorkBounds(target, this.#workOpen);
+      this.#animateWorkBounds(target, revealWork);
     }
     this.#broadcast();
   }
@@ -1634,6 +2449,11 @@ export class BrowserController {
       sidebarOpen: this.#sidebarOpen,
       workOpen: this.#workOpen,
       workWidth: this.#workWidth,
+      splitEnabled: Boolean(this.#primaryTabId && this.#secondaryTabId),
+      splitRatio: this.#splitRatio,
+      ...(this.#primaryTabId ? { primaryTabId: this.#primaryTabId } : {}),
+      ...(this.#secondaryTabId ? { secondaryTabId: this.#secondaryTabId } : {}),
+      focusedPane: this.#focusedPane,
     }, storedTabs, storedGroups);
   }
 
@@ -1893,17 +2713,35 @@ export class BrowserController {
     const sleepAfterMinutes = this.#database.setting(this.#profileId, "sleepAfterMinutes");
     const downloadDirectory = this.#database.setting(this.#profileId, "downloadDirectory");
     const onboardingComplete = this.#database.setting(this.#profileId, "onboardingComplete");
+    const localModelsEnabled = this.#database.setting(this.#profileId, "localModelsEnabled");
+    const semanticRecallEnabled = this.#database.setting(this.#profileId, "semanticRecallEnabled");
     return {
       appearance: isAppearance(appearance) ? appearance : "system",
       searchEngine: isSearchEngine(searchEngine) ? searchEngine : "duckduckgo",
       sleepAfterMinutes: isSleepInterval(sleepAfterMinutes) ? sleepAfterMinutes : 30,
       downloadDirectory: typeof downloadDirectory === "string" && downloadDirectory ? downloadDirectory : app.getPath("downloads"),
       onboardingComplete: onboardingComplete === true,
+      localModelsEnabled: localModelsEnabled === true,
+      semanticRecallEnabled: semanticRecallEnabled === true,
       speech: this.#speechSettings.value(
         this.#speechRuntime.state().localModelStatus,
         this.#speechRuntime.state().localModelProgress,
         this.#speechRuntime.state().message,
       ),
+    };
+  }
+
+  #loadReaderPreferences(): ReaderPreferencesState {
+    const stored = this.#database.setting(this.#profileId, "readerPreferences");
+    if (!stored || typeof stored !== "object") return { theme: "locus", textScale: 1, columnWidth: "medium", lineSpacing: 1.6, rate: 1 };
+    const value = stored as Partial<ReaderPreferencesState>;
+    return {
+      theme: ["locus", "paper", "dark"].includes(String(value.theme)) ? value.theme as ReaderPreferencesState["theme"] : "locus",
+      textScale: clampFloat(Number(value.textScale) || 1, 0.8, 2),
+      columnWidth: ["narrow", "medium", "wide"].includes(String(value.columnWidth)) ? value.columnWidth as ReaderPreferencesState["columnWidth"] : "medium",
+      lineSpacing: clampFloat(Number(value.lineSpacing) || 1.6, 1.2, 2.2),
+      rate: clampFloat(Number(value.rate) || 1, 0.5, 2),
+      ...(typeof value.voice === "string" && value.voice ? { voice: value.voice.slice(0, 512) } : {}),
     };
   }
 
@@ -2133,7 +2971,7 @@ export class BrowserController {
 
   #sleepCandidate(tab: TabRecord, downloading: boolean) {
     return {
-      active: tab.state.id === this.#activeTabId,
+      active: tab.state.id === this.#primaryTabId || tab.state.id === this.#secondaryTabId,
       sleeping: tab.state.sleeping,
       loading: tab.state.loading,
       audible: tab.state.audible,
@@ -2197,6 +3035,7 @@ export class BrowserController {
 
   async #handleAgentEvent(event: AgentEvent): Promise<void> {
     const type = String(event.type ?? "");
+    if (await this.#handleResearchAgentEvent(event)) return;
     const nextPlan = updateWorkPlan(this.#workPlan, event);
     if (nextPlan !== this.#workPlan) this.#workPlan = nextPlan;
     const nextTerminal = updateWorkTerminal(this.#workTerminal, event);
@@ -2493,11 +3332,14 @@ export class BrowserController {
     this.#rebuildWorkModelState();
     this.#broadcast();
     try {
-      await Promise.all([this.#refreshLocalModelCatalog(), this.#refreshChatGPTState(false)]);
+      await Promise.all([
+        ...(this.#settings.localModelsEnabled ? [this.#refreshLocalModelCatalog()] : []),
+        this.#refreshChatGPTState(false),
+      ]);
       const current = AgentProviderStateSchema.parse(await this.#runtime.provider());
       const requestedProvider = this.#workModelProviders.activeProvider();
       const stored = this.#workModelProviders.config(requestedProvider);
-      const fallbackModel = requestedProvider === "local" && current.provider === "ollama" ? current.model : "";
+      const fallbackModel = requestedProvider === "local" && this.#settings.localModelsEnabled && current.provider === "ollama" ? current.model : "";
       const requestedModel = stored?.model || fallbackModel || this.#modelsFor(requestedProvider)[0]?.id || "";
       if (requestedProvider !== "local" && !this.#providerCanConnect(requestedProvider)) {
         throw new Error(`${workModelProvider(requestedProvider).name} needs to be connected again`);
@@ -2506,12 +3348,16 @@ export class BrowserController {
       this.#workModelMessage = "Model options are ready";
     } catch (error) {
       const reason = agentRequestError(error, "Could not restore the selected model");
-      try {
-        const localModel = this.#workModelProviders.config("local")?.model || this.#modelsFor("local")[0]?.id || "";
-        await this.#applyWorkModelRoute("local", localModel);
-        this.#workModelMessage = `${reason}. Using local models.`;
-      } catch {
-        this.#workModelMessage = reason;
+      if (this.#settings.localModelsEnabled) {
+        try {
+          const localModel = this.#workModelProviders.config("local")?.model || this.#modelsFor("local")[0]?.id || "";
+          await this.#applyWorkModelRoute("local", localModel);
+          this.#workModelMessage = `${reason}. Using local models.`;
+        } catch {
+          this.#workModelMessage = reason;
+        }
+      } else {
+        this.#workModelMessage = `${reason}. Connect ChatGPT Plan or an API provider to continue.`;
       }
     } finally {
       this.#workModelSwitching = false;
@@ -2583,6 +3429,9 @@ export class BrowserController {
     this.#rebuildWorkModelState();
     this.#broadcast();
     try {
+      if (providerId === "local" && !this.#settings.localModelsEnabled) {
+        throw new Error("Enable local models in Settings before using Ollama");
+      }
       if (!this.#providerCanConnect(providerId)) {
         const provider = workModelProvider(providerId);
         throw new Error(providerId === "chatgpt-plan" ? "Sign in with ChatGPT first" : `Connect ${provider.name} first`);
@@ -2603,6 +3452,7 @@ export class BrowserController {
     const definition = workModelProvider(providerId);
     const model = requestedModel.trim();
     if (providerId === "local") {
+      if (!this.#settings.localModelsEnabled) throw new Error("Local models are disabled in Settings");
       const state = AgentProviderStateSchema.parse(await this.#runtime.configureProvider({ provider: "ollama" }));
       const selected = model || state.model || this.#modelsFor("local")[0]?.id || "";
       if (selected && selected !== state.model) await this.#runtime.setModel(selected);
@@ -2679,8 +3529,10 @@ export class BrowserController {
       this.#chatGPTAccount = ChatGPTAccountSchema.parse(await this.#runtime.signOutChatGPT());
       this.#workModelCatalogs.delete("chatgpt-plan");
       if (this.#workModelProviders.activeProvider() === "chatgpt-plan") {
-        const localModel = this.#workModelProviders.config("local")?.model || this.#modelsFor("local")[0]?.id || "";
-        await this.#applyWorkModelRoute("local", localModel);
+        if (this.#settings.localModelsEnabled) {
+          const localModel = this.#workModelProviders.config("local")?.model || this.#modelsFor("local")[0]?.id || "";
+          await this.#applyWorkModelRoute("local", localModel);
+        }
       }
       this.#workModelMessage = "Signed out of ChatGPT Plan";
     } catch (error) {
@@ -2696,7 +3548,7 @@ export class BrowserController {
     this.#broadcast();
     const activeProvider = this.#workModelProviders.activeProvider();
     await Promise.all([
-      this.#refreshLocalModelCatalog(),
+      ...(this.#settings.localModelsEnabled ? [this.#refreshLocalModelCatalog()] : []),
       this.#refreshChatGPTState(refreshChatGPT),
       ...(activeProvider === "local" || activeProvider === "chatgpt-plan"
         ? []
@@ -2767,7 +3619,7 @@ export class BrowserController {
   }
 
   #providerCanConnect(providerId: WorkModelProviderId): boolean {
-    if (providerId === "local") return true;
+    if (providerId === "local") return this.#settings.localModelsEnabled;
     if (providerId === "chatgpt-plan") return this.#chatGPTAccount.status === "signed_in";
     const definition = workModelProvider(providerId);
     const config = this.#workModelProviders.config(providerId);
@@ -2794,7 +3646,7 @@ export class BrowserController {
       activeModel,
       label: activeModel ? `${activeDefinition.shortName} · ${activeModel}` : activeDefinition.shortName,
       switching: this.#workModelSwitching,
-      providers: WORK_MODEL_PROVIDERS.map((definition) => {
+      providers: enabledWorkModelProviders(this.#settings.localModelsEnabled).map((definition) => {
         const config = this.#workModelProviders.config(definition.id);
         const models = this.#modelsFor(definition.id);
         if (definition.id === "chatgpt-plan") {
@@ -2843,6 +3695,12 @@ export class BrowserController {
   }
 
   async #sendWorkMessage(text: string, suppliedBrowserContext?: BrowserObservationContext): Promise<void> {
+    const activeProvider = this.#workModel.providers.find((provider) => provider.id === this.#workModel.activeProvider);
+    if (!activeProvider?.configured) {
+      this.#workModelMessage = `Connect ${activeProvider?.name ?? "a model provider"} before sending a message`;
+      this.#rebuildWorkModelState();
+      return;
+    }
     this.#stopRequested = false;
     this.#messages.push({ id: randomUUID(), role: "user", text });
     const attachments = [...this.#attachments.values()].map((attachment) => ({
@@ -2917,6 +3775,7 @@ export class BrowserController {
   }
 
   #recordingTarget(): RecordingTargetResult {
+    if (this.#settingsOpen) return { reason: "Capture paused while Locus Browser settings are open" };
     const tab = this.#active();
     if (!tab) return { reason: "Capture paused because no tab is active" };
     if (tab.state.private) return { reason: "Private tabs cannot be recorded" };
@@ -3122,7 +3981,13 @@ export class BrowserController {
     if (request.tool === "browser_tabs") {
       const tabs = this.#grants.grantsForSession(request.session_id).flatMap((grant) => {
         const tab = this.#tabs.get(grant.tabId);
-        return tab ? [{ id: tab.state.id, title: tab.state.title, url: tab.state.url, active: tab.state.id === this.#activeTabId, access: grant.level }] : [];
+        return tab ? [{
+          id: tab.state.id, title: tab.state.title, url: tab.state.url,
+          active: tab.state.id === this.#activeTabId, focused: tab.state.id === this.#activeTabId,
+          ...(tab.state.id === this.#primaryTabId ? { pane: "primary" } : {}),
+          ...(tab.state.id === this.#secondaryTabId ? { pane: "secondary" } : {}),
+          access: grant.level,
+        }] : [];
       });
       return { text: tabs.length ? JSON.stringify(tabs, null, 2) : "No tabs are shared with this work session." };
     }
@@ -3340,13 +4205,104 @@ export class BrowserController {
   }
 }
 
+function researchPassages(sourceId: string, text: string): ResearchBoardState["sources"][number]["passages"] {
+  const paragraphs = text.split(/\n{2,}|(?<=[.!?])\s+(?=[A-Z0-9])/).map((value) => value.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const output: ResearchBoardState["sources"][number]["passages"] = [];
+  let buffer = ""; let index = 1;
+  const flush = () => {
+    if (!buffer) return;
+    output.push({ passageId: `${sourceId}:p${index++}`, text: buffer.slice(0, 2_400) }); buffer = "";
+  };
+  for (const paragraph of paragraphs) {
+    if (buffer.length + paragraph.length + 1 > 2_400) flush();
+    if (paragraph.length > 2_400) {
+      for (let offset = 0; offset < paragraph.length; offset += 2_400) output.push({ passageId: `${sourceId}:p${index++}`, text: paragraph.slice(offset, offset + 2_400) });
+    } else buffer += `${buffer ? " " : ""}${paragraph}`;
+  }
+  flush();
+  return output;
+}
+
+function researchMarkdown(board: ResearchBoardState): string {
+  const sourceById = new Map(board.sources.map((source) => [source.sourceId, source]));
+  const footnotes = new Map<string, number>();
+  const lines = [`# ${board.title}`, "", board.summary, ""];
+  for (const section of board.sections) {
+    lines.push(`## ${section.heading}`, "");
+    for (const claim of section.claims) {
+      const markers = claim.citations.map((citation) => {
+        const key = `${citation.sourceId}:${citation.passageId}`;
+        if (!footnotes.has(key)) footnotes.set(key, footnotes.size + 1);
+        return `[^${footnotes.get(key)}]`;
+      }).join("");
+      lines.push(`- ${claim.text}${markers}`);
+    }
+    lines.push("");
+  }
+  lines.push("## Sources", "");
+  for (const [key, number] of footnotes) {
+    const [sourceId, ...passageParts] = key.split(":");
+    const passageId = passageParts.join(":");
+    const source = sourceById.get(sourceId!);
+    const passage = source?.passages.find((item) => item.passageId === passageId);
+    if (source && passage) lines.push(`[^${number}]: [${source.title}](${source.url}) — “${passage.text.replace(/\s+/g, " ").slice(0, 500)}” (captured ${source.capturedAt})`);
+  }
+  return `${lines.join("\n").trim()}\n`;
+}
+
+function researchHtml(board: ResearchBoardState): string {
+  const markdown = researchMarkdown(board);
+  const lines = markdown.split("\n");
+  const body = lines.map((line) => line.startsWith("# ") ? `<h1>${escapeHtml(line.slice(2))}</h1>`
+    : line.startsWith("## ") ? `<h2>${escapeHtml(line.slice(3))}</h2>`
+      : line.startsWith("- ") ? `<p class="claim">${escapeHtml(line.slice(2))}</p>`
+        : line.startsWith("[^") ? `<p class="source">${escapeHtml(line)}</p>`
+          : line ? `<p>${escapeHtml(line)}</p>` : "").join("");
+  return `<!doctype html><html><head><meta charset="utf-8"><style>body{font:16px -apple-system,BlinkMacSystemFont,sans-serif;color:#1c1e18;line-height:1.55;max-width:760px;margin:48px auto;padding:0 36px}h1{font-size:34px}h2{margin-top:32px;border-top:1px solid #d9dbd2;padding-top:18px}.claim{padding-left:18px;position:relative}.claim:before{content:'•';position:absolute;left:0;color:#71a900}.source{font-size:12px;color:#50554a;word-break:break-word}</style></head><body>${body}</body></html>`;
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[character]!);
+}
+
+function paletteScore(query: string, text: string): number {
+  if (!query) return 0.1;
+  const value = text.toLowerCase();
+  if (value === query) return 5;
+  if (value.startsWith(query)) return 4;
+  if (value.includes(query)) return 3;
+  const terms = query.match(/[\p{L}\p{N}]{2,}/gu) ?? [];
+  if (!terms.length) return 0;
+  const matched = terms.filter((term) => value.includes(term)).length;
+  if (matched) return matched / terms.length * 2;
+  let cursor = 0;
+  for (const character of query) {
+    cursor = value.indexOf(character, cursor);
+    if (cursor < 0) return 0;
+    cursor += 1;
+  }
+  return 0.4;
+}
+
+function dedupePalette(results: PaletteResultState[]): PaletteResultState[] {
+  const seen = new Set<string>();
+  return results.filter((result) => {
+    const action = result.action;
+    const key = action.type === "open-url" ? `url:${canonicalBrowserUrl(action.url) ?? action.url}`
+      : action.type === "select-tab" ? `tab:${action.tabId}` : `${action.type}:${result.label}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function initialWorkModelState(): WorkModelState {
   return {
-    activeProvider: "local",
+    activeProvider: "chatgpt-plan",
     activeModel: "",
-    label: "Local",
+    label: "ChatGPT Plan",
     switching: false,
-    providers: WORK_MODEL_PROVIDERS.map((provider) => ({
+    providers: enabledWorkModelProviders(false).map((provider) => ({
       id: provider.id,
       name: provider.name,
       detail: provider.detail,
@@ -3445,7 +4401,7 @@ function trustedRendererPreferences(preloadPath: string): Electron.WebPreference
   };
 }
 
-function surfaceUrl(rendererUrl: string, surface: "shell" | "work" | "recorder"): string {
+function surfaceUrl(rendererUrl: string, surface: "shell" | "work" | "recorder" | "reader"): string {
   const url = new URL(rendererUrl);
   url.searchParams.set("surface", surface);
   return url.toString();
@@ -3550,6 +4506,10 @@ function numberArg(args: Record<string, unknown>, key: string): number | undefin
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.round(Math.min(Math.max(value, minimum), maximum));
+}
+
+function clampFloat(value: number, minimum: number, maximum: number): number {
+  return Math.min(Math.max(value, minimum), maximum);
 }
 
 function interpolateRect(from: Rectangle, to: Rectangle, amount: number): Rectangle {

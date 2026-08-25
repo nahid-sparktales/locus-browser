@@ -20,11 +20,18 @@ app.whenReady().then(async () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("UI acceptance server did not bind");
     const origin = `http://127.0.0.1:${address.port}`;
-    await inspectSurface(`${origin}/?surface=shell`, "shell", 1440, 940, 1);
-    await inspectSurface(`${origin}/?surface=shell&recording=1`, "shell-recording", 1440, 940, 1);
-    await inspectSurface(`${origin}/?surface=work`, "work", 720, 940, 1);
-    await inspectSurface(`${origin}/?surface=work&recording=1`, "work-recording", 520, 940, 1);
-    await inspectSurface(`${origin}/?surface=work`, "work-200-percent", 720, 940, 2);
+    await inspectSurface(`${origin}/?surface=shell`, "shell", 1440, 940, 1, ".browser-shell");
+    await inspectSurface(`${origin}/?surface=shell&settings=1`, "shell-settings", 1440, 940, 1, ".settings-surface");
+    await inspectSurface(`${origin}/?surface=shell&recording=1`, "shell-recording", 1440, 940, 1, ".record-button.recording");
+    await inspectSurface(`${origin}/?surface=shell&split=1`, "shell-split", 1440, 940, 1, ".split-toolbar");
+    await inspectSurface(`${origin}/?surface=shell&palette=1`, "shell-palette", 1440, 940, 1, ".command-palette");
+    await inspectSurface(`${origin}/?surface=shell&recall=1`, "shell-recall", 1180, 840, 1, ".recall-search-wrap");
+    await inspectSurface(`${origin}/?surface=shell&research=1`, "shell-research", 1440, 940, 1, ".research-surface");
+    await inspectSurface(`${origin}/?surface=shell&steward=1`, "shell-steward", 1180, 840, 1, ".steward-surface");
+    await inspectSurface(`${origin}/?surface=reader`, "reader", 900, 940, 1, ".reader-article");
+    await inspectSurface(`${origin}/?surface=work`, "work", 720, 940, 1, ".work-dock");
+    await inspectSurface(`${origin}/?surface=work&recording=1`, "work-recording", 520, 940, 1, ".live-context-card");
+    await inspectSurface(`${origin}/?surface=work`, "work-200-percent", 720, 940, 2, ".work-dock");
     const failures = results.flatMap((result) => result.issues.map((issue) => `${result.surface}: ${issue}`));
     const output = join(repositoryRoot, "release", "ui-acceptance.json");
     mkdirSync(join(repositoryRoot, "release"), { recursive: true });
@@ -38,7 +45,7 @@ app.whenReady().then(async () => {
   }
 });
 
-async function inspectSurface(url, surface, width, height, zoom) {
+async function inspectSurface(url, surface, width, height, zoom, expectedSelector) {
   const consoleErrors = [];
   const window = new BrowserWindow({
     show: false,
@@ -55,6 +62,7 @@ async function inspectSurface(url, surface, width, height, zoom) {
   window.webContents.setZoomFactor(zoom);
   await new Promise((resolvePromise) => setTimeout(resolvePromise, 150));
   const audit = await window.webContents.executeJavaScript(`(${pageAudit.toString()})()`);
+  const expectedVisible = await window.webContents.executeJavaScript(`(() => { const element = document.querySelector(${JSON.stringify(expectedSelector)}); if (!element) return false; const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden"; })()`);
   const durations = [];
   if (surface === "shell") {
     for (let index = 0; index < 60; index += 1) {
@@ -66,6 +74,7 @@ async function inspectSurface(url, surface, width, height, zoom) {
   const ordered = durations.toSorted((left, right) => left - right);
   const p95 = ordered.length ? ordered[Math.floor((ordered.length - 1) * 0.95)] : 0;
   const issues = [...audit.issues, ...consoleErrors.map((message) => `console error: ${message}`)];
+  if (!expectedVisible) issues.unshift(`expected surface ${expectedSelector} is not visible`);
   if (p95 > 150) issues.push(`warm tab interaction p95 ${p95.toFixed(1)} ms exceeds 150 ms`);
   results.push({ surface, width, height, zoom, reducedMotion: audit.reducedMotion, focusable: audit.focusable, p95TabInteractionMs: p95, issues });
   window.destroy();

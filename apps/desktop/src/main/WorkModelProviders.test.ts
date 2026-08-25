@@ -7,6 +7,7 @@ import {
   WORK_MODEL_PROVIDERS,
   WorkModelProviderStore,
   deduplicatedWorkModels,
+  enabledWorkModelProviders,
   normalizeProviderSetup,
   publishedContextWindow,
 } from "./WorkModelProviders.js";
@@ -18,10 +19,21 @@ const cipher = {
 };
 
 describe("WorkModelProviderStore", () => {
-  it("offers the same focused model sources as native Locus", () => {
+  it("keeps hosted providers primary and exposes local models only when enabled", () => {
     expect(WORK_MODEL_PROVIDERS.map((provider) => provider.id)).toEqual([
-      "chatgpt-plan", "openai-api", "kimi", "claude-api", "vllm", "local",
+      "chatgpt-plan", "openai-api", "claude-api", "kimi", "vllm", "local",
     ]);
+    expect(enabledWorkModelProviders(false).map((provider) => provider.id)).toEqual([
+      "chatgpt-plan", "openai-api", "claude-api", "kimi", "vllm",
+    ]);
+    expect(enabledWorkModelProviders(true).map((provider) => provider.id)).toContain("local");
+  });
+
+  it("defaults new profiles to ChatGPT Plan instead of starting Ollama", () => {
+    const database = new BrowserDatabase(join(mkdtempSync(join(tmpdir(), "locus-models-default-")), "browser.sqlite3"));
+    const store = new WorkModelProviderStore(database, cipher);
+    expect(store.activeProvider()).toBe("chatgpt-plan");
+    database.close();
   });
 
   it("stores API keys encrypted and returns no secret in provider metadata", () => {

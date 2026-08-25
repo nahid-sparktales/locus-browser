@@ -36,6 +36,18 @@ for (const path of [
   "supabase/migrations/20260824001215_create_locus_sync_private_schema.sql",
   "supabase/tests/locus_sync_permissions.sql",
 ]) check(path, () => { if (!existsSync(join(root, path))) throw new Error("missing"); });
+check("Packaged Apple Natural Language helper contract", () => {
+  const packageSource = readFileSync(join(platformRoot, "Package.swift"), "utf8");
+  const prepareSource = readFileSync(join(root, "scripts/prepare-agent-runtime.sh"), "utf8");
+  if (!existsSync(join(platformRoot, "Sources/LocusSemanticHelper/main.swift"))
+    || !existsSync(join(platformRoot, "Sources/LocusSemanticRuntime/SemanticEmbedder.swift"))) {
+    throw new Error("semantic helper sources are missing from locus-platform");
+  }
+  if (!packageSource.includes('executable(name: "locus-semantic-helper"')
+    || !prepareSource.includes('components/semantic/locus-semantic-helper')) {
+    throw new Error("semantic helper is not included in the signed runtime staging contract");
+  }
+});
 check("Cloudflare sync deployment contract", () => {
   const config = JSON.parse(readFileSync(join(root, "services/sync-worker/wrangler.jsonc"), "utf8"));
   if (config.compatibility_date !== "2026-08-23" || !config.compatibility_flags?.includes("nodejs_compat")) {
@@ -91,7 +103,7 @@ check("Pinned Electron compatibility evidence", () => {
 });
 check("Pinned platform canary contract", () => {
   const workflow = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
-  if (!workflow.includes("ref: v0.1.0-canary.4")) throw new Error("browser CI is not pinned to the reviewed platform tag");
+  if (!workflow.includes("ref: v0.1.0-canary.5")) throw new Error("browser CI is not pinned to the reviewed platform tag");
 });
 check("Discoverable canary update contract", () => {
   const workflow = readFileSync(join(root, ".github/workflows/canary-release.yml"), "utf8");
@@ -168,6 +180,15 @@ if (release) {
     if (reported !== `codex-cli ${codexComponent.version}`) throw new Error(`unexpected helper version ${reported || "unknown"}`);
     const file = execFileSync("/usr/bin/file", [executable], { encoding: "utf8" });
     if (!file.includes("Mach-O 64-bit executable arm64")) throw new Error("helper is not Apple Silicon");
+    execFileSync("/usr/bin/codesign", ["--verify", "--strict", "--verbose=2", executable], { stdio: "pipe" });
+  });
+  check("Bundled semantic helper", () => {
+    const executable = join(root, "release/mac-arm64/Locus Browser.app/Contents/Resources/AgentRuntime/components/semantic/locus-semantic-helper");
+    const file = execFileSync("/usr/bin/file", [executable], { encoding: "utf8" });
+    if (!file.includes("Mach-O 64-bit executable arm64")) throw new Error("semantic helper is not Apple Silicon");
+    const request = `${JSON.stringify({ id: "canary-probe", text: "private semantic recall", language: "en" })}\n`;
+    const response = JSON.parse(execFileSync(executable, [], { encoding: "utf8", input: request, timeout: 15_000 }).trim());
+    if (response.id !== "canary-probe" || (!response.embedding && !response.error)) throw new Error("semantic helper probe failed");
     execFileSync("/usr/bin/codesign", ["--verify", "--strict", "--verbose=2", executable], { stdio: "pipe" });
   });
   check("Signed release manifest", () => {

@@ -153,6 +153,8 @@ function ModelPicker({ state, close }: { state: BrowserAppState; close: () => vo
         </div>
       </header>
 
+      <p className="model-context-advice"><AlertTriangle size={13} /><span><strong>Large context recommended</strong><small>Use at least 128K context; 200K+ is best for long browser sessions.</small></span></p>
+
       <div className="model-provider-grid" role="radiogroup" aria-label="Model providers">
         {state.work.model.providers.map((item) => (
           <button key={item.id} type="button" role="radio" aria-checked={provider.id === item.id} className={provider.id === item.id ? "selected" : ""} onKeyDown={navigateModeRadio} onClick={() => setProviderId(item.id)}>
@@ -230,6 +232,8 @@ function ChatPanel({ state, grantLevel }: { state: BrowserAppState; grantLevel: 
   const [text, setText] = useState("");
   const [shareMenu, setShareMenu] = useState(false);
   const latestId = state.work.messages.at(-1)?.id;
+  const activeProvider = state.work.model.providers.find((provider) => provider.id === state.work.model.activeProvider);
+  const modelReady = Boolean(activeProvider?.configured);
 
   const submit = () => {
     if (!text.trim()) return;
@@ -294,7 +298,7 @@ function ChatPanel({ state, grantLevel }: { state: BrowserAppState; grantLevel: 
           ) : null}
           <textarea
             value={text}
-            placeholder={state.work.runtime === "online" ? "Ask Locus to work with you…" : state.work.runtimeMessage}
+            placeholder={state.work.runtime !== "online" ? state.work.runtimeMessage : modelReady ? "Ask Locus to work with you…" : `Connect ${activeProvider?.name ?? "a model provider"} to begin…`}
             aria-label="Message Locus"
             rows={2}
             onChange={(event) => setText(event.target.value)}
@@ -309,7 +313,7 @@ function ChatPanel({ state, grantLevel }: { state: BrowserAppState; grantLevel: 
             <span className="context-meter" title="Context window">8%</span>
             {state.work.busy
               ? <button type="button" className="send-button stop" title="Stop" onClick={() => void command({ type: "stop-work" })}><CircleStop size={17} /></button>
-              : <button type="button" className="send-button" title="Send" disabled={!text.trim() || state.work.runtime !== "online"} onClick={submit}><SendHorizontal size={16} /></button>}
+              : <button type="button" className="send-button" title="Send" disabled={!text.trim() || state.work.runtime !== "online" || !modelReady} onClick={submit}><SendHorizontal size={16} /></button>}
           </div>
         </div>
         <div className="composer-foot"><span>{state.work.runtimeMessage}</span><span>⌘↵ live help · ↵ send</span></div>

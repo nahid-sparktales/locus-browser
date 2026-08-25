@@ -5,10 +5,14 @@
 ```text
 Trusted local shell renderer ─┐
 Trusted local Work renderer ──┼─ schema-validated IPC ─ Electron main broker
+Trusted local Reader view ────┤                         ├─ split-pane broker
                               │                         ├─ tab grants
 Sandboxed remote tab views ───┘ (no IPC/preload)       ├─ local agent process
                                                         ├─ safeStorage vault
-                                                        └─ WAL browser database
+                                                        ├─ WAL browser database
+                                                        └─ intelligence utility process
+                                                           ├─ encrypted local-content vault
+                                                           └─ signed Apple semantic helper
 
 OS-protected account key ─ local sync client ─ XChaCha20-Poly1305 ciphertext
                                            └─ passkey auth ─ Cloudflare Worker
@@ -23,6 +27,66 @@ The visible shell is one trusted `BrowserWindow`. Each live webpage is a
 separate sandboxed `WebContentsView`; the resizable Work dock is a second
 trusted local view. This allows the dock to overlay narrow windows without
 ever placing a webpage above trusted approval controls.
+
+Split View assigns two ordinary tabs to primary and secondary panes and gives
+each live `WebContentsView` independent bounds. The focused pane alone drives
+the omnibox, navigation, find, zoom, sharing, recording, and Reader controls.
+Both visible panes are protected from sleeping. Grants remain attached to tabs,
+not panes, and recording pauses before a frame from an unshared or protected
+focused pane can be accepted. Settings and the command palette hide the page
+views without destroying either pane.
+
+The command palette is part of the trusted shell and uses a typed query channel
+rather than the continuously broadcast browser state. Main-process ranking
+combines current tabs, bookmarks, history, conversations, Research Boards,
+Resume Later bundles, Settings routes, allowlisted actions, and—when enabled—
+bounded Recall results. Executions are rebound to the current profile and
+focused pane; a result cannot provide an arbitrary privileged command.
+
+Reader Mode replaces only the selected pane with a trusted local view. The
+isolated DOM bridge excludes forms, inputs, editable or credential-shaped
+regions, hidden content, scripts, and inaccessible frames before article
+extraction. The host applies a second HTML allowlist, and Reader link clicks
+return through validated browser navigation. Installed macOS speech voices run
+locally. Article content is discarded on navigation, close, crash, or exit; in
+a private window it is never persisted.
+
+## Private intelligence
+
+Private Recall, Research Boards, and Resume Later bundles live in a dedicated
+Electron utility process. It owns a WAL-mode SQLite content vault and encrypts
+each page, source snapshot, board, and bundle record with XChaCha20-Poly1305.
+The random per-profile content key is protected by macOS secure storage. The
+trusted shell receives bounded result summaries, never the full vault.
+
+Recall is off until the user enables it. Eligible pages are processed one at a
+time after navigation settles and indexing pauses while recording, during
+intensive agent work, or under serious thermal pressure. The strict platform
+snapshot excludes private windows, internal/local URLs, forms, hidden content,
+protected fields, inaccessible frames, and user-excluded origins. A signed
+Swift helper uses Apple Natural Language sentence embeddings; unsupported
+languages fall back to deterministic keyword and full-text ranking. Existing
+history is title/URL searchable but is never revisited in the background.
+Content is deduplicated by canonical URL and hash, capped at 500 MB per profile,
+and evicts the oldest unbookmarked record first. Per-result deletion, excluded
+sites, index-size reporting, and full clearing are main-process operations.
+
+Research captures immutable strict snapshots only from up to ten tabs already
+shared with the current Work conversation or created by it. Stable source and
+passage IDs, timestamps, URLs, and content hashes survive later navigation or
+tab closure. Local passage ranking bounds the complete source input to 120,000
+characters. The selected Work model runs a typed, read-only, non-persisted
+research request with browser tools disabled and source content explicitly
+marked as untrusted evidence. Both `locus-platform` and the browser reject
+unknown citations or any factual claim without at least one valid source and
+passage reference. Boards and evidence remain encrypted locally and export
+through sanitized Markdown footnotes or a rendered PDF.
+
+Tab Steward is provider-independent. Exact canonical URLs and high-confidence
+title/host clusters produce only a quiet badge. Every move, group, rename,
+duplicate closure, or Resume Later bundle opens a full preview; closing tabs
+requires a separate confirmation listing them. Private tabs are absent from
+analysis and bundles, and reopening a bundle reuses already-open canonical URLs.
 
 The Work renderer presents a focused solo-agent surface. The Electron broker
 starts the local Python runtime, communicates over an authenticated loopback
@@ -155,8 +219,10 @@ no migration from Locus. Normal browser state is stored in WAL-mode SQLite;
 private windows use an ephemeral Chromium partition and do not persist tabs or
 history. Work Mode is unavailable there, and the broker independently rejects
 all private-tab grants. Password ciphertext and agent download quarantine
-remain local. Sync is opt-in and deliberately excludes cookies,
-passwords, workspace files, conversations, memories, credentials, and runs.
+remain local. Recall documents, Research Boards and evidence, Resume Later
+bundles, Reader article content, and Tab Steward analysis never enter browser
+sync. Sync is opt-in and deliberately excludes cookies, passwords, workspace
+files, conversations, memories, credentials, and runs.
 
 Each normal profile has its own persistent Chromium partition and SQLite-scoped
 library records, settings, tab groups, and permission decisions. Sleeping a

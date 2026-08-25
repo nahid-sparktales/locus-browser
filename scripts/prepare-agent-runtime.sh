@@ -126,6 +126,18 @@ fi
 /usr/bin/ditto --norsrc --noextattr --noqtn "${speech_cache}/LICENSE" "${stage}/components/whisper/LICENSE"
 /usr/bin/ditto --norsrc --noextattr --noqtn "${speech_manifest}" "${stage}/components/whisper/manifest.json"
 
+semantic_swift="$(/usr/bin/xcrun --find swift)"
+[[ -x "${semantic_swift}" && -f "${platform_root}/Sources/LocusSemanticHelper/main.swift" ]] || {
+  echo "error: the signed semantic helper source is missing from locus-platform" >&2
+  exit 1
+}
+"${semantic_swift}" build --package-path "${platform_root}" -c release --product locus-semantic-helper
+semantic_helper="${platform_root}/.build/release/locus-semantic-helper"
+[[ -x "${semantic_helper}" ]] || { echo "error: semantic helper build did not produce an executable" >&2; exit 1; }
+/bin/mkdir -p "${stage}/components/semantic"
+/usr/bin/ditto --norsrc --noextattr --noqtn "${semantic_helper}" "${stage}/components/semantic/locus-semantic-helper"
+/usr/bin/ditto --norsrc --noextattr --noqtn "${platform_root}/LICENSE" "${stage}/components/semantic/LICENSE"
+
 for junk in "${stage}/source/ollama_code"/**/__pycache__(N/); do /bin/rm -rf "${junk}"; done
 for lib_dir in "${stage}/python/lib"/python3.*(N/); do
   /bin/rm -rf "${lib_dir}/dbm" "${lib_dir}/tkinter" "${lib_dir}/test" \
@@ -155,5 +167,6 @@ revision="$(/usr/bin/git -C "${platform_root}" rev-parse HEAD)"
   echo "requirements_sha256=$(/usr/bin/shasum -a 256 "${requirements_lock}" | /usr/bin/cut -d' ' -f1)"
   echo "codex_component_manifest_sha256=$(/usr/bin/shasum -a 256 "${component_manifest}" | /usr/bin/cut -d' ' -f1)"
   echo "whisper_component_manifest_sha256=$(/usr/bin/shasum -a 256 "${speech_manifest}" | /usr/bin/cut -d' ' -f1)"
+  echo "semantic_helper_sha256=$(/usr/bin/shasum -a 256 "${stage}/components/semantic/locus-semantic-helper" | /usr/bin/cut -d' ' -f1)"
 } > "${stage}/PROVENANCE"
 echo "Self-contained agent runtime staged at ${stage}."
