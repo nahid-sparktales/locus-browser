@@ -85,16 +85,6 @@ into a hosted AI dataset:
   </tr>
 </table>
 
-![Locus Browser Reader Mode with macOS Read Aloud controls](docs/images/locus-browser-reader-mode.png)
-
-### Browse normally
-
-![Locus Browser browsing Google with Work closed](docs/images/locus-browser-browse.png)
-
-### Open Solo Work when you need it
-
-![Locus Browser showing Google beside the Solo Work dock](docs/images/locus-browser-work.png)
-
 ## Live context and privacy
 
 Recording is deliberately visible and user-controlled. It captures only the
