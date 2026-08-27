@@ -19,6 +19,15 @@ OS-protected account key ─ local sync client ─ XChaCha20-Poly1305 ciphertext
                                                             ├─ Hyperdrive ─ private Supabase schema
                                                             └─ private R2 binding
 
+OS-encrypted delegate key ─ explicit preview/confirm ─ Walrus Memory relayer
+                                                   ├─ asynchronous write receipt
+                                                   └─ manual recall ─ untrusted Work evidence
+
+OS-encrypted Sui + embedding keys ─ intelligence utility process
+                                 ├─ local embedding ─ configured provider
+                                 ├─ local SEAL encryption ─ ciphertext/vector ─ relayer
+                                 └─ signed research manifest ─ public/encrypted Walrus quilt
+
 Offline gallery signer ─ signed catalog/revocations ─ private R2
                                                    └─ Cloudflare Worker ─ desktop verifier
 ```
@@ -87,6 +96,62 @@ title/host clusters produce only a quiet badge. Every move, group, rename,
 duplicate closure, or Resume Later bundle opens a full preview; closing tabs
 requires a separate confirmation listing them. Private tabs are absent from
 analysis and bundles, and reopening a bundle reuses already-open canonical URLs.
+
+## Portable Walrus Memory
+
+Walrus Memory is optional, experimental, normal-profile-only, and deliberately
+separate from Locus encrypted sync. Its hosted first-canary mode uses the pinned
+`@mysten-incubation/memwal` SDK and production builds pin the relayer to
+`https://relayer.memory.walrus.xyz`; development builds alone may select a
+custom or Testnet-compatible relayer. The account ID and namespace are ordinary
+profile settings. A revocable delegate private key is collected through the
+native hidden-entry prompt, encrypted with macOS `safeStorage`, and never enters
+renderer state, logs, crash UI, the agent protocol, or sync.
+
+Connection is not considered usable until SDK/relayer compatibility and an
+authenticated bounded recall both pass. The hosted relayer processes plaintext
+to create embeddings and encrypt content, so the settings disclosure names that
+trust boundary before the native key prompt opens. Recommended client-encrypted
+mode instantiates `MemWalManual` only in the private intelligence utility. A
+dedicated Ed25519 Sui signer and dedicated embedding credential are collected
+through separate native prompts and separately protected with `safeStorage`.
+Locus never silently reuses a Work provider credential. Setup runs a bounded
+manual recall to prove embedding-vector compatibility before the mode becomes
+usable. The embedding provider still receives plaintext, while SEAL encryption
+keeps plaintext away from the Walrus relayer. Disconnect destroys both SDK
+clients and removes all three local encrypted credentials; remote memories,
+quilts, and content-free receipts remain. Delegate revocation is managed through
+the owner-controlled Walrus dashboard.
+
+There are no automatic writes or recalls. **Save page** requires a normal
+HTTP(S) tab explicitly shared with the current Work conversation, then reuses
+the strict snapshot path and displays the exact bounded content, title, URL,
+capture time, SHA-256, and optional note before confirmation. **Save research
+summary** accepts only a ready local Research Board and omits captured passages,
+sending its summary, cited conclusions, source URLs, and optional note. Each
+item is capped at 24,000 characters and begins with the stable
+`locus-portable-memory-v1` header.
+
+Remember jobs are held open until the relayer reports completion. SQLite keeps
+only job/blob ID, namespace, status, and timestamps for recovery and diagnostics.
+Manual recall returns at most ten remote results, and index lag is handled with
+bounded guidance plus an explicit Restore index action. The main process caches
+the current result set; the renderer may attach only a cached blob ID. At most
+five records and 12,000 total characters reach a Work turn. `locus-platform`
+validates that envelope, preserves blob/source/hash provenance, wraps the text as
+untrusted evidence, and never persists or interprets it as instructions.
+
+Ready Research Boards can be packaged as a `locus-research-bundle-v1` Walrus
+quilt. The exact preview is built in the trusted main process from `board.json`,
+sanitized Markdown, and a PDF rendered from that same Markdown. By default the
+artifacts contain claims, citations, source URLs, capture/content hashes, and
+passage hashes—but no captured passage text. Enabling passage text changes every
+artifact hash and requires both a refreshed preview and a separate native
+warning. The private utility verifies all preview hashes, signs a canonical
+`manifest.json` personal message, verifies the signature locally, optionally
+SEAL-encrypts every file, and uploads the four-file quilt with the dedicated Sui
+signer. SQLite retains only board/quilt IDs, visibility, storage duration,
+manifest hash, signer address, patch IDs, and timestamps.
 
 The Work renderer presents a focused solo-agent surface. The Electron broker
 starts the local Python runtime, communicates over an authenticated loopback
@@ -221,8 +286,11 @@ history. Work Mode is unavailable there, and the broker independently rejects
 all private-tab grants. Password ciphertext and agent download quarantine
 remain local. Recall documents, Research Boards and evidence, Resume Later
 bundles, Reader article content, and Tab Steward analysis never enter browser
-sync. Sync is opt-in and deliberately excludes cookies, passwords, workspace
-files, conversations, memories, credentials, and runs.
+sync. Walrus delegate credentials, account configuration, receipts, recalled
+text, and Work attachments also have no sync collection. Sync is opt-in and
+deliberately excludes cookies, passwords, workspace files, conversations,
+memories, credentials, and runs. A user-confirmed Walrus upload is the only
+portable-memory path and does not make Locus Sync authoritative for it.
 
 Each normal profile has its own persistent Chromium partition and SQLite-scoped
 library records, settings, tab groups, and permission decisions. Sleeping a

@@ -139,6 +139,61 @@ export interface SemanticRecallResultState {
   openTabId?: string;
 }
 
+export interface WalrusMemoryDraftState {
+  id: string;
+  type: "page" | "research-summary";
+  title: string;
+  sourceUrl: string;
+  capturedAt: string;
+  contentSha256: string;
+  content: string;
+  note: string;
+  maxNoteChars: number;
+}
+
+export type WalrusMemoryMode = "hosted" | "client-encrypted";
+
+export interface WalrusMemoryState {
+  status: "disconnected" | "checking" | "connected" | "saving" | "restoring" | "publishing" | "error";
+  usable: boolean;
+  message: string;
+  mode: WalrusMemoryMode;
+  accountId?: string;
+  namespace: string;
+  relayerUrl: string;
+  developmentRelayerAllowed: boolean;
+  manualConfigured: boolean;
+  network?: "mainnet" | "testnet";
+  packageId?: string;
+  registryId?: string;
+  embeddingApiBase?: string;
+  embeddingModel?: string;
+  signerAddress?: string;
+  connectedAt?: number;
+  lastSuccessAt?: number;
+  receiptCount: number;
+  searchRequestedAt?: number;
+  draft?: WalrusMemoryDraftState;
+}
+
+export interface WalrusMemoryResultState {
+  blobId: string;
+  title: string;
+  text: string;
+  snippet: string;
+  relevance: number;
+  sourceUrl?: string;
+  capturedAt?: string;
+  contentSha256?: string;
+}
+
+export interface PortableMemoryAttachmentState {
+  blobId: string;
+  title: string;
+  characters: number;
+  sourceUrl?: string;
+}
+
 export interface ResearchPassageState {
   passageId: string;
   text: string;
@@ -193,11 +248,47 @@ export interface ResearchBoardSummaryState {
   updatedAt: number;
 }
 
+export interface ResearchBundleFileState {
+  identifier: string;
+  mediaType: string;
+  bytes: number;
+  sha256: string;
+}
+
+export interface ResearchBundleDraftState {
+  id: string;
+  boardId: string;
+  title: string;
+  visibility: "public" | "seal-encrypted";
+  includePassages: boolean;
+  network: "mainnet" | "testnet";
+  epochs: number;
+  files: ResearchBundleFileState[];
+  previewMarkdown: string;
+  unsignedManifestSha256: string;
+  preparedAt: number;
+}
+
+export interface ResearchBundleReceiptState {
+  id: string;
+  boardId: string;
+  quiltId: string;
+  manifestSha256: string;
+  visibility: "public" | "seal-encrypted";
+  network: "mainnet" | "testnet";
+  epochs: number;
+  signerAddress: string;
+  files: Array<{ identifier: string; id: string; blobId: string }>;
+  createdAt: number;
+}
+
 export interface ResearchState {
   boards: ResearchBoardSummaryState[];
   activeBoardId?: string;
   generating: boolean;
   message: string;
+  bundleReceipts: ResearchBundleReceiptState[];
+  bundleDraft?: ResearchBundleDraftState;
 }
 
 export interface TabStewardSuggestionState {
@@ -256,6 +347,7 @@ export type PaletteActionState =
   | { type: "toggle-tab-mute"; tabId: string }
   | { type: "open-tab-steward" }
   | { type: "new-research" }
+  | { type: "open-walrus-memory" }
   | { type: "start-recording" };
 
 export interface SpeechSettings {
@@ -602,6 +694,7 @@ export interface WorkState {
   messages: WorkMessage[];
   conversations: WorkConversationState[];
   attachments: WorkAttachmentState[];
+  portableMemory: PortableMemoryAttachmentState[];
   model: WorkModelState;
   plan?: WorkPlanState;
   changes: WorkChangesState;
@@ -651,6 +744,7 @@ export interface BrowserAppState {
   searchEngine: SearchEngine;
   recording: RecordingSessionState;
   semanticRecall: SemanticRecallState;
+  walrusMemory: WalrusMemoryState;
   research: ResearchState;
   tabSteward: TabStewardState;
   reader: ReaderState;

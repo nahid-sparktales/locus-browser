@@ -31,6 +31,20 @@ agent rather than every team and orchestration surface in native Locus.
   immutable encrypted snapshots, 120,000-character local passage bounds,
   typed read-only model requests, mandatory exact passage citations, and local
   Markdown/PDF export.
+- Experimental, explicit-send Walrus Portable Memory with native delegate-key
+  entry, OS-encrypted per-profile credentials, production relayer pinning,
+  compatibility/authenticated-recall checks, strict-snapshot page previews,
+  passage-free Research Board summaries, 24,000-character item bounds,
+  asynchronous completion receipts, manual ten-result recall, Restore index,
+  and explicit bounded attachment to Work as untrusted evidence.
+- Recommended Walrus client-encrypted mode in the private intelligence process
+  with separately vaulted delegate, Ed25519 Sui, and embedding credentials;
+  explicit embedding endpoints; compatibility and vector checks; local SEAL;
+  hosted-mode fallback; and no reuse of Work provider credentials.
+- Verifiable Research Bundles with passage-free defaults, exact artifact/hash
+  preview, separately confirmed passage inclusion, canonical Sui-signed and
+  locally verified manifests, public or SEAL-encrypted four-file Walrus quilts,
+  25 MB canary bounds, and content-free local receipts.
 - Provider-independent AI Tab Steward suggestions for exact duplicates and
   high-confidence clusters, full mutation previews, separate close
   confirmations, and encrypted local Resume Later bundles.
@@ -131,11 +145,14 @@ agent rather than every team and orchestration surface in native Locus.
 ## Automated gate status
 
 The local candidate currently passes its unit/integration/fuzz suites, the full
-production build, the Electron compatibility fixture, twelve responsive UI
-surfaces, warm tab switching under the 150 ms p95 gate, Reduced Motion, 200%
-scaling, a complete dependency-graph audit with no high/critical findings, and a
-CycloneDX 1.6 SBOM. A locally signed app also passed deep code-sign verification
-and launched with its embedded Python runtime.
+production build, the Electron compatibility fixture, responsive UI surfaces,
+warm tab switching under the 150 ms p95 gate, Reduced Motion, 200% scaling, a
+complete dependency-graph audit with no high/critical findings, and a CycloneDX
+1.6 SBOM. Walrus fixtures cover connection disclosure, ready/progress/failure
+states, hosted and client-encrypted setup, exact-content and research-quilt
+previews, Work recall and attachment, restore guidance, and remote-persistence
+warnings. A locally signed app also passed deep code-sign
+verification and launched with its embedded Python runtime.
 
 ## External launch gates
 
@@ -155,6 +172,12 @@ The exact credential setup, tag flow, acceptance checklist, and rollback steps
 are in [`canary-runbook.md`](canary-runbook.md).
 
 ## Post-canary work
+
+Namespace-scoped shared research spaces with delegate management, static Walrus
+Sites preflight/deployment, and byte-to-onchain-hash site verification remain
+post-canary. Client-encrypted memory and Verifiable Research Bundles remain
+experimental until their dedicated wallet/cryptography and clean-device
+interoperability reviews pass.
 
 Team orchestration, schedules, checkpoints, a dedicated `AGENTS.md` surface,
 broader Chrome-extension API shims, Windows/Linux releases, AI-session sync,

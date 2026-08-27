@@ -22,6 +22,13 @@ app.whenReady().then(async () => {
     const origin = `http://127.0.0.1:${address.port}`;
     await inspectSurface(`${origin}/?surface=shell`, "shell", 1440, 940, 1, ".browser-shell");
     await inspectSurface(`${origin}/?surface=shell&settings=1`, "shell-settings", 1440, 940, 1, ".settings-surface");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&walrus=connected`, "walrus-connected", 1440, 940, 1, ".walrus-disclosure");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&walrus=connected&walrus-manual=1`, "walrus-client-encrypted", 1440, 940, 1, ".walrus-mode-picker .active");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&walrus=failure`, "walrus-failure", 1440, 940, 1, ".walrus-message.error");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&walrus=progress`, "walrus-progress", 1440, 940, 1, ".walrus-heading > em.saving");
+    await inspectSurface(`${origin}/?surface=shell&walrus=connected&walrus-preview=1`, "walrus-preview", 1180, 840, 1, ".walrus-preview");
+    await inspectSurface(`${origin}/?surface=shell&research=1&walrus=connected&walrus-manual=1&walrus-bundle=1`, "walrus-research-bundle", 1280, 900, 1, ".research-bundle-preview");
+    await inspectSurface(`${origin}/?surface=shell&research=1&walrus=connected&walrus-manual=1&walrus-bundle=1`, "walrus-research-bundle-200-percent", 1440, 940, 2, ".research-bundle-preview");
     await inspectSurface(`${origin}/?surface=shell&recording=1`, "shell-recording", 1440, 940, 1, ".record-button.recording");
     await inspectSurface(`${origin}/?surface=shell&split=1`, "shell-split", 1440, 940, 1, ".split-toolbar");
     await inspectSurface(`${origin}/?surface=shell&palette=1`, "shell-palette", 1440, 940, 1, ".command-palette");
@@ -33,6 +40,8 @@ app.whenReady().then(async () => {
     await inspectSurface(`${origin}/?surface=work&busy=1`, "work-activity", 520, 940, 1, ".composer-activity.thinking");
     await inspectSurface(`${origin}/?surface=work`, "work-display-preferences", 520, 940, 1, ".display-preferences", ".display-preferences-wrap > button");
     await inspectSurface(`${origin}/?surface=work&recording=1`, "work-recording", 520, 940, 1, ".live-context-card");
+    await inspectSurface(`${origin}/?surface=work&walrus=connected&walrus-search=1`, "work-walrus-search", 520, 940, 1, ".walrus-memory-picker");
+    await inspectSurface(`${origin}/?surface=work&walrus=connected&walrus-attached=1`, "work-walrus-attachment", 520, 940, 1, ".portable-memory-chip");
     await inspectSurface(`${origin}/?surface=work`, "work-200-percent", 720, 940, 2, ".work-dock");
     const failures = results.flatMap((result) => result.issues.map((issue) => `${result.surface}: ${issue}`));
     const output = join(repositoryRoot, "release", "ui-acceptance.json");

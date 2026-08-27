@@ -160,6 +160,28 @@ export interface StoredRemoteTab {
   updatedAt: number;
 }
 
+export interface StoredWalrusMemoryReceipt {
+  jobId: string;
+  blobId?: string;
+  namespace: string;
+  status: "pending" | "running" | "uploaded" | "done" | "failed" | "not_found" | "timeout";
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface StoredResearchBundleReceipt {
+  id: string;
+  boardId: string;
+  quiltId: string;
+  manifestSha256: string;
+  visibility: "public" | "seal-encrypted";
+  network: "mainnet" | "testnet";
+  epochs: number;
+  signerAddress: string;
+  filesJson: string;
+  createdAt: number;
+}
+
 export interface StoredRecordingSession {
   id: string;
   profileId: string;
@@ -232,7 +254,7 @@ export class BrowserDatabase {
     try {
       for (const table of [
         "history_visits", "bookmarks", "downloads", "site_permissions", "browser_settings",
-        "browser_credentials", "recording_sessions", "recording_keys", "extension_packages", "extension_installs", "sync_local_records", "sync_outbox", "sync_inbox",
+        "browser_credentials", "recording_sessions", "recording_keys", "extension_packages", "extension_installs", "sync_local_records", "sync_outbox", "sync_inbox", "walrus_memory_receipts", "research_bundle_receipts",
       ]) {
         this.#database.prepare(`DELETE FROM ${table} WHERE profile_id = ?`).run(id);
       }
@@ -554,6 +576,52 @@ export class BrowserDatabase {
       VALUES (?, ?, ?, unixepoch())
       ON CONFLICT(profile_id, key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at
     `).run(profileId, key, JSON.stringify(value));
+  }
+
+  deleteSetting(profileId: string, key: string): void {
+    this.#database.prepare("DELETE FROM browser_settings WHERE profile_id = ? AND key = ?").run(profileId, key);
+  }
+
+  saveWalrusMemoryReceipt(profileId: string, receipt: StoredWalrusMemoryReceipt): void {
+    this.#database.prepare(`
+      INSERT INTO walrus_memory_receipts(profile_id, job_id, blob_id, namespace, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(profile_id, job_id) DO UPDATE SET
+        blob_id=excluded.blob_id, namespace=excluded.namespace, status=excluded.status, updated_at=excluded.updated_at
+    `).run(profileId, receipt.jobId, receipt.blobId ?? null, receipt.namespace, receipt.status, receipt.createdAt, receipt.updatedAt);
+  }
+
+  listWalrusMemoryReceipts(profileId: string): StoredWalrusMemoryReceipt[] {
+    return this.#database.prepare(`
+      SELECT job_id AS jobId, blob_id AS blobId, namespace, status,
+             created_at AS createdAt, updated_at AS updatedAt
+      FROM walrus_memory_receipts WHERE profile_id = ? ORDER BY updated_at DESC LIMIT 200
+    `).all(profileId) as unknown as StoredWalrusMemoryReceipt[];
+  }
+
+  saveResearchBundleReceipt(profileId: string, receipt: StoredResearchBundleReceipt): void {
+    this.#database.prepare(`
+      INSERT INTO research_bundle_receipts(
+        profile_id, id, board_id, quilt_id, manifest_sha256, visibility, network,
+        epochs, signer_address, files_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(profile_id, id) DO UPDATE SET
+        quilt_id=excluded.quilt_id, manifest_sha256=excluded.manifest_sha256,
+        signer_address=excluded.signer_address, files_json=excluded.files_json
+    `).run(
+      profileId, receipt.id, receipt.boardId, receipt.quiltId, receipt.manifestSha256,
+      receipt.visibility, receipt.network, receipt.epochs, receipt.signerAddress,
+      receipt.filesJson, receipt.createdAt,
+    );
+  }
+
+  listResearchBundleReceipts(profileId: string): StoredResearchBundleReceipt[] {
+    return this.#database.prepare(`
+      SELECT id, board_id AS boardId, quilt_id AS quiltId, manifest_sha256 AS manifestSha256,
+             visibility, network, epochs, signer_address AS signerAddress,
+             files_json AS filesJson, created_at AS createdAt
+      FROM research_bundle_receipts WHERE profile_id = ? ORDER BY created_at DESC LIMIT 200
+    `).all(profileId) as unknown as StoredResearchBundleReceipt[];
   }
 
   listExtensionInstalls(profileId: string): StoredExtensionInstall[] {
@@ -1142,6 +1210,34 @@ export class BrowserDatabase {
         PRIMARY KEY(profile_id, key),
         FOREIGN KEY(profile_id) REFERENCES browser_profiles(id) ON DELETE CASCADE
       );
+      CREATE TABLE IF NOT EXISTS walrus_memory_receipts (
+        profile_id TEXT NOT NULL,
+        job_id TEXT NOT NULL,
+        blob_id TEXT,
+        namespace TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(profile_id, job_id),
+        FOREIGN KEY(profile_id) REFERENCES browser_profiles(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS walrus_memory_receipts_profile_time ON walrus_memory_receipts(profile_id, updated_at DESC);
+      CREATE TABLE IF NOT EXISTS research_bundle_receipts (
+        profile_id TEXT NOT NULL,
+        id TEXT NOT NULL,
+        board_id TEXT NOT NULL,
+        quilt_id TEXT NOT NULL,
+        manifest_sha256 TEXT NOT NULL,
+        visibility TEXT NOT NULL,
+        network TEXT NOT NULL,
+        epochs INTEGER NOT NULL,
+        signer_address TEXT NOT NULL,
+        files_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(profile_id, id),
+        FOREIGN KEY(profile_id) REFERENCES browser_profiles(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS research_bundle_receipts_profile_time ON research_bundle_receipts(profile_id, created_at DESC);
       CREATE TABLE IF NOT EXISTS extension_installs (
         profile_id TEXT NOT NULL,
         extension_id TEXT NOT NULL,
@@ -1260,6 +1356,8 @@ export class BrowserDatabase {
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (7, unixepoch());
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (8, unixepoch());
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (9, unixepoch());
+      INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (10, unixepoch());
+      INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (11, unixepoch());
     `);
   }
 

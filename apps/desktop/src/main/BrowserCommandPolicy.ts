@@ -9,8 +9,21 @@ const SHELL_ONLY_COMMANDS = new Set<BrowserCommand["type"]>([
   "delete-recall-document",
   "add-recall-exclusion",
   "remove-recall-exclusion",
+  "connect-walrus-memory",
+  "disconnect-walrus-memory",
+  "manage-walrus-delegates",
+  "begin-walrus-page-memory",
+  "begin-walrus-research-memory",
+  "cancel-walrus-memory-draft",
+  "save-walrus-memory-draft",
+  "restore-walrus-memory",
+  "configure-walrus-client-encrypted",
+  "set-walrus-memory-mode",
   "generate-research-board",
   "export-research-board",
+  "prepare-walrus-research-bundle",
+  "publish-walrus-research-bundle",
+  "cancel-walrus-research-bundle",
   "delete-research-board",
   "apply-tab-steward",
   "save-resume-bundle",
@@ -53,6 +66,16 @@ const SHELL_ONLY_COMMANDS = new Set<BrowserCommand["type"]>([
   "reveal-recording-video",
 ]);
 
+const WORK_ONLY_COMMANDS = new Set<BrowserCommand["type"]>([
+  "open-walrus-memory-source",
+  "attach-walrus-memory",
+  "remove-walrus-memory-attachment",
+]);
+
 export function requiresShellSender(command: BrowserCommand): boolean {
   return SHELL_ONLY_COMMANDS.has(command.type);
+}
+
+export function requiresWorkSender(command: BrowserCommand): boolean {
+  return WORK_ONLY_COMMANDS.has(command.type);
 }
