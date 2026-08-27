@@ -52,7 +52,7 @@ active work continues safely in the background.
 
 ## Intelligence and productivity
 
-The current canary adds six browser-native tools without turning browsing data
+The current canary adds seven browser-native tools without turning browsing data
 into a hosted AI dataset:
 
 - **Private Semantic Recall** searches open tabs, bookmarks, and eligible pages
@@ -61,6 +61,14 @@ into a hosted AI dataset:
 - **Cited Research Boards** turn up to ten explicitly shared tabs into a local,
   persistent comparison or brief. Every factual claim must link to an exact
   captured passage or the result is rejected.
+- **Portable Walrus Memory (Experimental)** sends only a page or Research Board
+  summary that you explicitly preview and confirm. Recall is manual, results
+  retain source/blob provenance, and attaching one to Work is a separate action.
+  Recommended client-encrypted mode performs embedding and SEAL encryption in
+  the private intelligence process with a dedicated Sui signer; the configured
+  embedding provider still receives plaintext. Hosted mode remains available
+  with its disclosed managed-relayer plaintext boundary. Ready Research Boards
+  can also publish signed, hash-manifested public or SEAL-encrypted Walrus quilts.
 - **AI Tab Steward** quietly finds exact duplicates and high-confidence groups,
   previews every change, and saves Resume Later bundles without sending tab
   metadata to a model.

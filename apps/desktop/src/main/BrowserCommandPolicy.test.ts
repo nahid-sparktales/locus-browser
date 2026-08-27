@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BrowserCommand } from "../shared/ipc.js";
-import { requiresShellSender } from "./BrowserCommandPolicy.js";
+import { requiresShellSender, requiresWorkSender } from "./BrowserCommandPolicy.js";
 
 describe("browser command sender policy", () => {
   it.each<BrowserCommand>([
@@ -10,8 +10,21 @@ describe("browser command sender policy", () => {
     { type: "set-semantic-recall-enabled", enabled: true },
     { type: "clear-semantic-recall" },
     { type: "delete-recall-document", documentId: "recall-1" },
+    { type: "connect-walrus-memory", accountId: "0xabc", namespace: "locus-browser-v1" },
+    { type: "disconnect-walrus-memory" },
+    { type: "manage-walrus-delegates" },
+    { type: "begin-walrus-page-memory" },
+    { type: "begin-walrus-research-memory", boardId: "board-1" },
+    { type: "cancel-walrus-memory-draft" },
+    { type: "save-walrus-memory-draft", draftId: "00000000-0000-4000-8000-000000000000", note: "Review later" },
+    { type: "restore-walrus-memory" },
+    { type: "configure-walrus-client-encrypted", network: "testnet", packageId: "0xabc", registryId: "0xdef", embeddingApiBase: "https://api.openai.com/v1", embeddingModel: "text-embedding-3-small" },
+    { type: "set-walrus-memory-mode", mode: "client-encrypted" },
     { type: "generate-research-board", tabIds: ["tab-1"], prompt: "Compare", format: "comparison" },
     { type: "export-research-board", boardId: "board-1", format: "pdf" },
+    { type: "prepare-walrus-research-bundle", boardId: "board-1", visibility: "public", includePassages: false, epochs: 5 },
+    { type: "publish-walrus-research-bundle", draftId: "00000000-0000-4000-8000-000000000000" },
+    { type: "cancel-walrus-research-bundle" },
     { type: "apply-tab-steward", suggestionIds: ["suggestion-1"] },
     { type: "save-resume-bundle", name: "Later", tabIds: ["tab-1"], closeAfter: false },
     { type: "execute-palette-action", action: { type: "toggle-split" } },
@@ -68,5 +81,14 @@ describe("browser command sender policy", () => {
     expect(requiresShellSender({ type: "select-work-file", path: "README.md" })).toBe(false);
     expect(requiresShellSender({ type: "restart-work-runtime" })).toBe(false);
     expect(requiresShellSender({ type: "work-send", text: "Summarize this page" })).toBe(false);
+  });
+
+  it.each<BrowserCommand>([
+    { type: "open-walrus-memory-source", blobId: "blob-1" },
+    { type: "attach-walrus-memory", blobIds: ["blob-1"] },
+    { type: "remove-walrus-memory-attachment", blobId: "blob-1" },
+  ])("keeps $type on the trusted Work sender", (command) => {
+    expect(requiresShellSender(command)).toBe(false);
+    expect(requiresWorkSender(command)).toBe(true);
   });
 });

@@ -12,6 +12,12 @@ import type {
 } from "../shared/types.js";
 import type { BrowserDatabase } from "./BrowserDatabase.js";
 import type { CredentialCipher } from "./CredentialVault.js";
+import type {
+  WalrusBundlePublishInput,
+  WalrusBundlePublishResult,
+  WalrusManualConfiguration,
+  WalrusManualConfigurationResult,
+} from "../shared/walrusPrivate.js";
 
 interface PendingRequest {
   resolve(value: unknown): void;
@@ -150,6 +156,40 @@ export class LocalIntelligenceClient {
     await this.refresh();
   }
 
+  async configureWalrusManual(config: WalrusManualConfiguration): Promise<WalrusManualConfigurationResult> {
+    await this.#ready;
+    return await this.#request("walrus-manual-configure", { config }) as WalrusManualConfigurationResult;
+  }
+
+  async disconnectWalrusManual(): Promise<void> {
+    await this.#ready;
+    await this.#request("walrus-manual-disconnect", {});
+  }
+
+  async walrusManualRemember(text: string, namespace: string): Promise<{ id: string; blob_id: string; namespace: string }> {
+    await this.#ready;
+    return await this.#request("walrus-manual-remember", { text, namespace }) as { id: string; blob_id: string; namespace: string };
+  }
+
+  async walrusManualRecall(query: string, limit: number, namespace: string): Promise<{
+    results: Array<{ blob_id: string; text: string; distance: number }>;
+  }> {
+    await this.#ready;
+    return await this.#request("walrus-manual-recall", { query, limit, namespace }) as {
+      results: Array<{ blob_id: string; text: string; distance: number }>;
+    };
+  }
+
+  async walrusManualRestore(namespace: string): Promise<{ restored: number; skipped: number; total: number; truncated: boolean }> {
+    await this.#ready;
+    return await this.#request("walrus-manual-restore", { namespace }) as { restored: number; skipped: number; total: number; truncated: boolean };
+  }
+
+  async publishWalrusResearchBundle(input: WalrusBundlePublishInput): Promise<WalrusBundlePublishResult> {
+    await this.#ready;
+    return await this.#request("walrus-bundle-publish", { input }) as WalrusBundlePublishResult;
+  }
+
   dispose(): void {
     this.#disposed = true;
     for (const pending of this.#pending.values()) {
@@ -214,7 +254,7 @@ export class LocalIntelligenceClient {
       const timeout = setTimeout(() => {
         this.#pending.delete(id);
         reject(new Error("Private intelligence did not answer in time"));
-      }, type === "search" || type === "index" ? 30_000 : 10_000);
+      }, utilityRequestTimeout(type));
       this.#pending.set(id, { resolve, reject, timeout });
       process.postMessage({ id, type, payload });
     });
@@ -234,6 +274,12 @@ export class LocalIntelligenceClient {
     if (message.ok) pending.resolve(message.value);
     else pending.reject(new Error(message.error || "Private intelligence request failed"));
   }
+}
+
+function utilityRequestTimeout(type: string): number {
+  if (type === "walrus-bundle-publish") return 10 * 60_000;
+  if (type.startsWith("walrus-manual-")) return 3 * 60_000;
+  return type === "search" || type === "index" ? 30_000 : 10_000;
 }
 
 function parseStatus(value: unknown, enabled: boolean): SemanticRecallState {

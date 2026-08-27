@@ -5,7 +5,7 @@ import { BrowserWindow, Menu, app, ipcMain, nativeImage, type IpcMainEvent, type
 import { AppUpdater } from "./AppUpdater.js";
 import { BrowserController, platformRootFromApp } from "./BrowserController.js";
 import { snapshotDatabaseForVersion } from "./DatabaseSnapshot.js";
-import { requiresShellSender } from "./BrowserCommandPolicy.js";
+import { requiresShellSender, requiresWorkSender } from "./BrowserCommandPolicy.js";
 import { BrowserCommandSchema, BrowserQuerySchema, ipcChannels } from "../shared/ipc.js";
 
 app.name = "Locus Browser";
@@ -190,6 +190,9 @@ function installIpc(): void {
     if (requiresShellSender(command) && !controller.ownsShellSender(event.sender.id)) {
       throw new Error("This command requires trusted browser chrome");
     }
+    if (requiresWorkSender(command) && !controller.ownsWorkSender(event.sender.id)) {
+      throw new Error("This command requires the trusted Work surface");
+    }
     return await controller.command(command);
   });
   ipcMain.handle(ipcChannels.query, async (event, raw) => {
@@ -197,6 +200,8 @@ function installIpc(): void {
     const query = BrowserQuerySchema.parse(raw);
     if (query.type === "reader-current") {
       if (!controller.ownsReaderSender(event.sender.id)) throw new Error("Reader data requires the bound Reader surface");
+    } else if (query.type === "walrus-memory-search") {
+      if (!controller.ownsWorkSender(event.sender.id)) throw new Error("Walrus Memory search requires the trusted Work surface");
     } else if (!controller.ownsShellSender(event.sender.id)) throw new Error("This query requires trusted browser chrome");
     return await controller.query(query, event.sender.id);
   });

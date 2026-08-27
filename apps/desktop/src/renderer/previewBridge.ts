@@ -16,6 +16,12 @@ const previewRecall = previewParams.has("recall");
 const previewResearch = previewParams.has("research");
 const previewSteward = previewParams.has("steward");
 const previewBusy = previewParams.has("busy");
+const previewWalrus = previewParams.get("walrus") || "";
+const previewWalrusDraft = previewParams.has("walrus-preview");
+const previewWalrusSearch = previewParams.has("walrus-search");
+const previewWalrusAttached = previewParams.has("walrus-attached");
+const previewWalrusManual = previewParams.has("walrus-manual");
+const previewWalrusBundle = previewParams.has("walrus-bundle");
 
 const previewResearchBoard: ResearchBoardState = {
   id: "research-preview", workSessionId: "preview-session", prompt: "Compare the browser architecture sources.", format: "comparison",
@@ -62,7 +68,7 @@ const previewState: BrowserAppState = {
       mediaAvailable: false,
       groupId: "locus-projects",
       ...(previewSplit ? { pane: "primary" as const, focused: true } : {}),
-      grants: previewRecording || previewResearch ? [{ sessionId: "preview-session", tabId: "welcome", level: "interact", source: "user_share", grantedAt: "2026-08-23T22:00:00.000Z" }] : [],
+      grants: previewRecording || previewResearch || previewWalrusDraft ? [{ sessionId: "preview-session", tabId: "welcome", level: "interact", source: "user_share", grantedAt: "2026-08-23T22:00:00.000Z" }] : [],
     },
     {
       id: "platform",
@@ -189,7 +195,7 @@ const previewState: BrowserAppState = {
   activePageBookmarked: false,
   find: { open: false, query: "", matches: 0, activeMatchOrdinal: 0 },
   zoomFactor: 1,
-  workOpen: previewRecording,
+  workOpen: previewRecording || previewWalrusSearch || previewWalrusAttached,
   workWidth: 420,
   workOverlay: false,
   searchEngine: "duckduckgo",
@@ -211,7 +217,60 @@ const previewState: BrowserAppState = {
     enabled: previewRecall, status: previewRecall ? "ready" : "disabled", documentCount: previewRecall ? 127 : 0, storageBytes: previewRecall ? 18_874_368 : 0,
     capBytes: 500 * 1024 * 1024, excludedOrigins: previewRecall ? ["https://bank.example.com"] : [], message: previewRecall ? "Private recall is ready." : "Private recall is off.",
   },
-  research: { boards: previewResearch ? [{ id: previewResearchBoard.id, title: previewResearchBoard.title, status: "ready", sourceCount: 2, createdAt: previewResearchBoard.createdAt, updatedAt: previewResearchBoard.updatedAt }] : [], ...(previewResearch ? { activeBoardId: previewResearchBoard.id } : {}), generating: false, message: "Select shared tabs to create a cited research board." },
+  walrusMemory: previewWalrus ? {
+    usable: previewWalrus !== "failure",
+    mode: previewWalrusManual ? "client-encrypted" : "hosted",
+    manualConfigured: previewWalrusManual,
+    ...(previewWalrusManual ? {
+      network: "testnet" as const,
+      packageId: "0x123456789abcdef",
+      registryId: "0xabcdef123456789",
+      embeddingApiBase: "https://api.openai.com/v1",
+      embeddingModel: "text-embedding-3-small",
+      signerAddress: "0x9876543210abcdef",
+    } : {}),
+    status: previewWalrus === "failure" ? "error" : previewWalrus === "progress" ? "saving" : "connected",
+    accountId: "0x8f6c39d7a12b4e5f", namespace: "locus-browser-v1", relayerUrl: "https://relayer.memory.walrus.xyz",
+    developmentRelayerAllowed: false, connectedAt: Date.now() - 86_400_000, receiptCount: 3,
+    message: previewWalrus === "failure" ? "Walrus rejected this delegate. Check whether it was revoked."
+      : previewWalrus === "progress" ? "Waiting for the asynchronous Walrus storage job to finish…"
+      : "Connected. Uploads and recall happen only when you ask.",
+    ...(previewWalrusSearch ? { searchRequestedAt: Date.now() } : {}),
+    ...(previewWalrusDraft ? { draft: {
+      id: "00000000-0000-4000-8000-000000000001", type: "page" as const, title: "Portable browser research",
+      sourceUrl: "https://example.com/research", capturedAt: "2026-08-26T12:00:00.000Z", contentSha256: "d".repeat(64),
+      content: "This is the exact bounded page content captured through the strict snapshot path. Protected fields, browser chrome, and inaccessible frames are not part of this preview.",
+      note: "", maxNoteChars: 2_000,
+    } } : {}),
+  } : {
+    status: "disconnected", usable: false, namespace: "locus-browser-v1", relayerUrl: "https://relayer.memory.walrus.xyz",
+    developmentRelayerAllowed: false, receiptCount: 0, mode: "hosted", manualConfigured: false,
+    message: "Connect a Walrus Memory account to save selected findings.",
+  },
+  research: {
+    boards: previewResearch ? [{ id: previewResearchBoard.id, title: previewResearchBoard.title, status: "ready", sourceCount: 2, createdAt: previewResearchBoard.createdAt, updatedAt: previewResearchBoard.updatedAt }] : [],
+    ...(previewResearch ? { activeBoardId: previewResearchBoard.id } : {}),
+    generating: false,
+    message: "Select shared tabs to create a cited research board.",
+    bundleReceipts: [],
+    ...(previewWalrusBundle ? { bundleDraft: {
+      id: "00000000-0000-4000-8000-000000000002",
+      boardId: previewResearchBoard.id,
+      title: previewResearchBoard.title,
+      visibility: "public" as const,
+      includePassages: false,
+      network: "testnet" as const,
+      epochs: 5,
+      files: [
+        { identifier: "board.json", mediaType: "application/json", bytes: 4_812, sha256: "1".repeat(64) },
+        { identifier: "research.md", mediaType: "text/markdown; charset=utf-8", bytes: 2_203, sha256: "2".repeat(64) },
+        { identifier: "research.pdf", mediaType: "application/pdf", bytes: 38_410, sha256: "3".repeat(64) },
+      ],
+      previewMarkdown: "# Secure browser architecture\n\nThe strongest design keeps remote pages isolated.\n\n## Recommended boundary\n\n- Remote pages remain sandboxed.[^1]\n\n## Sources\n\n[^1]: Electron WebContentsView — passage hash only; no captured passage text is included.",
+      unsignedManifestSha256: "4".repeat(64),
+      preparedAt: 1_787_408_500_000,
+    } } : {}),
+  },
   tabSteward: { suggestionCount: previewSteward ? 2 : 0, bundleCount: previewSteward ? 1 : 0 },
   reader: {
     available: true, active: false, loading: false,
@@ -237,6 +296,7 @@ const previewState: BrowserAppState = {
       { id: "preview-session-2", title: "Plan a focused browser workflow", preview: "Plan a focused browser workflow", updatedAt: 1_787_321_600, current: false },
     ],
     attachments: [],
+    portableMemory: previewWalrusAttached ? [{ blobId: "walrus-blob-preview", title: "Portable research finding", characters: 684, sourceUrl: "https://example.com/report" }] : [],
     workspace: { name: "locus-browser", path: "/Users/nahid/Documents/locus-browser" },
     model: {
       activeProvider: "openai-api",
@@ -320,6 +380,11 @@ export function installPreviewBridge(): void {
         { id: "recall:local-models", kind: "recall", label: "Running local models in a browser", detail: "An article you read last week · encrypted on this Mac", score: 2.7, action: { type: "open-url", url: "https://example.com/local-models" } },
       ];
       if (query.type === "semantic-recall-search") return [{ id: "recall-preview", title: "Running local models in a browser", url: "https://example.com/local-models", visitedAt: Date.now() - 604_800_000, snippet: "Local inference can compete with browser tabs for memory and compute…", score: 0.91, source: "history" }];
+      if (query.type === "walrus-memory-search") return [{
+        blobId: "walrus-blob-preview", title: "Portable research finding", text: "A recalled finding from another device.",
+        snippet: "A recalled finding from another device.", relevance: 0.92, sourceUrl: "https://example.com/report",
+        capturedAt: "2026-08-25T18:00:00.000Z", contentSha256: "e".repeat(64),
+      }];
       return [];
     },
     subscribe: (listener) => {
@@ -357,6 +422,9 @@ function applyPreviewCommand(command: BrowserCommand): void {
       break;
     case "close-command-palette":
       previewState.paletteOpen = false;
+      break;
+    case "cancel-walrus-memory-draft":
+      delete previewState.walrusMemory.draft;
       break;
     case "toggle-work":
       previewState.workOpen = !previewState.workOpen;

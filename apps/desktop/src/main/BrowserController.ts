@@ -50,6 +50,8 @@ import type {
   ReaderArticleState,
   ReaderPreferencesState,
   ResearchBoardState,
+  ResearchBundleDraftState,
+  ResearchBundleReceiptState,
   SemanticRecallResultState,
   TabStewardPreviewState,
   ExtensionGalleryState,
@@ -69,6 +71,8 @@ import type {
   WorkModelState,
   WorkPlanState,
   WorkTerminalEntryState,
+  WalrusMemoryDraftState,
+  WalrusMemoryResultState,
 } from "../shared/types.js";
 import { AgentRuntime, type AgentEvent } from "./AgentRuntime.js";
 import { BrowserDatabase, type StoredDownload, type StoredTab, type StoredTabGroup } from "./BrowserDatabase.js";
@@ -108,6 +112,17 @@ import { TranscriptVault } from "./TranscriptVault.js";
 import { LocalIntelligenceClient } from "./LocalIntelligenceClient.js";
 import { extractReadableArticle } from "./ReaderExtraction.js";
 import { buildTabStewardPreview, canonicalBrowserUrl } from "./TabSteward.js";
+import { MAX_PORTABLE_MEMORY_NOTE_CHARS, eligiblePortableSourceUrl, portablePageEligibilityError, serializePortableMemory } from "./PortableMemory.js";
+import {
+  WALRUS_DEFAULT_EMBEDDING_BASE,
+  WALRUS_DEFAULT_EMBEDDING_MODEL,
+  WALRUS_DELEGATES_URL,
+  WALRUS_DEFAULT_NAMESPACE,
+  WALRUS_PRODUCTION_RELAYER,
+  WalrusMemoryClient,
+  safeWalrusError,
+} from "./WalrusMemoryClient.js";
+import { prepareResearchBundle, researchBundleHtml, researchBundleMarkdown, type PreparedResearchBundle } from "./ResearchBundle.js";
 
 const CHROME_HEIGHT = 92;
 const SIDEBAR_WIDTH = 248;
@@ -247,6 +262,8 @@ interface WorkAttachmentRecord extends WorkAttachmentState {
   data: string;
 }
 
+interface PortableMemoryRecord extends WalrusMemoryResultState {}
+
 interface BrowserPermissionWaiter {
   resolve: (decision: "allow" | "always" | "deny") => void;
 }
@@ -290,6 +307,7 @@ export class BrowserController {
   readonly #transcriptVault: TranscriptVault;
   readonly #recording: RecordingCoordinator | undefined;
   readonly #intelligence: LocalIntelligenceClient | undefined;
+  readonly #walrusMemory: WalrusMemoryClient | undefined;
   readonly #rendererUrl: string;
   readonly #preloadPath: string;
   readonly #extensions: ExtensionManager | undefined;
@@ -321,7 +339,13 @@ export class BrowserController {
   readonly #readerViews = new Map<string, WebContentsView>();
   readonly #researchBoards = new Map<string, ResearchBoardState>();
   readonly #researchRequests = new Map<string, string>();
+  readonly #walrusSearchResults = new Map<string, PortableMemoryRecord>();
+  readonly #portableMemoryAttachments = new Map<string, PortableMemoryRecord>();
   #activeResearchBoardId: string | undefined;
+  #walrusMemoryDraft: WalrusMemoryDraftState | undefined;
+  #researchBundleDraft: ResearchBundleDraftState | undefined;
+  #preparedResearchBundle: PreparedResearchBundle | undefined;
+  #walrusSearchRequestedAt: number | undefined;
   #readerLoadingTabId: string | undefined;
   #readerMessage = "";
   #readerPreferences: ReaderPreferencesState;
@@ -406,6 +430,12 @@ export class BrowserController {
       platformRoot,
       () => this.#settings.semanticRecallEnabled,
       () => this.#broadcast(),
+    );
+    this.#walrusMemory = this.#privateWindow ? undefined : new WalrusMemoryClient(
+      this.#database,
+      electronCredentialCipher,
+      this.#profileId,
+      { packaged: app.isPackaged, ...(this.#intelligence ? { manualBridge: this.#intelligence } : {}), onChanged: () => this.#broadcast() },
     );
     if (!this.#settings.localModelsEnabled && this.#workModelProviders.activeProvider() === "local") {
       this.#workModelProviders.setActive("chatgpt-plan");
@@ -516,6 +546,7 @@ export class BrowserController {
     }
     this.#layout(false);
     if (!this.#privateWindow) void this.#runtime.start();
+    if (!this.#privateWindow) void this.#walrusMemory?.initialize();
     this.#sleepTimer = setInterval(() => this.#sleepEligibleTabs(), SLEEP_CHECK_INTERVAL);
   }
 
@@ -585,10 +616,20 @@ export class BrowserController {
         enabled: false, status: "disabled", documentCount: 0, storageBytes: 0,
         capBytes: 500 * 1024 * 1024, excludedOrigins: [], message: "Private recall is unavailable in Private Windows.",
       },
+      walrusMemory: this.#walrusMemory ? {
+        ...this.#walrusMemory.state(),
+        ...(this.#walrusMemoryDraft ? { draft: this.#walrusMemoryDraft } : {}),
+        ...(this.#walrusSearchRequestedAt ? { searchRequestedAt: this.#walrusSearchRequestedAt } : {}),
+      } : {
+        status: "disconnected", usable: false, namespace: WALRUS_DEFAULT_NAMESPACE, relayerUrl: WALRUS_PRODUCTION_RELAYER, developmentRelayerAllowed: false,
+        receiptCount: 0, mode: "hosted", manualConfigured: false, message: "Walrus Memory is unavailable in Private Windows.",
+      },
       research: {
         boards: this.#intelligence?.boards() ?? [], generating: this.#intelligence?.boards().some((board) => board.status === "generating") ?? false,
         ...(this.#activeResearchBoardId ? { activeBoardId: this.#activeResearchBoardId } : {}),
         message: "Select up to ten shared tabs to create a cited research board.",
+        bundleReceipts: this.#researchBundleReceipts(),
+        ...(this.#researchBundleDraft ? { bundleDraft: this.#researchBundleDraft } : {}),
       },
       tabSteward: {
         suggestionCount: this.#privateWindow ? 0 : buildTabStewardPreview(this.#tabStates()).suggestions.length,
@@ -613,6 +654,12 @@ export class BrowserController {
         messages: this.#messages,
         conversations: this.#conversations,
         attachments: [...this.#attachments.values()].map(({ data: _data, ...attachment }) => attachment),
+        portableMemory: [...this.#portableMemoryAttachments.values()].map((memory) => ({
+          blobId: memory.blobId,
+          title: memory.title,
+          characters: memory.text.length,
+          ...(memory.sourceUrl ? { sourceUrl: memory.sourceUrl } : {}),
+        })),
         model: this.#workModel,
         ...(this.#workPlan ? { plan: this.#workPlan } : {}),
         changes: this.#workChanges,
@@ -694,6 +741,10 @@ export class BrowserController {
     return this.window.webContents.id === senderId;
   }
 
+  ownsWorkSender(senderId: number): boolean {
+    return this.#workView?.webContents.id === senderId;
+  }
+
   ownsReaderSender(senderId: number): boolean {
     return [...this.#readerViews.values()].some((view) => view.webContents.id === senderId);
   }
@@ -716,6 +767,13 @@ export class BrowserController {
         return this.#intelligence?.bundles() ?? [];
       case "reader-current":
         return this.#readerArticleForSender(senderId);
+      case "walrus-memory-search": {
+        if (this.#privateWindow || !this.#walrusMemory) throw new Error("Walrus Memory is unavailable in Private Windows");
+        const results = await this.#walrusMemory.recall(query.query, query.limit);
+        this.#walrusSearchResults.clear();
+        for (const result of results) this.#walrusSearchResults.set(result.blobId, result);
+        return results;
+      }
     }
   }
 
@@ -988,6 +1046,97 @@ export class BrowserController {
       case "remove-recall-exclusion":
         await this.#intelligence?.setExcluded(command.origin, false);
         break;
+      case "connect-walrus-memory": {
+        if (this.#privateWindow || !this.#walrusMemory) throw new Error("Walrus Memory is unavailable in Private Windows");
+        const delegateKey = await promptForNativeSecret({
+          title: "Connect Walrus Memory",
+          message: "Paste a delegate private key—not your owner wallet key. It will be encrypted by macOS and will never be shown to pages or Work Mode.",
+          confirmLabel: "Connect",
+        });
+        if (delegateKey === undefined) break;
+        await this.#walrusMemory.connect(command.accountId, command.namespace, delegateKey, command.relayerUrl);
+        break;
+      }
+      case "disconnect-walrus-memory": {
+        if (!this.#walrusMemory) break;
+        const result = await dialog.showMessageBox(this.window, {
+          type: "warning",
+          title: "Disconnect Walrus Memory?",
+          message: "This removes the delegate credential from this Locus profile.",
+          detail: "Memories already stored on Walrus will remain. Revoke the delegate from the Walrus dashboard if you want to end its access everywhere.",
+          buttons: ["Disconnect", "Cancel"], defaultId: 1, cancelId: 1, noLink: true,
+        });
+        if (result.response === 0) {
+          await this.#walrusMemory.disconnect();
+          this.#walrusMemoryDraft = undefined;
+          this.#researchBundleDraft = undefined;
+          this.#preparedResearchBundle = undefined;
+          this.#walrusSearchResults.clear();
+          this.#portableMemoryAttachments.clear();
+        }
+        break;
+      }
+      case "manage-walrus-delegates":
+        await shell.openExternal(WALRUS_DELEGATES_URL);
+        break;
+      case "begin-walrus-page-memory":
+        await this.#beginWalrusPageMemory();
+        break;
+      case "begin-walrus-research-memory":
+        await this.#beginWalrusResearchMemory(command.boardId);
+        break;
+      case "cancel-walrus-memory-draft":
+        this.#walrusMemoryDraft = undefined;
+        break;
+      case "save-walrus-memory-draft":
+        await this.#saveWalrusMemoryDraft(command.draftId, command.note);
+        break;
+      case "restore-walrus-memory":
+        if (!this.#walrusMemory) throw new Error("Walrus Memory is unavailable in Private Windows");
+        await this.#walrusMemory.restore();
+        break;
+      case "configure-walrus-client-encrypted": {
+        if (this.#privateWindow || !this.#walrusMemory) throw new Error("Walrus Memory is unavailable in Private Windows");
+        const suiPrivateKey = await promptForNativeSecret({
+          title: "Dedicated Sui signer",
+          message: "Paste a dedicated Ed25519 Sui private key for Walrus and SEAL transactions. Do not reuse a wallet that holds unrelated assets. The key is encrypted by macOS and stays out of pages, Work, logs, sync, and crash state.",
+          confirmLabel: "Continue",
+        });
+        if (suiPrivateKey === undefined) break;
+        const embeddingApiKey = await promptForNativeSecret({
+          title: "Embedding credential",
+          message: "Paste the dedicated API key for the embedding endpoint you selected. The provider receives memory plaintext to create vectors; the Walrus relayer does not.",
+          confirmLabel: "Validate",
+        });
+        if (embeddingApiKey === undefined) break;
+        await this.#walrusMemory.configureClientEncrypted({
+          network: command.network,
+          packageId: command.packageId,
+          registryId: command.registryId,
+          embeddingApiBase: command.embeddingApiBase,
+          embeddingModel: command.embeddingModel,
+          suiPrivateKey,
+          embeddingApiKey,
+        });
+        break;
+      }
+      case "set-walrus-memory-mode":
+        if (!this.#walrusMemory) throw new Error("Walrus Memory is unavailable in Private Windows");
+        await this.#walrusMemory.setMode(command.mode);
+        break;
+      case "open-walrus-memory-source": {
+        const sourceUrl = this.#walrusSearchResults.get(command.blobId)?.sourceUrl
+          ?? this.#portableMemoryAttachments.get(command.blobId)?.sourceUrl;
+        if (!sourceUrl) throw new Error("This memory has no eligible HTTP(S) source URL");
+        this.#createTab(sourceUrl, { active: true, private: false });
+        break;
+      }
+      case "attach-walrus-memory":
+        this.#attachWalrusMemories(command.blobIds);
+        break;
+      case "remove-walrus-memory-attachment":
+        this.#portableMemoryAttachments.delete(command.blobId);
+        break;
       case "open-research-board":
         if (this.#privateWindow) throw new Error("Research Boards are unavailable in Private Windows");
         this.#settingsOpen = false;
@@ -1000,6 +1149,16 @@ export class BrowserController {
         break;
       case "export-research-board":
         await this.#exportResearchBoard(command.boardId, command.format);
+        break;
+      case "prepare-walrus-research-bundle":
+        await this.#prepareResearchBundle(command.boardId, command.visibility, command.includePassages, command.epochs);
+        break;
+      case "publish-walrus-research-bundle":
+        await this.#publishResearchBundle(command.draftId);
+        break;
+      case "cancel-walrus-research-bundle":
+        this.#researchBundleDraft = undefined;
+        this.#preparedResearchBundle = undefined;
         break;
       case "delete-research-board":
         await this.#intelligence?.deleteBoard(command.boardId);
@@ -1400,6 +1559,10 @@ export class BrowserController {
       { id: "steward", label: "Open Tab Steward", detail: "Review duplicate and grouping suggestions", action: { type: "open-tab-steward" } },
       { id: "research", label: "New Research Board", detail: "Create a cited brief from shared tabs", action: { type: "new-research" } },
       { id: "record", label: "Start Recording", detail: "Capture shared tab context with visible controls", action: { type: "start-recording" } },
+      ...(this.#walrusMemory?.state().usable ? [{
+        id: "walrus-memory", label: "Search Walrus Memory", detail: `Search remote memories in ${this.#walrusMemory.state().namespace}`,
+        action: { type: "open-walrus-memory" as const },
+      }] : []),
     ];
     for (const command of commands.filter((item) => !this.#privateWindow || ["split", "reader"].includes(item.id))) {
       add({ id: `command:${command.id}`, kind: "command", label: command.label, detail: command.detail, action: command.action }, `${command.label} ${command.detail}`, 0.8);
@@ -1456,8 +1619,111 @@ export class BrowserController {
       case "toggle-tab-mute": await this.command({ type: "toggle-tab-mute", tabId: action.tabId }); break;
       case "open-tab-steward": this.#internalSurface = { type: "tab-steward" }; this.#layout(false); break;
       case "new-research": this.#internalSurface = { type: "research" }; this.#layout(false); break;
+      case "open-walrus-memory": this.#workOpen = true; this.#walrusSearchRequestedAt = Date.now(); this.#layout(true); break;
       case "start-recording": await this.command({ type: "start-recording", shareLevel: "read", tabAudio: true, microphone: true, saveVideo: false }); break;
     }
+  }
+
+  async #beginWalrusPageMemory(): Promise<void> {
+    if (this.#privateWindow || !this.#walrusMemory) throw new Error("Walrus Memory is unavailable in Private Windows");
+    if (!this.#walrusMemory.state().usable) throw new Error("Connect Walrus Memory in Settings first");
+    const tab = this.#active();
+    if (!tab) throw new Error("Share the current tab with this Work conversation before saving it to Walrus Memory");
+    const eligibilityError = portablePageEligibilityError({
+      privateWindow: this.#privateWindow,
+      privateTab: tab.state.private,
+      protectedPage: TabAccessRegistry.isProtectedUrl(tab.state.url, tab.state.private),
+      shared: this.#grants.can(this.#sessionId, tab.state.id, "read"),
+      url: tab.state.url,
+      excludedOrigins: this.#intelligence?.status().excludedOrigins ?? [],
+    });
+    if (eligibilityError) throw new Error(eligibilityError);
+    const snapshot = await this.#bridge(tab, bridgeInvocation.strictSnapshot({ maxChars: 20_000 })) as {
+      url?: string; title?: string; text?: string; capturedAt?: string;
+    };
+    const content = (snapshot.text || "").trim().slice(0, 20_000);
+    if (snapshot.url !== tab.state.url || content.length < 80) throw new Error("This page did not provide eligible readable content");
+    this.#walrusMemoryDraft = {
+      id: randomUUID(),
+      type: "page",
+      title: (snapshot.title || tab.state.title || "Saved page").slice(0, 2_048),
+      sourceUrl: tab.state.url,
+      capturedAt: snapshot.capturedAt || new Date().toISOString(),
+      contentSha256: createHash("sha256").update(content).digest("hex"),
+      content,
+      note: "",
+      maxNoteChars: MAX_PORTABLE_MEMORY_NOTE_CHARS,
+    };
+  }
+
+  async #beginWalrusResearchMemory(boardId: string): Promise<void> {
+    if (this.#privateWindow || !this.#walrusMemory) throw new Error("Walrus Memory is unavailable in Private Windows");
+    if (!this.#walrusMemory.state().usable) throw new Error("Connect Walrus Memory in Settings first");
+    const board = this.#researchBoards.get(boardId) ?? await this.#intelligence?.board(boardId);
+    if (!board || board.status !== "ready") throw new Error("Finish generating this Research Board before saving its summary");
+    const excludedOrigins = new Set(this.#intelligence?.status().excludedOrigins ?? []);
+    if (board.sources.some((source) => {
+      const eligibleUrl = eligiblePortableSourceUrl(source.url);
+      return !eligibleUrl || excludedOrigins.has(new URL(eligibleUrl).origin);
+    })) throw new Error("This Research Board contains an ineligible or excluded source");
+    const sourceById = new Map(board.sources.map((source) => [source.sourceId, source]));
+    const conclusions = board.sections.flatMap((section) => section.claims.map((claim) => {
+      const citations = claim.citations.map((citation) => sourceById.get(citation.sourceId))
+        .filter((source): source is ResearchBoardState["sources"][number] => Boolean(source))
+        .map((source) => `${source.title} — ${source.url}`);
+      return `- ${claim.text}${citations.length ? `\n  Sources: ${[...new Set(citations)].join("; ")}` : ""}`;
+    }));
+    const content = [
+      `Summary\n${board.summary}`,
+      conclusions.length ? `Cited conclusions\n${conclusions.join("\n")}` : "",
+    ].filter(Boolean).join("\n\n").slice(0, 21_000);
+    this.#walrusMemoryDraft = {
+      id: randomUUID(),
+      type: "research-summary",
+      title: board.title.slice(0, 2_048),
+      sourceUrl: board.sources[0]?.url ?? `locus://research/${board.id}`,
+      capturedAt: new Date(board.updatedAt).toISOString(),
+      contentSha256: createHash("sha256").update(content).digest("hex"),
+      content,
+      note: "",
+      maxNoteChars: MAX_PORTABLE_MEMORY_NOTE_CHARS,
+    };
+  }
+
+  async #saveWalrusMemoryDraft(draftId: string, rawNote: string): Promise<void> {
+    const draft = this.#walrusMemoryDraft;
+    if (!draft || draft.id !== draftId || !this.#walrusMemory) throw new Error("This Walrus preview has expired; open a new preview");
+    const note = rawNote.slice(0, draft.maxNoteChars);
+    const body = [draft.content, note ? `User note\n${note}` : ""].filter(Boolean).join("\n\n");
+    const payload = serializePortableMemory({
+      type: draft.type,
+      title: draft.title,
+      sourceUrl: draft.sourceUrl,
+      capturedAt: draft.capturedAt,
+      contentSha256: draft.contentSha256,
+      body,
+    });
+    await this.#walrusMemory.remember(payload);
+    this.#walrusMemoryDraft = undefined;
+  }
+
+  #attachWalrusMemories(blobIds: string[]): void {
+    if (this.#privateWindow) throw new Error("Walrus Memory is unavailable in Private Windows");
+    const candidates = [...new Set(blobIds)].flatMap((blobId) => {
+      const memory = this.#walrusSearchResults.get(blobId);
+      return memory ? [memory] : [];
+    });
+    if (!candidates.length) throw new Error("Search Walrus Memory again before attaching these results");
+    const combined = new Map(this.#portableMemoryAttachments);
+    for (const memory of candidates) combined.set(memory.blobId, memory);
+    const records = [...combined.values()];
+    if (records.length > 5) throw new Error("A Work message can include at most five portable memories");
+    if (records.reduce((total, memory) => total + memory.text.length, 0) > 12_000) {
+      throw new Error("Portable memory attachments cannot exceed 12,000 total characters");
+    }
+    this.#portableMemoryAttachments.clear();
+    for (const memory of records) this.#portableMemoryAttachments.set(memory.blobId, memory);
+    this.#workOpen = true;
   }
 
   async #applyTabSteward(suggestionIds: string[]): Promise<void> {
@@ -1638,6 +1904,130 @@ export class BrowserController {
     } finally { compositor.destroy(); }
   }
 
+  async #prepareResearchBundle(
+    boardId: string,
+    visibility: "public" | "seal-encrypted",
+    includePassages: boolean,
+    epochs: number,
+  ): Promise<void> {
+    if (this.#privateWindow || !this.#walrusMemory || !this.#intelligence) throw new Error("Walrus research bundles are unavailable in Private Windows");
+    const walrus = this.#walrusMemory.state();
+    if (walrus.mode !== "client-encrypted" || !walrus.usable || !walrus.network) {
+      throw new Error("Enable client-encrypted Walrus Memory before publishing a research bundle");
+    }
+    const board = this.#researchBoards.get(boardId) ?? await this.#intelligence.board(boardId);
+    if (!board || board.status !== "ready") throw new Error("Finish generating this Research Board before publishing it");
+    const excludedOrigins = new Set(this.#intelligence.status().excludedOrigins);
+    if (board.sources.some((source) => {
+      const eligible = eligiblePortableSourceUrl(source.url);
+      return !eligible || excludedOrigins.has(new URL(eligible).origin);
+    })) throw new Error("This Research Board contains an ineligible or excluded source");
+    const preparedAt = Date.now();
+    const draftId = randomUUID();
+    const markdown = researchBundleMarkdown(board, includePassages);
+    const compositor = new BrowserWindow({
+      show: false,
+      width: 900,
+      height: 1_200,
+      webPreferences: { nodeIntegration: false, sandbox: true, contextIsolation: true, webSecurity: true },
+    });
+    let pdf: Buffer;
+    try {
+      await compositor.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(researchBundleHtml(markdown))}`);
+      pdf = await compositor.webContents.printToPDF({ printBackground: true, pageSize: "A4" });
+    } finally { compositor.destroy(); }
+    const prepared = prepareResearchBundle(board, pdf, {
+      visibility,
+      includePassages,
+      network: walrus.network,
+      epochs,
+      namespace: walrus.namespace,
+      preparedAt,
+      draftId,
+    });
+    this.#preparedResearchBundle = prepared;
+    this.#researchBundleDraft = prepared.state;
+  }
+
+  async #publishResearchBundle(draftId: string): Promise<void> {
+    const prepared = this.#preparedResearchBundle;
+    const draft = this.#researchBundleDraft;
+    const walrus = this.#walrusMemory;
+    const intelligence = this.#intelligence;
+    if (!prepared || !draft || draft.id !== draftId || prepared.state.id !== draftId || !walrus || !intelligence) {
+      throw new Error("This research-bundle preview has expired; prepare it again");
+    }
+    if (walrus.state().mode !== "client-encrypted" || !walrus.state().usable) {
+      throw new Error("Client-encrypted Walrus Memory is no longer connected");
+    }
+    if (draft.includePassages) {
+      const passageWarning = await dialog.showMessageBox(this.window, {
+        type: "warning",
+        title: "Publish captured passage text?",
+        message: "This bundle includes the captured source passages shown in the preview.",
+        detail: draft.visibility === "public"
+          ? "The passage text will be public for the selected Walrus storage lifetime. This cannot be undone by disconnecting Locus."
+          : "The passage text will be SEAL-encrypted, but every authorized account delegate may be able to request the namespace key.",
+        buttons: ["Publish passages", "Cancel"], defaultId: 1, cancelId: 1, noLink: true,
+      });
+      if (passageWarning.response !== 0) return;
+    }
+    walrus.setPublishing(true);
+    try {
+      const result = await intelligence.publishWalrusResearchBundle({
+        receiptId: draft.id,
+        boardId: draft.boardId,
+        namespace: walrus.state().namespace,
+        visibility: draft.visibility,
+        network: draft.network,
+        epochs: draft.epochs,
+        files: prepared.files,
+        unsignedManifest: prepared.unsignedManifest,
+      });
+      this.#database.saveResearchBundleReceipt(this.#profileId, {
+        id: draft.id,
+        boardId: draft.boardId,
+        quiltId: result.quiltId,
+        manifestSha256: result.manifestSha256,
+        visibility: draft.visibility,
+        network: draft.network,
+        epochs: draft.epochs,
+        signerAddress: result.signerAddress,
+        filesJson: JSON.stringify(result.files),
+        createdAt: Date.now(),
+      });
+      this.#researchBundleDraft = undefined;
+      this.#preparedResearchBundle = undefined;
+      walrus.setPublishing(false, `Research bundle published as quilt ${result.quiltId.slice(0, 12)}…`);
+    } catch (error) {
+      walrus.setPublishing(false, safeWalrusError(error));
+      throw new Error(safeWalrusError(error));
+    }
+  }
+
+  #researchBundleReceipts(): ResearchBundleReceiptState[] {
+    if (this.#privateWindow) return [];
+    return this.#database.listResearchBundleReceipts(this.#profileId).flatMap((receipt) => {
+      try {
+        const files = JSON.parse(receipt.filesJson) as Array<{ identifier?: unknown; id?: unknown; blobId?: unknown }>;
+        if (!Array.isArray(files) || !files.every((file) => typeof file.identifier === "string" && typeof file.id === "string" && typeof file.blobId === "string")) return [];
+        if ((receipt.visibility !== "public" && receipt.visibility !== "seal-encrypted") || (receipt.network !== "mainnet" && receipt.network !== "testnet")) return [];
+        return [{
+          id: receipt.id,
+          boardId: receipt.boardId,
+          quiltId: receipt.quiltId,
+          manifestSha256: receipt.manifestSha256,
+          visibility: receipt.visibility,
+          network: receipt.network,
+          epochs: receipt.epochs,
+          signerAddress: receipt.signerAddress,
+          files: files as Array<{ identifier: string; id: string; blobId: string }>,
+          createdAt: receipt.createdAt,
+        }];
+      } catch { return []; }
+    });
+  }
+
   async #toggleReader(): Promise<void> {
     const tab = this.#active();
     if (!tab) return;
@@ -1731,6 +2121,7 @@ export class BrowserController {
     this.#disposed = true;
     this.#sync?.dispose();
     this.#intelligence?.dispose();
+    this.#walrusMemory?.dispose();
     this.#runtime.stop();
     const recordingShutdown = this.#recording?.dispose();
     this.#grants.revokeSession(this.#sessionId);
@@ -3757,6 +4148,14 @@ export class BrowserController {
       mime_type: attachment.mimeType,
       data: attachment.data,
     }));
+    const portableMemory = [...this.#portableMemoryAttachments.values()].map((memory) => ({
+      blob_id: memory.blobId,
+      text: memory.text,
+      title: memory.title,
+      ...(memory.sourceUrl ? { source_url: memory.sourceUrl } : {}),
+      ...(memory.capturedAt ? { captured_at: memory.capturedAt } : {}),
+      ...(memory.contentSha256 ? { content_sha256: memory.contentSha256 } : {}),
+    }));
     let browserContext = suppliedBrowserContext;
     if (!browserContext) {
       try { browserContext = await this.#liveBrowserContext(text); }
@@ -3777,12 +4176,14 @@ export class BrowserController {
       mode: this.#workMode,
       ...(attachments.length ? { attachments } : {}),
       ...(browserContext ? { browser_context: browserContext } : {}),
+      ...(portableMemory.length ? { portable_memory: portableMemory } : {}),
     });
     if (!sent) {
       this.#messages.push({ id: randomUUID(), role: "system", text: "The local agent is offline. Your message was not sent." });
       this.#workActivity = { phase: "idle", label: "Agent offline" };
     } else {
       this.#attachments.clear();
+      this.#portableMemoryAttachments.clear();
       this.#busy = true;
       this.#workActivity = { phase: "thinking", label: "Thinking…" };
     }

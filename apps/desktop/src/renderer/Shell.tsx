@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bookmark, Bot, Check, ChevronDown,
-  CircleAlert, Clock3, Cloud, CloudOff, Copy, Download, EyeOff, FileDown, FolderPlus, Globe2, History,
+  CircleAlert, Clock3, Cloud, CloudOff, Copy, Database, Download, ExternalLink, EyeOff, FileDown, FolderPlus, Globe2, History,
   KeyRound, Laptop, Layers3, LayoutList, LockKeyhole, LogIn, LogOut, Minus, Monitor, Moon, MoreHorizontal, PanelLeft,
   BookOpenText, Columns2, Command as CommandIcon, LibraryBig, Mic, Pause, Play, Plus, Printer, Puzzle, RefreshCw, Search, Settings, ShieldCheck,
   Sparkles, Square, Sun, Trash2, UserRound, UsersRound, Video, Volume2, VolumeX, X,
@@ -236,6 +236,8 @@ export function Shell() {
       {state.internalSurface?.type === "research" ? <ResearchSurface state={state} top={chromeHeight} {...(state.internalSurface.boardId ? { boardId: state.internalSurface.boardId } : {})} /> : null}
       {state.internalSurface?.type === "tab-steward" ? <TabStewardSurface state={state} top={chromeHeight} /> : null}
       {state.paletteOpen ? <CommandPalette state={state} top={chromeHeight} /> : null}
+      {state.walrusMemory.draft ? <WalrusMemoryPreview state={state} /> : null}
+      {state.research.bundleDraft ? <ResearchBundlePreview state={state} /> : null}
       {state.sidebarOpen && !state.internalSurface && !state.paletteOpen && <BrowserSidebar state={state} top={chromeHeight} />}
       {state.workOpen && state.workOverlay && <div className="dock-scrim" style={{ top: chromeHeight }} aria-hidden="true" />}
       {!state.internalSurface && !state.paletteOpen ? <div className="page-drop-shadow" style={{ left: state.sidebarOpen ? 248 : 0, top: chromeHeight }} aria-hidden="true" /> : null}
@@ -475,6 +477,10 @@ function SitePermissionBar({ state }: { state: BrowserAppState }) {
 
 function BrowserMenu({ state, close }: { state: BrowserAppState; close: () => void }) {
   const run = (value: BrowserCommand) => { close(); void command(value); };
+  const active = state.tabs.find((tab) => tab.id === state.activeTabId);
+  const canSaveToWalrus = state.walrusMemory.usable && Boolean(
+    active && /^https?:\/\//.test(active.url) && active.grants.some((grant) => grant.sessionId === state.work.sessionId),
+  );
   return (
     <div className="toolbar-popover browser-menu" role="menu">
       <div className="zoom-row">
@@ -489,6 +495,7 @@ function BrowserMenu({ state, close }: { state: BrowserAppState; close: () => vo
       <button role="menuitem" disabled={!state.reader.available && !state.reader.active} onClick={() => run({ type: "toggle-reader" })}><BookOpenText size={15} /><span>Reader Mode</span></button>
       {!state.privateWindow ? <button role="menuitem" onClick={() => run({ type: "open-research-board" })}><LibraryBig size={15} /><span>Research Board</span></button> : null}
       {!state.privateWindow ? <button role="menuitem" onClick={() => run({ type: "open-tab-steward" })}><Layers3 size={15} /><span>Tab Steward</span></button> : null}
+      {!state.privateWindow && state.walrusMemory.status !== "disconnected" ? <button role="menuitem" disabled={!canSaveToWalrus} title={canSaveToWalrus ? "Preview this shared page before uploading" : "Connect Walrus and share this HTTP(S) tab first"} onClick={() => run({ type: "begin-walrus-page-memory" })}><Database size={15} /><span>Save page to Walrus Memory</span></button> : null}
       <div className="popover-rule" />
       <button role="menuitem" onClick={() => run({ type: "toggle-find" })}><Search size={15} /><span>Find in page</span><kbd>⌘F</kbd></button>
       <button role="menuitem" onClick={() => run({ type: "print-page" })}><Printer size={15} /><span>Print</span><kbd>⌘P</kbd></button>
@@ -796,12 +803,13 @@ function ResearchSurface({ state, top, boardId }: { state: BrowserAppState; top:
         <button className="research-generate" disabled={!selected.length || state.work.runtime !== "online"}><Sparkles size={14} />Generate cited board</button>
       </form>
       <aside className="research-board-list"><h2>Saved boards</h2>{state.research.boards.map((item) => <button key={item.id} onClick={() => void command({ type: "open-research-board", boardId: item.id })}><span><strong>{item.title}</strong><small>{item.sourceCount} sources · {new Date(item.updatedAt).toLocaleDateString()}</small></span><i className={item.status}>{item.status}</i></button>)}</aside>
-    </div> : <ResearchArtifact board={board} />}
+    </div> : <ResearchArtifact board={board} state={state} />}
   </main>;
 }
 
-function ResearchArtifact({ board }: { board: ResearchBoardState }) {
+function ResearchArtifact({ board, state }: { board: ResearchBoardState; state: BrowserAppState }) {
   const sources = new Map(board.sources.map((source) => [source.sourceId, source]));
+  const bundleReceipts = state.research.bundleReceipts.filter((receipt) => receipt.boardId === board.id);
   return <div className="research-artifact-layout">
     <article className="research-artifact">
       {board.status === "generating" ? <div className="research-progress"><span className="loading-ring" /><strong>Building a cited artifact</strong><p>{board.message}</p></div> : board.status === "error" ? <div className="research-progress error"><CircleAlert size={20} /><strong>Research stopped</strong><p>{board.message}</p></div> : <>
@@ -812,7 +820,7 @@ function ResearchArtifact({ board }: { board: ResearchBoardState }) {
         })}</span></p>)}</section>)}
       </>}
     </article>
-    <aside className="research-evidence"><header><h2>Evidence</h2><div><button disabled={board.status !== "ready"} onClick={() => void command({ type: "export-research-board", boardId: board.id, format: "markdown" })}>Markdown</button><button disabled={board.status !== "ready"} onClick={() => void command({ type: "export-research-board", boardId: board.id, format: "pdf" })}>PDF</button></div></header>{board.sources.map((source, index) => <details key={source.sourceId} id={`source-${source.sourceId}`}><summary><span>{index + 1}</span><span><strong>{source.title}</strong><small>{safeHostname(source.url)} · captured {new Date(source.capturedAt).toLocaleString()}</small></span><ChevronDown size={13} /></summary>{source.passages.map((passage) => <blockquote key={passage.passageId} id={passage.passageId}>{passage.text}</blockquote>)}</details>)}</aside>
+    <aside className="research-evidence"><header><h2>Evidence</h2><div>{state.walrusMemory.usable ? <button disabled={board.status !== "ready"} title="Preview summary and cited conclusions before uploading" onClick={() => void command({ type: "begin-walrus-research-memory", boardId: board.id })}>Memory</button> : null}{state.walrusMemory.usable && state.walrusMemory.mode === "client-encrypted" ? <button disabled={board.status !== "ready" || state.walrusMemory.status === "publishing"} title="Package a signed, hash-verifiable Walrus quilt" onClick={() => void command({ type: "prepare-walrus-research-bundle", boardId: board.id, visibility: "public", includePassages: false, epochs: 5 })}>Publish bundle…</button> : null}<button disabled={board.status !== "ready"} onClick={() => void command({ type: "export-research-board", boardId: board.id, format: "markdown" })}>Markdown</button><button disabled={board.status !== "ready"} onClick={() => void command({ type: "export-research-board", boardId: board.id, format: "pdf" })}>PDF</button></div></header>{board.sources.map((source, index) => <details key={source.sourceId} id={`source-${source.sourceId}`}><summary><span>{index + 1}</span><span><strong>{source.title}</strong><small>{safeHostname(source.url)} · captured {new Date(source.capturedAt).toLocaleString()}</small></span><ChevronDown size={13} /></summary>{source.passages.map((passage) => <blockquote key={passage.passageId} id={passage.passageId}>{passage.text}</blockquote>)}</details>)}{bundleReceipts.length ? <section className="research-bundle-receipts"><h3>Published bundles</h3>{bundleReceipts.map((receipt) => <div key={receipt.id}><span><strong>{receipt.visibility === "public" ? "Public quilt" : "SEAL-encrypted quilt"}</strong><small>{receipt.network} · {receipt.epochs} epochs · {new Date(receipt.createdAt).toLocaleString()}</small><code title={receipt.quiltId}>{receipt.quiltId}</code></span><button type="button" title="Copy quilt ID" onClick={() => void navigator.clipboard.writeText(receipt.quiltId)}><Copy size={11} /></button></div>)}</section> : null}</aside>
   </div>;
 }
 
@@ -848,6 +856,7 @@ function SettingsSurface({ state, top }: { state: BrowserAppState; top: number }
           <button type="button" onClick={() => openSection("settings-extensions")}><Puzzle size={15} /><span>Extensions</span></button>
           <button type="button" onClick={() => openSection("settings-profiles")}><UserRound size={15} /><span>Profiles</span></button>
           <button type="button" onClick={() => openSection("settings-privacy")}><ShieldCheck size={15} /><span>Privacy</span></button>
+          {!state.privateWindow ? <button type="button" onClick={() => openSection("settings-integrations")}><Database size={15} /><span>Integrations</span></button> : null}
           {!state.privateWindow ? <button type="button" onClick={() => openSection("settings-sync")}><Cloud size={15} /><span>Sync</span></button> : null}
         </nav>
         <div className="settings-page-scroll">
@@ -930,6 +939,13 @@ function SettingsSurface({ state, top }: { state: BrowserAppState; top: number }
           </section>
 
           {!state.privateWindow ? (
+            <section className="settings-page-section settings-component-section" id="settings-integrations">
+              <SettingsSectionHeading title="Integrations" detail="Optional services that receive only content you explicitly confirm." />
+              <div className="settings-card"><WalrusMemorySettings state={state} /></div>
+            </section>
+          ) : null}
+
+          {!state.privateWindow ? (
             <section className="settings-page-section settings-component-section" id="settings-sync">
               <SettingsSectionHeading title="Locus encrypted sync" detail="Optional end-to-end encrypted sync for browser data." />
               <div className="settings-card"><SyncSettings state={state} /></div>
@@ -939,6 +955,147 @@ function SettingsSurface({ state, top }: { state: BrowserAppState; top: number }
       </div>
     </main>
   );
+}
+
+function WalrusMemorySettings({ state }: { state: BrowserAppState }) {
+  const walrus = state.walrusMemory;
+  const [accountId, setAccountId] = useState(walrus.accountId ?? "");
+  const [namespace, setNamespace] = useState(walrus.namespace);
+  const [relayerUrl, setRelayerUrl] = useState(walrus.relayerUrl);
+  const [network, setNetwork] = useState<"mainnet" | "testnet">(walrus.network ?? "testnet");
+  const [packageId, setPackageId] = useState(walrus.packageId ?? "");
+  const [registryId, setRegistryId] = useState(walrus.registryId ?? "");
+  const [embeddingApiBase, setEmbeddingApiBase] = useState(walrus.embeddingApiBase ?? "https://api.openai.com/v1");
+  const [embeddingModel, setEmbeddingModel] = useState(walrus.embeddingModel ?? "text-embedding-3-small");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const usable = walrus.usable;
+  const connect = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true); setError("");
+    try {
+      await command({
+        type: "connect-walrus-memory",
+        accountId,
+        namespace,
+        ...(walrus.developmentRelayerAllowed ? { relayerUrl } : {}),
+      });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Walrus Memory could not connect");
+    } finally { setBusy(false); }
+  };
+  const run = async (value: BrowserCommand) => {
+    setBusy(true); setError("");
+    try { await command(value); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Walrus Memory request failed"); }
+    finally { setBusy(false); }
+  };
+  const configureManual = async (event: React.FormEvent) => {
+    event.preventDefault();
+    await run({ type: "configure-walrus-client-encrypted", network, packageId, registryId, embeddingApiBase, embeddingModel });
+  };
+  return <div className="walrus-settings">
+    <header className="walrus-heading"><span><Database size={18} /></span><div><strong>Walrus Memory <i>Experimental</i></strong><small>Portable memory for selected pages and cited research summaries.</small></div><em className={walrus.status}>{walrus.status.replace("-", " ")}</em></header>
+    <div className="walrus-disclosure" role="note">
+      <ShieldCheck size={16} />
+      <p><strong>{walrus.mode === "client-encrypted" ? "Client-encrypted mode" : "Hosted mode trust boundary"}</strong>{walrus.mode === "client-encrypted" ? "Locus embeds and SEAL-encrypts in its private process. The selected embedding provider receives plaintext; the Walrus relayer receives ciphertext and vectors." : "The managed Walrus relayer processes plaintext to create embeddings and encrypt content. Locus sends nothing automatically; every write opens a preview and requires confirmation."}</p>
+    </div>
+    {usable ? <div className="walrus-connected">
+      <div className="walrus-connection-detail"><span><small>Account</small><strong>{walrus.accountId}</strong></span><span><small>Namespace</small><strong>{walrus.namespace}</strong></span><span><small>Relayer</small><strong>{safeHostname(walrus.relayerUrl)}</strong></span></div>
+      <div className="walrus-mode-picker" role="group" aria-label="Walrus Memory encryption mode">
+        <button type="button" className={walrus.mode === "client-encrypted" ? "active" : ""} disabled={busy || !walrus.manualConfigured} onClick={() => void run({ type: "set-walrus-memory-mode", mode: "client-encrypted" })}>Client-encrypted <small>Recommended</small></button>
+        <button type="button" className={walrus.mode === "hosted" ? "active" : ""} disabled={busy} onClick={() => void run({ type: "set-walrus-memory-mode", mode: "hosted" })}>Hosted <small>Advanced convenience</small></button>
+      </div>
+      <p className={`walrus-message ${walrus.status}`} role="status">{walrus.message}</p>
+      <div className="walrus-actions">
+        <button type="button" disabled={busy || walrus.status === "checking" || walrus.status === "saving" || walrus.status === "restoring"} onClick={() => void run({ type: "restore-walrus-memory" })}><RefreshCw size={12} />Restore index</button>
+        <button type="button" onClick={() => void run({ type: "manage-walrus-delegates" })}><ExternalLink size={12} />Manage delegates</button>
+        <button type="button" className="danger" disabled={busy} onClick={() => void run({ type: "disconnect-walrus-memory" })}>Disconnect</button>
+      </div>
+      <small className="walrus-receipts">{walrus.receiptCount} content-free local {walrus.receiptCount === 1 ? "receipt" : "receipts"}. Disconnecting does not delete remote memories.</small>
+      <form className="walrus-manual-config" onSubmit={configureManual}>
+        <header><strong>{walrus.manualConfigured ? "Update client-encrypted mode" : "Set up client-encrypted mode"}</strong><small>Uses a dedicated Sui signer and a separately configured embedding credential. Neither is shared with Work providers.</small></header>
+        <div><label><span>Network</span><select value={network} onChange={(event) => setNetwork(event.target.value as typeof network)}><option value="testnet">Testnet</option><option value="mainnet">Mainnet</option></select></label><label><span>Embedding model</span><input aria-label="Embedding model" value={embeddingModel} onChange={(event) => setEmbeddingModel(event.target.value)} autoComplete="off" spellCheck={false} /></label></div>
+        <label><span>Memory package ID</span><input value={packageId} onChange={(event) => setPackageId(event.target.value)} placeholder="0x…" autoComplete="off" spellCheck={false} /></label>
+        <label><span>Account registry ID</span><input value={registryId} onChange={(event) => setRegistryId(event.target.value)} placeholder="0x…" autoComplete="off" spellCheck={false} /></label>
+        <label><span>OpenAI-compatible embedding endpoint</span><input aria-label="OpenAI-compatible embedding endpoint" type="url" value={embeddingApiBase} onChange={(event) => setEmbeddingApiBase(event.target.value)} autoComplete="off" spellCheck={false} /></label>
+        <button type="submit" disabled={busy || !packageId.trim() || !registryId.trim() || !embeddingModel.trim()}>{busy ? "Validating…" : walrus.manualConfigured ? "Revalidate and update…" : "Set up secure mode…"}</button>
+        {walrus.signerAddress ? <small>Dedicated signer: <code>{walrus.signerAddress}</code></small> : null}
+      </form>
+    </div> : <form className="walrus-connect" onSubmit={connect}>
+      <label><span>Walrus account ID</span><input value={accountId} onChange={(event) => setAccountId(event.target.value)} placeholder="0x…" autoComplete="off" spellCheck={false} /></label>
+      <label><span>Namespace</span><input value={namespace} onChange={(event) => setNamespace(event.target.value)} placeholder="locus-browser-v1" autoComplete="off" spellCheck={false} /></label>
+      {walrus.developmentRelayerAllowed ? <label><span>Development relayer</span><input value={relayerUrl} onChange={(event) => setRelayerUrl(event.target.value)} placeholder="https://relayer.memory.walrus.xyz" autoComplete="off" spellCheck={false} /></label> : <p className="walrus-production-pin"><LockKeyhole size={12} />Production builds are pinned to {walrus.relayerUrl}</p>}
+      <p>The delegate key is collected next in a hidden macOS prompt. Use a revocable delegate key, never an owner wallet key.</p>
+      <button className="primary" disabled={busy || !accountId.trim() || !namespace.trim()}>{busy ? "Checking…" : "Connect Walrus Memory…"}</button>
+      <button type="button" onClick={() => void run({ type: "manage-walrus-delegates" })}><ExternalLink size={12} />Create or manage delegates</button>
+      {walrus.accountId ? <button type="button" className="danger" disabled={busy} onClick={() => void run({ type: "disconnect-walrus-memory" })}>Remove local connection</button> : null}
+      <p className={`walrus-message ${walrus.status}`} role="status">{error || walrus.message}</p>
+    </form>}
+    {error && usable ? <p className="recording-error" role="alert">{error}</p> : null}
+  </div>;
+}
+
+function WalrusMemoryPreview({ state }: { state: BrowserAppState }) {
+  const draft = state.walrusMemory.draft!;
+  const [note, setNote] = useState(draft.note);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const save = async () => {
+    setSaving(true); setError("");
+    try { await command({ type: "save-walrus-memory-draft", draftId: draft.id, note }); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Walrus Memory could not save this preview"); }
+    finally { setSaving(false); }
+  };
+  return <div className="walrus-preview-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) void command({ type: "cancel-walrus-memory-draft" }); }}>
+    <section className="walrus-preview" role="dialog" aria-modal="true" aria-labelledby="walrus-preview-title">
+      <header><span><Database size={18} /></span><div><h2 id="walrus-preview-title">Save to Walrus Memory</h2><p>Review the exact bounded content before anything is uploaded.</p></div><button type="button" disabled={saving} aria-label="Close Walrus preview" onClick={() => void command({ type: "cancel-walrus-memory-draft" })}><X size={15} /></button></header>
+      <dl><div><dt>Type</dt><dd>{draft.type === "page" ? "Shared page" : "Research summary"}</dd></div><div><dt>Title</dt><dd>{draft.title}</dd></div><div><dt>Source</dt><dd>{draft.sourceUrl}</dd></div><div><dt>Captured</dt><dd>{new Date(draft.capturedAt).toLocaleString()}</dd></div><div><dt>SHA-256</dt><dd><code>{draft.contentSha256}</code></dd></div></dl>
+      <div className="walrus-preview-content"><span>Content to upload</span><pre>{draft.content}</pre></div>
+      <label className="walrus-preview-note"><span>Optional note <small>{note.length}/{draft.maxNoteChars}</small></span><textarea rows={4} value={note} maxLength={draft.maxNoteChars} onChange={(event) => setNote(event.target.value)} placeholder="Add context that should travel with this memory…" /></label>
+      <p className="walrus-preview-warning"><CircleAlert size={14} />{state.walrusMemory.mode === "client-encrypted" ? "Your embedding provider receives this plaintext; Locus encrypts it before the Walrus relayer receives it." : "The hosted relayer receives this plaintext after you click Save."}</p>
+      {error ? <p className="recording-error" role="alert">{error}</p> : null}
+      <footer><button type="button" disabled={saving} onClick={() => void command({ type: "cancel-walrus-memory-draft" })}>Cancel</button><button type="button" className="primary" disabled={saving} onClick={() => void save()}>{saving ? "Waiting for Walrus…" : "Save to Walrus Memory"}</button></footer>
+    </section>
+  </div>;
+}
+
+function ResearchBundlePreview({ state }: { state: BrowserAppState }) {
+  const draft = state.research.bundleDraft!;
+  const [visibility, setVisibility] = useState(draft.visibility);
+  const [includePassages, setIncludePassages] = useState(draft.includePassages);
+  const [epochs, setEpochs] = useState(draft.epochs);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const dirty = visibility !== draft.visibility || includePassages !== draft.includePassages || epochs !== draft.epochs;
+  const refresh = async () => {
+    setBusy(true); setError("");
+    try { await command({ type: "prepare-walrus-research-bundle", boardId: draft.boardId, visibility, includePassages, epochs }); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "The research-bundle preview could not be prepared"); }
+    finally { setBusy(false); }
+  };
+  const publish = async () => {
+    setBusy(true); setError("");
+    try { await command({ type: "publish-walrus-research-bundle", draftId: draft.id }); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "The research bundle could not be published"); }
+    finally { setBusy(false); }
+  };
+  return <div className="walrus-preview-backdrop" role="presentation">
+    <section className="walrus-preview research-bundle-preview" role="dialog" aria-modal="true" aria-labelledby="bundle-preview-title">
+      <header><span><ShieldCheck size={18} /></span><div><h2 id="bundle-preview-title">Publish verifiable research bundle</h2><p>Review the sanitized artifacts and their hashes before Locus signs and uploads one Walrus quilt.</p></div><button type="button" disabled={busy} aria-label="Close research bundle preview" onClick={() => void command({ type: "cancel-walrus-research-bundle" })}><X size={15} /></button></header>
+      <div className="bundle-options"><label><span>Visibility</span><select value={visibility} onChange={(event) => setVisibility(event.target.value as typeof visibility)}><option value="public">Public</option><option value="seal-encrypted">SEAL encrypted</option></select></label><label><span>Storage epochs</span><input aria-label="Walrus storage epochs" type="number" min={1} max={53} value={epochs} onChange={(event) => setEpochs(Math.max(1, Math.min(53, Number(event.target.value) || 1)))} /></label></div>
+      <label className="bundle-passage-option"><input aria-label="Include captured passage text" type="checkbox" checked={includePassages} onChange={(event) => setIncludePassages(event.target.checked)} /><span><strong>Include captured passage text</strong><small>Off by default. Claims, citations, URLs, content hashes, and passage hashes are included either way.</small></span></label>
+      {dirty ? <div className="bundle-refresh"><p>Options changed. Refresh the preview to recalculate every artifact hash.</p><button type="button" disabled={busy} onClick={() => void refresh()}>{busy ? "Preparing…" : "Refresh exact preview"}</button></div> : <>
+        <dl><div><dt>Network</dt><dd>{draft.network}</dd></div><div><dt>Unsigned manifest SHA-256</dt><dd><code>{draft.unsignedManifestSha256}</code></dd></div></dl>
+        <div className="bundle-file-list">{draft.files.map((file) => <div key={file.identifier}><span><strong>{file.identifier}</strong><small>{file.mediaType} · {file.bytes.toLocaleString()} bytes</small></span><code>{file.sha256}</code></div>)}</div>
+        <div className="walrus-preview-content"><span>Sanitized Markdown preview</span><pre>{draft.previewMarkdown}</pre></div>
+      </>}
+      <p className="walrus-preview-warning"><CircleAlert size={14} />{visibility === "public" ? "Public bundles remain readable for the selected storage lifetime. Disconnecting Locus does not remove them." : "SEAL encryption protects file bytes, but account delegates are an authorization boundary—not separate namespace principals."} The dedicated signer must have enough SUI and WAL; final cost depends on network pricing and artifact size.</p>
+      {includePassages ? <p className="bundle-passage-warning" role="alert"><CircleAlert size={14} />Captured source text is included. Locus will require one more explicit confirmation before publishing.</p> : null}
+      {error ? <p className="recording-error" role="alert">{error}</p> : null}
+      <footer><button type="button" disabled={busy} onClick={() => void command({ type: "cancel-walrus-research-bundle" })}>Cancel</button><button type="button" className="primary" disabled={busy || dirty} onClick={() => void publish()}>{busy || state.walrusMemory.status === "publishing" ? "Signing and publishing…" : "Sign and publish quilt"}</button></footer>
+    </section>
+  </div>;
 }
 
 function SettingsSectionHeading({ title, detail }: { title: string; detail: string }) {

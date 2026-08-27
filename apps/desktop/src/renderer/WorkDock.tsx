@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   Bot,
@@ -9,6 +9,7 @@ import {
   CircleStop,
   Clock3,
   ClipboardList,
+  Database,
   FileCode2,
   FileDiff,
   FolderOpen,
@@ -23,6 +24,7 @@ import {
   Play,
   RotateCcw,
   RefreshCw,
+  Search,
   SendHorizontal,
   Server,
   Share2,
@@ -38,7 +40,7 @@ import {
   X,
 } from "lucide-react";
 import type { BrowserCommand } from "../shared/ipc.js";
-import type { BrowserAppState, ThinkingVisibility, ToolActivityVisibility, WorkMessage, WorkMode, WorkModelProviderId, WorkModelProviderState, WorkPanel, WorkTerminalEntryState } from "../shared/types.js";
+import type { BrowserAppState, ThinkingVisibility, ToolActivityVisibility, WalrusMemoryResultState, WorkMessage, WorkMode, WorkModelProviderId, WorkModelProviderState, WorkPanel, WorkTerminalEntryState } from "../shared/types.js";
 import { useBrowserState } from "./useBrowserState.js";
 
 const panels: Array<{ id: WorkPanel; label: string; icon: React.ReactNode }> = [
@@ -235,10 +237,15 @@ function ChatPanel({ state, grantLevel }: { state: BrowserAppState; grantLevel: 
   const [text, setText] = useState("");
   const [shareMenu, setShareMenu] = useState(false);
   const [displayMenu, setDisplayMenu] = useState(false);
+  const [walrusOpen, setWalrusOpen] = useState(false);
   const visibleMessages = state.work.messages.filter((message) => message.text || message.streaming || (message.reasoningText && state.settings.thinkingVisibility !== "hidden"));
   const latestId = visibleMessages.at(-1)?.id;
   const activeProvider = state.work.model.providers.find((provider) => provider.id === state.work.model.activeProvider);
   const modelReady = Boolean(activeProvider?.configured);
+
+  useEffect(() => {
+    if (state.walrusMemory.searchRequestedAt) setWalrusOpen(true);
+  }, [state.walrusMemory.searchRequestedAt]);
 
   const submit = () => {
     if (!text.trim()) return;
@@ -295,6 +302,12 @@ function ChatPanel({ state, grantLevel }: { state: BrowserAppState; grantLevel: 
           {modes.map((mode) => <button key={mode.id} type="button" role="radio" aria-checked={state.work.mode === mode.id} className={state.work.mode === mode.id ? "active" : ""} title={mode.detail} onKeyDown={navigateModeRadio} onClick={() => void command({ type: "set-work-mode", mode: mode.id })}>{mode.label}</button>)}
         </div>
         <div className="composer">
+          {walrusOpen ? <WalrusMemoryPicker state={state} close={() => setWalrusOpen(false)} /> : null}
+          {state.work.portableMemory.length > 0 ? (
+            <div className="portable-memory-strip" aria-label="Attached portable memories">
+              {state.work.portableMemory.map((memory) => <span key={memory.blobId} className="portable-memory-chip" title={`${memory.characters.toLocaleString()} characters · ${memory.blobId}`}><Database size={12} /><span>{memory.title}</span><button type="button" aria-label={`Remove ${memory.title}`} onClick={() => void command({ type: "remove-walrus-memory-attachment", blobId: memory.blobId })}><X size={11} /></button></span>)}
+            </div>
+          ) : null}
           {state.work.attachments.length > 0 ? (
             <div className="attachment-strip" aria-label="Attached images">
               {state.work.attachments.map((attachment) => (
@@ -318,6 +331,7 @@ function ChatPanel({ state, grantLevel }: { state: BrowserAppState; grantLevel: 
           />
           <div className="composer-actions">
             <button type="button" title="Attach images" aria-label="Attach images" disabled={state.work.busy || state.work.runtime !== "online" || state.work.attachments.length >= 10} onClick={() => void command({ type: "choose-work-attachments" })}><Paperclip size={15} /></button>
+            <button type="button" className={walrusOpen ? "active" : ""} title={state.walrusMemory.usable ? "Search Walrus Memory" : "Connect Walrus Memory in Settings"} aria-label="Search Walrus Memory" disabled={state.work.busy} onClick={() => setWalrusOpen((open) => !open)}><Database size={15} /></button>
             {state.work.busy ? <span className={`composer-activity ${state.work.activity.phase}`} role="status"><i />{state.work.activity.label}</span> : null}
             <div className="composer-spacer" />
             <div className="display-preferences-wrap">
@@ -334,6 +348,41 @@ function ChatPanel({ state, grantLevel }: { state: BrowserAppState; grantLevel: 
       </div>
     </div>
   );
+}
+
+function WalrusMemoryPicker({ state, close }: { state: BrowserAppState; close: () => void }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<WalrusMemoryResultState[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const connected = state.walrusMemory.usable && !["checking", "saving", "restoring", "publishing"].includes(state.walrusMemory.status);
+  const search = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!query.trim() || !connected) return;
+    setLoading(true); setError("");
+    try {
+      const value = await window.locusBrowser.query({ type: "walrus-memory-search", query, limit: 10 });
+      setResults(value as WalrusMemoryResultState[]);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Walrus Memory search failed");
+    } finally { setLoading(false); }
+  };
+  const attach = async (blobId: string) => {
+    setError("");
+    try { await command({ type: "attach-walrus-memory", blobIds: [blobId] }); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "This memory could not be attached"); }
+  };
+  return <section className="walrus-memory-picker" aria-label="Search Walrus Memory">
+    <header><span><Database size={14} /><strong>Walrus Memory</strong><small>{state.walrusMemory.namespace}</small></span><button type="button" aria-label="Close Walrus Memory search" onClick={close}><X size={13} /></button></header>
+    {!connected ? <div className="walrus-picker-disconnected"><p>{state.walrusMemory.message} Open browser Settings → Integrations to connect.</p></div> : <>
+      <form onSubmit={search}><Search size={13} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search remote memories" aria-label="Walrus Memory query" /><button disabled={loading || !query.trim()}>{loading ? "Searching…" : "Search"}</button></form>
+      <div className="walrus-result-list">
+        {results.map((result) => <article key={result.blobId}><div><strong>{result.title}</strong><small title={result.blobId}>{Math.round(result.relevance * 100)}% relevance · blob {shortBlobId(result.blobId)}</small><p>{result.snippet}</p>{result.sourceUrl ? <i>{result.sourceUrl}</i> : null}</div><footer>{result.sourceUrl ? <button type="button" onClick={() => void command({ type: "open-walrus-memory-source", blobId: result.blobId })}>Open source</button> : null}<button type="button" className="primary" disabled={state.work.portableMemory.some((item) => item.blobId === result.blobId)} onClick={() => void attach(result.blobId)}>{state.work.portableMemory.some((item) => item.blobId === result.blobId) ? "Attached" : "Attach to Work"}</button></footer></article>)}
+        {!loading && query.trim() && !results.length && !error ? <p className="walrus-picker-empty">No indexed matches yet. Recent saves can lag; Restore index is available in Settings.</p> : null}
+      </div>
+      {error ? <p className="walrus-picker-error" role="alert">{error}</p> : null}
+    </>}
+  </section>;
 }
 
 function ThinkingBlock({ message, visibility }: { message: WorkMessage; visibility: ThinkingVisibility }) {
@@ -570,4 +619,8 @@ function formatRecordingDuration(milliseconds: number): string {
 
 function displayToolLabel(value: string): string {
   return value.replace(/^browser_/, "Browser ").replaceAll("_", " ");
+}
+
+function shortBlobId(value: string): string {
+  return value.length > 18 ? `${value.slice(0, 9)}…${value.slice(-6)}` : value;
 }

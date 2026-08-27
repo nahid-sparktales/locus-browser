@@ -4,6 +4,12 @@ import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import { decryptLocalValue, encryptLocalValue, type LocalEncryptedValue } from "@locus/sync-crypto";
+import { MemWalManual } from "@mysten-incubation/memwal/manual";
+import { SealClient } from "@mysten/seal";
+import { decodeSuiPrivateKey, type Signer } from "@mysten/sui/cryptography";
+import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
+import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
+import { WalrusClient, WalrusFile } from "@mysten/walrus";
 import type {
   ResearchBoardState,
   ResearchBoardSummaryState,
@@ -11,6 +17,13 @@ import type {
   SemanticRecallResultState,
   SemanticRecallState,
 } from "../shared/types.js";
+import type {
+  WalrusBundlePublishInput,
+  WalrusBundlePublishResult,
+  WalrusManualConfiguration,
+  WalrusManualConfigurationResult,
+} from "../shared/walrusPrivate.js";
+import { signResearchBundleManifest } from "./ResearchBundleCrypto.js";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
@@ -36,6 +49,10 @@ let database: DatabaseSyncType | undefined;
 let profileId = "";
 let encryptionKey = "";
 let helper: SemanticHelper | undefined;
+let manualWalrus: MemWalManual | undefined;
+let manualWalrusConfig: Omit<WalrusManualConfiguration, "delegateKey" | "suiPrivateKey" | "embeddingApiKey"> | undefined;
+let manualWalrusSuiClient: SuiJsonRpcClient | undefined;
+let manualWalrusSigner: Ed25519Keypair | undefined;
 const cache = new Map<string, { text: string; vector: number[]; language: string; backend: string }>();
 
 utilityPort.on("message", (event) => {
@@ -66,10 +83,185 @@ async function handle(raw: unknown): Promise<void> {
     case "list-bundles": value = await listBundles(); break;
     case "get-bundle": value = await getEncryptedRecord("resume_bundles", String(request.payload.id || ""), "bundle"); break;
     case "delete-bundle": value = deleteEncryptedRecord("resume_bundles", String(request.payload.id || "")); break;
+    case "walrus-manual-configure": value = await configureWalrusManual(request.payload.config as WalrusManualConfiguration); break;
+    case "walrus-manual-disconnect": value = disconnectWalrusManual(); break;
+    case "walrus-manual-remember": value = await requireManualWalrus().rememberManual(
+      String(request.payload.text || "").slice(0, 24_000), String(request.payload.namespace || ""),
+    ); break;
+    case "walrus-manual-recall": value = await requireManualWalrus().recallManual(String(request.payload.query || "").slice(0, 2_000), {
+      limit: Math.max(1, Math.min(Number(request.payload.limit) || 10, 10)), namespace: String(request.payload.namespace || ""),
+    }); break;
+    case "walrus-manual-restore": value = await requireManualWalrus().restore(String(request.payload.namespace || ""), 100); break;
+    case "walrus-bundle-publish": value = await publishWalrusBundle(request.payload.input as WalrusBundlePublishInput); break;
     default: throw new Error("Unknown private-intelligence request");
   }
   utilityPort.postMessage({ id: request.id, ok: true, value });
 }
+
+async function configureWalrusManual(config: WalrusManualConfiguration): Promise<WalrusManualConfigurationResult> {
+  validateManualConfiguration(config);
+  const decoded = decodeSuiPrivateKey(config.suiPrivateKey);
+  if (decoded.scheme !== "ED25519") throw new Error("Client-encrypted mode currently requires an Ed25519 Sui signer");
+  const suiClient = new SuiJsonRpcClient({ network: config.network, url: fullnodeUrl(config.network) });
+  const candidate = MemWalManual.create({
+    key: config.delegateKey,
+    suiPrivateKey: config.suiPrivateKey,
+    suiClient,
+    embeddingApiKey: config.embeddingApiKey,
+    embeddingApiBase: config.embeddingApiBase,
+    embeddingModel: config.embeddingModel,
+    packageId: config.packageId,
+    accountId: config.accountId,
+    registryId: config.registryId,
+    serverUrl: config.relayerUrl,
+    suiNetwork: config.network,
+    namespace: config.namespace,
+  });
+  try {
+    await candidate.compatibility();
+    await candidate.recallManual("Locus vector compatibility verification", { limit: 1, namespace: config.namespace });
+  } catch (error) {
+    candidate.destroy();
+    throw error;
+  }
+  disconnectWalrusManual();
+  manualWalrus = candidate;
+  manualWalrusSuiClient = suiClient;
+  manualWalrusSigner = Ed25519Keypair.fromSecretKey(decoded.secretKey);
+  manualWalrusConfig = {
+    accountId: config.accountId,
+    namespace: config.namespace,
+    relayerUrl: config.relayerUrl,
+    network: config.network,
+    packageId: config.packageId,
+    registryId: config.registryId,
+    embeddingApiBase: config.embeddingApiBase,
+    embeddingModel: config.embeddingModel,
+  };
+  return { signerAddress: manualWalrusSigner.toSuiAddress() };
+}
+
+function disconnectWalrusManual(): void {
+  manualWalrus?.destroy();
+  manualWalrus = undefined;
+  manualWalrusConfig = undefined;
+  manualWalrusSuiClient = undefined;
+  manualWalrusSigner = undefined;
+}
+
+function requireManualWalrus(): MemWalManual {
+  if (!manualWalrus) throw new Error("Client-encrypted Walrus Memory is not configured");
+  return manualWalrus;
+}
+
+async function publishWalrusBundle(input: WalrusBundlePublishInput): Promise<WalrusBundlePublishResult> {
+  const config = manualWalrusConfig;
+  const suiClient = manualWalrusSuiClient;
+  const signer = manualWalrusSigner;
+  if (!config || !suiClient || !signer) throw new Error("Configure client-encrypted Walrus Memory before publishing a research bundle");
+  if (input.network !== config.network || input.namespace !== config.namespace) throw new Error("Research bundle environment does not match the active Walrus connection");
+  if (!Number.isInteger(input.epochs) || input.epochs < 1 || input.epochs > 53) throw new Error("Walrus storage duration is outside the supported range");
+  if (!Array.isArray(input.files) || input.files.length !== 3) throw new Error("Research bundle must contain board.json, research.md, and research.pdf");
+  const expectedIdentifiers = ["board.json", "research.md", "research.pdf"];
+  if (input.files.some((file, index) => file.identifier !== expectedIdentifiers[index])) throw new Error("Research bundle file identifiers are malformed");
+  let totalBytes = 0;
+  const sourceFiles = input.files.map((file) => {
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(file.contentsBase64)) throw new Error(`Research bundle file ${file.identifier} has malformed bytes`);
+    const contents = Uint8Array.from(Buffer.from(file.contentsBase64, "base64"));
+    totalBytes += contents.byteLength;
+    if (createHash("sha256").update(contents).digest("hex") !== file.sha256) throw new Error(`Research bundle file ${file.identifier} changed after preview`);
+    return { identifier: file.identifier, mediaType: file.mediaType, contents };
+  });
+  if (totalBytes > 25 * 1024 * 1024) throw new Error("Research bundle exceeds the 25 MB canary limit");
+  const signedManifest = await signResearchBundleManifest(input.unsignedManifest, signer);
+  const { manifestBytes, signerAddress } = signedManifest;
+  const artifacts = [...sourceFiles, { identifier: "manifest.json", mediaType: "application/json", contents: manifestBytes }];
+  const prepared = input.visibility === "seal-encrypted"
+    ? await encryptBundleFiles(artifacts, config, suiClient)
+    : artifacts;
+  const walrus = new WalrusClient({ network: input.network, suiClient });
+  const files = prepared.map((file) => WalrusFile.from({
+    contents: file.contents,
+    identifier: file.identifier,
+    tags: {
+      "content-type": file.mediaType,
+      "locus-format": "locus-research-bundle-v1",
+      "locus-visibility": input.visibility,
+    },
+  }));
+  const written = await walrus.writeFiles({ files, signer: signer as Signer, epochs: input.epochs, deletable: false });
+  if (written.length !== prepared.length || !written[0]) throw new Error("Walrus did not return every research-bundle file identifier");
+  const quiltId = written[0].blobId;
+  if (written.some((file) => file.blobId !== quiltId)) throw new Error("Walrus returned an inconsistent quilt identifier");
+  return {
+    quiltId,
+    manifestSha256: signedManifest.manifestSha256,
+    signerAddress,
+    files: written.map((file, index) => ({ identifier: prepared[index]!.identifier, id: file.id, blobId: file.blobId })),
+  };
+}
+
+async function encryptBundleFiles(
+  files: Array<{ identifier: string; mediaType: string; contents: Uint8Array }>,
+  config: NonNullable<typeof manualWalrusConfig>,
+  suiClient: SuiJsonRpcClient,
+): Promise<Array<{ identifier: string; mediaType: string; contents: Uint8Array }>> {
+  const identity = await sealIdentity(config.accountId, config.packageId, config.namespace, suiClient);
+  const seal = new SealClient({ suiClient, serverConfigs: sealServers(config.network), verifyKeyServers: true });
+  return await Promise.all(files.map(async (file) => {
+    const encrypted = await seal.encrypt({ threshold: 2, packageId: config.packageId, id: identity, data: file.contents });
+    return { identifier: `${file.identifier}.seal`, mediaType: "application/vnd.locus.seal", contents: new Uint8Array(encrypted.encryptedObject) };
+  }));
+}
+
+async function sealIdentity(accountId: string, packageId: string, namespace: string, suiClient: SuiJsonRpcClient): Promise<string> {
+  const response = await suiClient.getObject({ id: accountId, options: { showContent: true, showType: true } });
+  const content = response.data?.content;
+  const fields = content?.dataType === "moveObject" ? content.fields as Record<string, unknown> : undefined;
+  const typeParts = typeof response.data?.type === "string" ? response.data.type.split("::") : [];
+  if (normalizeHex(typeParts[0] || "") !== normalizeHex(packageId) || typeParts[1] !== "account" || typeParts[2] !== "MemWalAccount") {
+    throw new Error("The configured Walrus account does not belong to the configured Memory package");
+  }
+  if (fields?.active !== true) throw new Error("The configured Walrus Memory account is inactive");
+  const owner = typeof fields?.owner === "string" ? normalizeHex(fields.owner) : "";
+  if (owner.length !== 64) throw new Error("The Walrus Memory account owner address is malformed");
+  if (fields?.access_counter_version === undefined) throw new Error("The Walrus Memory account does not expose a SEAL rotation counter");
+  const namespaceHex = Buffer.from(namespace, "utf8").toString("hex");
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64LE(BigInt(String(fields.access_counter_version)));
+  return `${namespaceHex}${owner}${counter.toString("hex")}`;
+}
+
+function validateManualConfiguration(config: WalrusManualConfiguration): void {
+  if (!config || !config.delegateKey || !config.suiPrivateKey || !config.embeddingApiKey) throw new Error("Client-encrypted credentials are incomplete");
+  for (const [label, value] of [["account", config.accountId], ["package", config.packageId], ["registry", config.registryId]] as const) {
+    if (!/^0x[0-9a-fA-F]{1,64}$/.test(value)) throw new Error(`Walrus ${label} ID is malformed`);
+  }
+  const endpoint = new URL(config.embeddingApiBase);
+  if (endpoint.protocol !== "https:" && !["localhost", "127.0.0.1", "::1"].includes(endpoint.hostname)) {
+    throw new Error("Embedding endpoints must use HTTPS except on this Mac");
+  }
+}
+
+function normalizeHex(value: string): string {
+  const clean = value.replace(/^0x/i, "");
+  return /^[0-9a-fA-F]{1,64}$/.test(clean) ? clean.padStart(64, "0").toLowerCase() : "";
+}
+
+function fullnodeUrl(network: "mainnet" | "testnet"): string {
+  return network === "testnet" ? "https://fullnode.testnet.sui.io:443" : "https://fullnode.mainnet.sui.io:443";
+}
+
+function sealServers(network: "mainnet" | "testnet"): Array<{ objectId: string; weight: number }> {
+  return network === "testnet" ? [
+    { objectId: "0x73d05d62c18d9374e3ea529e8e0ed6161da1a141a94d3f76ae3fe4e99356db75", weight: 1 },
+    { objectId: "0xf5d14a81a982144ae441cd7d64b09027f116a468bd36e7eca494f750591623c8", weight: 1 },
+  ] : [
+    { objectId: "0x145540d931f182fef76467dd8074c9839aea126852d90d18e1556fcbbd1208b6", weight: 1 },
+    { objectId: "0xe0eb52eba9261b96e895bbb4deca10dcd64fbc626a1133017adcd5131353fd10", weight: 1 },
+  ];
+}
+
 
 async function initialize(payload: Record<string, unknown>): Promise<SemanticRecallState> {
   const path = String(payload.databasePath || "");

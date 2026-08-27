@@ -17,7 +17,7 @@ export async function promptForNativeSecret(options: NativeSecretPromptOptions):
   const stdout = await new Promise<string>((resolve, reject) => {
     execFile("/usr/bin/osascript", ["-l", "JavaScript", "-e", source], { timeout: 120_000, maxBuffer: 32_768 }, (error, output) => {
       if (error) {
-        reject(new Error(error.killed ? "The provider-key prompt timed out" : "The provider-key prompt could not open"));
+        reject(new Error(error.killed ? "The secret prompt timed out" : "The secret prompt could not open"));
         return;
       }
       resolve(output);
@@ -35,7 +35,7 @@ export function parseNativeSecretPromptResult(value: string): NativeSecretPrompt
   } catch {
     // The prompt is a strict local boundary; malformed output is rejected.
   }
-  throw new Error("The provider-key prompt returned an invalid response");
+  throw new Error("The secret prompt returned an invalid response");
 }
 
 function nativeSecretPromptSource(options: NativeSecretPromptOptions): string {
