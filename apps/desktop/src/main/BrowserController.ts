@@ -37,9 +37,9 @@ import {
 } from "@locus/extensions";
 import { z } from "zod";
 import { ipcChannels } from "../shared/channels.js";
+import { resolveAccentSelection } from "../shared/accent.js";
 import type { BrowserCommand, BrowserQuery } from "../shared/ipc.js";
 import type {
-  Appearance,
   BrowserAppState,
   BrowserSettingsState,
   BrowserObservationContext,
@@ -90,6 +90,7 @@ import { electronCredentialCipher } from "./ElectronCredentialCipher.js";
 import { ExtensionManager, type ExtensionPermissionReview } from "./ExtensionManager.js";
 import { ExtensionGalleryClient } from "./ExtensionGalleryClient.js";
 import { GalleryExtensionStore } from "./GalleryExtensionStore.js";
+import { loadBrowserSettings } from "./BrowserSettingsPersistence.js";
 import { TabAccessRegistry } from "./TabAccessRegistry.js";
 import { canSleepTab, shouldSleepTab } from "./TabSleepingPolicy.js";
 import { SyncAccountManager } from "./SyncAccountManager.js";
@@ -666,6 +667,7 @@ export class BrowserController {
       recording: this.#recording?.state() ?? idleRecordingState(this.#settings.speech.engine),
       settings: {
         appearance: this.#settings.appearance,
+        accent: this.#settings.accent,
         thinkingVisibility: this.#settings.thinkingVisibility,
         toolActivityVisibility: this.#settings.toolActivityVisibility,
       },
@@ -997,6 +999,18 @@ export class BrowserController {
         this.#database.setSetting(this.#profileId, "appearance", command.appearance);
         this.window.setBackgroundColor(this.#surfaceBackground());
         this.#workView?.setBackgroundColor(this.#surfaceBackground());
+        break;
+      case "set-accent-color":
+        this.#settings = {
+          ...this.#settings,
+          accent: resolveAccentSelection(command.preset, command.customHex),
+        };
+        this.#database.setSetting(this.#profileId, "accentPreset", command.preset);
+        this.#database.setSetting(this.#profileId, "customAccentHex", command.customHex.toUpperCase());
+        for (const article of this.#readerArticles.values()) article.accent = this.#settings.accent;
+        for (const view of this.#readerViews.values()) {
+          if (!view.webContents.isDestroyed()) view.webContents.send(ipcChannels.readerAccent, this.#settings.accent);
+        }
         break;
       case "set-search-engine":
         this.#settings = { ...this.#settings, searchEngine: command.searchEngine };
@@ -1590,6 +1604,20 @@ export class BrowserController {
     for (const command of commands.filter((item) => !this.#privateWindow || ["split", "reader"].includes(item.id))) {
       add({ id: `command:${command.id}`, kind: "command", label: command.label, detail: command.detail, action: command.action }, `${command.label} ${command.detail}`, 0.8);
     }
+    const settingsDestinations: Array<{ id: string; label: string; detail: string; section: NonNullable<Extract<PaletteResultState["action"], { type: "open-settings-section" }>["section"]>; anchor: string; search: string }> = [
+      { id: "general", label: "Settings: General", detail: "Search engine, downloads, and sleeping tabs", section: "general", anchor: "settings-search-engine", search: "omnibox folder performance" },
+      { id: "appearance", label: "Settings: Appearance", detail: "Theme and accent colour", section: "appearance", anchor: "settings-accent", search: "dark light logo icons color" },
+      { id: "profiles", label: "Settings: Profiles", detail: "Separate cookies and browsing data", section: "profiles", anchor: "settings-profile-list", search: "identity profile" },
+      { id: "models", label: "Settings: AI models & accounts", detail: "ChatGPT, Kimi, OpenAI, Claude, and vLLM", section: "models", anchor: "settings-provider-accounts", search: "api key providers work" },
+      { id: "speech", label: "Settings: Speech", detail: "On-device and API transcription", section: "speech", anchor: "settings-transcription", search: "audio whisper recording" },
+      { id: "privacy", label: "Settings: Privacy & security", detail: "Recall, saved logins, and site permissions", section: "privacy", anchor: "settings-passwords", search: "password manager credentials semantic" },
+      { id: "sync", label: "Settings: Sync", detail: "Encrypted data, devices, and recovery", section: "sync", anchor: "settings-encrypted-sync", search: "cloud passkey account" },
+      { id: "extensions", label: "Settings: Extensions", detail: "Gallery, installed extensions, and Developer Mode", section: "extensions", anchor: "settings-extension-gallery", search: "plugins unpacked mv3" },
+      { id: "integrations", label: "Settings: Integrations", detail: "Walrus Memory and optional services", section: "integrations", anchor: "settings-walrus", search: "sui relayer delegate" },
+    ];
+    for (const destination of settingsDestinations.filter((item) => !this.#privateWindow || item.section !== "sync" && item.section !== "integrations")) {
+      add({ id: `setting:${destination.id}`, kind: "setting", label: destination.label, detail: destination.detail, action: { type: "open-settings-section", section: destination.section, anchor: destination.anchor } }, `${destination.label} ${destination.detail} ${destination.search}`, 0.9);
+    }
     if (!this.#privateWindow) {
       for (const bookmark of this.#database.listBookmarks(this.#profileId)) add({
         id: `bookmark:${bookmark.id}`, kind: "bookmark", label: bookmark.title, detail: bookmark.url,
@@ -1634,7 +1662,12 @@ export class BrowserController {
       case "open-research": this.#internalSurface = { type: "research", boardId: action.boardId }; this.#layout(false); break;
       case "open-bundle": await this.#openResumeBundle(action.bundleId); break;
       case "open-settings": this.#settingsOpen = true; this.#internalSurface = { type: "settings" }; this.#sidebarOpen = false; this.#layout(false); break;
-      case "open-settings-section": this.#settingsOpen = true; this.#internalSurface = { type: "settings" }; this.#layout(false); break;
+      case "open-settings-section":
+        this.#settingsOpen = true;
+        this.#internalSurface = { type: "settings", page: action.section, ...(action.anchor ? { anchor: action.anchor } : {}) };
+        this.#sidebarOpen = false;
+        this.#layout(false);
+        break;
       case "set-sidebar-section": this.#sidebarSection = action.section; this.#sidebarOpen = true; this.#layout(true); break;
       case "toggle-work": this.#workOpen = !this.#workOpen; this.#layout(true); break;
       case "toggle-split": await this.#toggleSplitView(); break;
@@ -2102,7 +2135,7 @@ export class BrowserController {
     if (!article) return undefined;
     return {
       tabId: tab.state.id, title: article.title, url: value.url, html: article.html,
-      text: article.text, preferences: this.#readerPreferences,
+      text: article.text, accent: this.#settings.accent, preferences: this.#readerPreferences,
       ...(article.byline ? { byline: article.byline } : {}),
       ...(article.lang || value.lang ? { lang: (article.lang || value.lang || "").slice(0, 32) } : {}),
     };
@@ -3181,31 +3214,12 @@ export class BrowserController {
   }
 
   #loadSettings(): BrowserSettingsState {
-    const appearance = this.#database.setting(this.#profileId, "appearance");
-    const searchEngine = this.#database.setting(this.#profileId, "searchEngine");
-    const sleepAfterMinutes = this.#database.setting(this.#profileId, "sleepAfterMinutes");
-    const downloadDirectory = this.#database.setting(this.#profileId, "downloadDirectory");
-    const onboardingComplete = this.#database.setting(this.#profileId, "onboardingComplete");
-    const localModelsEnabled = this.#database.setting(this.#profileId, "localModelsEnabled");
-    const semanticRecallEnabled = this.#database.setting(this.#profileId, "semanticRecallEnabled");
-    const thinkingVisibility = this.#database.setting(this.#profileId, "thinkingVisibility");
-    const toolActivityVisibility = this.#database.setting(this.#profileId, "toolActivityVisibility");
-    return {
-      appearance: isAppearance(appearance) ? appearance : "system",
-      searchEngine: isSearchEngine(searchEngine) ? searchEngine : "duckduckgo",
-      sleepAfterMinutes: isSleepInterval(sleepAfterMinutes) ? sleepAfterMinutes : 30,
-      downloadDirectory: typeof downloadDirectory === "string" && downloadDirectory ? downloadDirectory : app.getPath("downloads"),
-      onboardingComplete: onboardingComplete === true,
-      localModelsEnabled: localModelsEnabled === true,
-      semanticRecallEnabled: semanticRecallEnabled === true,
-      thinkingVisibility: isThinkingVisibility(thinkingVisibility) ? thinkingVisibility : "collapsed",
-      toolActivityVisibility: isToolActivityVisibility(toolActivityVisibility) ? toolActivityVisibility : "collapsed",
-      speech: this.#speechSettings.value(
-        this.#speechRuntime.state().localModelStatus,
-        this.#speechRuntime.state().localModelProgress,
-        this.#speechRuntime.state().message,
-      ),
-    };
+    const speech = this.#speechSettings.value(
+      this.#speechRuntime.state().localModelStatus,
+      this.#speechRuntime.state().localModelProgress,
+      this.#speechRuntime.state().message,
+    );
+    return loadBrowserSettings(this.#database, this.#profileId, app.getPath("downloads"), speech);
   }
 
   #loadReaderPreferences(): ReaderPreferencesState {
@@ -5078,26 +5092,6 @@ function searchUrl(searchEngine: SearchEngine, query: string): string {
     case "bing": return `https://www.bing.com/search?q=${encoded}`;
     case "duckduckgo": return `https://duckduckgo.com/?q=${encoded}`;
   }
-}
-
-function isAppearance(value: unknown): value is Appearance {
-  return value === "system" || value === "light" || value === "dark";
-}
-
-function isSearchEngine(value: unknown): value is SearchEngine {
-  return value === "duckduckgo" || value === "brave" || value === "google" || value === "bing";
-}
-
-function isSleepInterval(value: unknown): value is BrowserSettingsState["sleepAfterMinutes"] {
-  return value === 0 || value === 15 || value === 30 || value === 60;
-}
-
-function isThinkingVisibility(value: unknown): value is BrowserSettingsState["thinkingVisibility"] {
-  return value === "hidden" || value === "collapsed" || value === "expanded";
-}
-
-function isToolActivityVisibility(value: unknown): value is BrowserSettingsState["toolActivityVisibility"] {
-  return value === "verbose" || value === "collapsed" || value === "hidden";
 }
 
 function displayToolName(value: string): string {

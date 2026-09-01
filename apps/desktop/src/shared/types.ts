@@ -1,4 +1,8 @@
 import type { BrowserObservationContext, TabAccessGrant } from "@locus/protocol";
+import type { AccentSelectionState } from "./accent.js";
+import type { SettingsPageId } from "./settings.js";
+
+export type { AccentPresetId, AccentSelectionId, AccentSelectionState } from "./accent.js";
 
 export type WorkMode = "ask" | "work" | "plan" | "build";
 export type WorkModelProviderId = "chatgpt-plan" | "openai-api" | "kimi" | "claude-api" | "vllm" | "local";
@@ -73,6 +77,7 @@ export interface ReaderArticleState {
   lang?: string;
   html: string;
   text: string;
+  accent: AccentSelectionState;
   preferences: ReaderPreferencesState;
 }
 
@@ -107,6 +112,7 @@ export interface PendingSitePermission {
 
 export interface BrowserSettingsState {
   appearance: Appearance;
+  accent: AccentSelectionState;
   searchEngine: SearchEngine;
   sleepAfterMinutes: 0 | 15 | 30 | 60;
   downloadDirectory: string;
@@ -319,7 +325,7 @@ export interface TabStewardState {
 }
 
 export type InternalSurfaceState =
-  | { type: "settings" }
+  | { type: "settings"; page?: SettingsPageId; anchor?: string }
   | { type: "research"; boardId?: string }
   | { type: "tab-steward" };
 
@@ -339,7 +345,7 @@ export type PaletteActionState =
   | { type: "open-research"; boardId: string }
   | { type: "open-bundle"; bundleId: string }
   | { type: "open-settings" }
-  | { type: "open-settings-section"; section: string }
+  | { type: "open-settings-section"; section: SettingsPageId; anchor?: string | undefined }
   | { type: "set-sidebar-section"; section: SidebarSection }
   | { type: "toggle-work" }
   | { type: "toggle-split" }
@@ -786,7 +792,7 @@ export type ShellState = Omit<BrowserAppState, "work"> & {
 export interface WorkDockState {
   activeTabGrants: BrowserTabState["grants"];
   recording: RecordingSessionState;
-  settings: Pick<BrowserSettingsState, "appearance" | "thinkingVisibility" | "toolActivityVisibility">;
+  settings: Pick<BrowserSettingsState, "appearance" | "accent" | "thinkingVisibility" | "toolActivityVisibility">;
   walrusMemory: WalrusMemoryState;
   work: WorkState;
   workWidth: number;

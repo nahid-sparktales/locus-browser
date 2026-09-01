@@ -41,6 +41,7 @@ import {
 } from "lucide-react";
 import type { BrowserCommand } from "../shared/ipc.js";
 import type { ThinkingVisibility, ToolActivityVisibility, WalrusMemoryResultState, WorkDockState as BrowserAppState, WorkMessage, WorkMode, WorkModelProviderId, WorkModelProviderState, WorkPanel, WorkTerminalEntryState } from "../shared/types.js";
+import { accentCssVariables } from "../shared/accent.js";
 import { useWorkState } from "./useSurfaceState.js";
 
 const panels: Array<{ id: WorkPanel; label: string; icon: React.ReactNode }> = [
@@ -80,7 +81,7 @@ export function WorkDock() {
   const stopResize = () => { resizing.current = null; };
 
   return (
-    <div className={`work-dock theme-${state.settings.appearance}`}>
+    <div className={`work-dock theme-${state.settings.appearance}`} style={accentCssVariables(state.settings.accent) as React.CSSProperties}>
       <div className="dock-resize-handle" onPointerDown={startResize} onPointerMove={resize} onPointerUp={stopResize} onPointerCancel={stopResize} />
       <header className="dock-header">
         <div className="dock-title"><span className="locus-mark" aria-hidden="true">L</span><strong>Work</strong></div>

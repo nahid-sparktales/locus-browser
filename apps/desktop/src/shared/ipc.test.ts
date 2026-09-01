@@ -19,6 +19,27 @@ describe("Work model commands", () => {
     expect(BrowserCommandSchema.safeParse({ type: "close-settings" }).success).toBe(true);
     expect(BrowserCommandSchema.safeParse({ type: "set-local-models-enabled", enabled: true }).success).toBe(true);
     expect(BrowserCommandSchema.safeParse({ type: "set-local-models-enabled", enabled: "yes" }).success).toBe(false);
+    expect(BrowserCommandSchema.safeParse({
+      type: "execute-palette-action",
+      action: { type: "open-settings-section", section: "privacy", anchor: "settings-passwords" },
+    }).success).toBe(true);
+    expect(BrowserCommandSchema.safeParse({
+      type: "execute-palette-action",
+      action: { type: "open-settings-section", section: "made-up" },
+    }).success).toBe(false);
+    expect(BrowserCommandSchema.safeParse({
+      type: "execute-palette-action",
+      action: { type: "open-settings-section", section: "privacy", anchor: "<script>" },
+    }).success).toBe(false);
+  });
+
+  it("accepts only the complete Locus accent palette and normalized custom colours", () => {
+    for (const preset of ["lime", "green", "blue", "purple", "orange", "pink", "neutral", "custom"] as const) {
+      expect(BrowserCommandSchema.safeParse({ type: "set-accent-color", preset, customHex: "4A90FF" }).success).toBe(true);
+    }
+    expect(BrowserCommandSchema.safeParse({ type: "set-accent-color", preset: "teal", customHex: "4A90FF" }).success).toBe(false);
+    expect(BrowserCommandSchema.safeParse({ type: "set-accent-color", preset: "custom", customHex: "#4A90FF" }).success).toBe(false);
+    expect(BrowserCommandSchema.safeParse({ type: "set-accent-color", preset: "custom", customHex: "4A90FF", apiKey: "secret" }).success).toBe(false);
   });
 
   it("rejects credentials before renderer commands reach the broker", () => {

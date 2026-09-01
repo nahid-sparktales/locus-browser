@@ -3,6 +3,7 @@ import type { BrowserCommand } from "../shared/ipc.js";
 const SHELL_ONLY_COMMANDS = new Set<BrowserCommand["type"]>([
   "open-settings",
   "close-settings",
+  "set-accent-color",
   "set-local-models-enabled",
   "set-semantic-recall-enabled",
   "clear-semantic-recall",

@@ -1,6 +1,8 @@
 import type { LocusBrowserAPI } from "../preload/index.js";
 import type { BrowserCommand } from "../shared/ipc.js";
+import { isSettingsPageId } from "../shared/settings.js";
 import type { BrowserAppState, ReaderArticleState, ResearchBoardState, ShellState, WorkDockState } from "../shared/types.js";
+import { resolveAccentSelection } from "../shared/accent.js";
 
 const previewParams = new URLSearchParams(window.location.search);
 const previewOnboarding = previewParams.has("onboarding");
@@ -10,6 +12,13 @@ const previewPairing = previewParams.has("pairing");
 const previewExtensions = previewParams.has("extensions");
 const previewRecording = previewParams.has("recording");
 const previewSettings = previewParams.has("settings");
+const previewSettingsPageValue = previewParams.get("settingsPage");
+const previewSettingsPage = isSettingsPageId(previewSettingsPageValue) ? previewSettingsPageValue : undefined;
+const previewSettingsAnchor = previewParams.get("settingsAnchor") ?? undefined;
+const previewPrivate = previewParams.has("private");
+const previewPrivacyState = previewParams.get("privacy") ?? "populated";
+const previewAppearanceValue = previewParams.get("appearance");
+const previewAppearance = previewAppearanceValue === "light" || previewAppearanceValue === "dark" ? previewAppearanceValue : "system";
 const previewChatGPTSignedIn = previewParams.get("chatgpt") === "signed-in";
 const previewProvidersConnected = previewParams.get("providers") === "connected";
 const previewSplit = previewParams.has("split");
@@ -24,6 +33,10 @@ const previewWalrusSearch = previewParams.has("walrus-search");
 const previewWalrusAttached = previewParams.has("walrus-attached");
 const previewWalrusManual = previewParams.has("walrus-manual");
 const previewWalrusBundle = previewParams.has("walrus-bundle");
+const previewAccent = previewParams.get("accent");
+const previewAccentSelection = /^[0-9A-Fa-f]{6}$/.test(previewAccent ?? "")
+  ? resolveAccentSelection("custom", previewAccent)
+  : resolveAccentSelection(previewAccent, undefined);
 
 const previewResearchBoard: ResearchBoardState = {
   id: "research-preview", workSessionId: "preview-session", prompt: "Compare the browser architecture sources.", format: "comparison",
@@ -45,13 +58,14 @@ const previewReaderArticle: ReaderArticleState = {
   tabId: "welcome", title: "Designing a private, agent-assisted browser", byline: "Locus Browser", url: "https://locushost.co/browser-intelligence", lang: "en",
   text: "A useful browser should help people recover context without turning their history into a cloud dataset. Private Semantic Recall keeps extraction, embeddings, and search on the Mac. Research Boards preserve exact passages so every factual claim can point back to captured evidence. Reader Mode reduces visual noise and uses the system voice for Read Aloud.",
   html: "<p>A useful browser should help people recover context without turning their history into a cloud dataset.</p><h2>Private by construction</h2><p>Private Semantic Recall keeps extraction, embeddings, and search on the Mac.</p><p>Research Boards preserve exact passages so every factual claim can point back to captured evidence.</p><h2>Comfortable reading</h2><p>Reader Mode reduces visual noise and uses the system voice for Read Aloud.</p>",
+  accent: previewAccentSelection,
   preferences: { theme: "locus", textScale: 1, columnWidth: "medium", lineSpacing: 1.6, rate: 1 },
 };
 
 const previewState: BrowserAppState = {
   windowId: "preview",
   profileId: "default",
-  privateWindow: false,
+  privateWindow: previewPrivate,
   tabs: [
     {
       id: "welcome",
@@ -105,10 +119,10 @@ const previewState: BrowserAppState = {
     { id: "history-1", title: "Locus Platform", url: "https://github.com/nahid-sparktales/locus-platform", visitedAt: 1_787_408_000 },
   ],
   downloads: [],
-  sitePermissions: [],
+  sitePermissions: previewPrivacyState === "empty" ? [] : [{ origin: "https://meet.example.com", permission: "camera", decision: "allow", updatedAt: 1_787_408_000 }],
   ...(previewCredential ? { pendingCredential: { origin: "https://github.com", username: "nahid@example.com", action: "save" as const } } : {}),
   credentialSuggestions: [{ id: "demo-login", username: "nahid@example.com" }],
-  savedCredentials: [{ id: "demo-login", origin: "https://github.com", username: "nahid@example.com", updatedAt: 1_787_408_000 }],
+  savedCredentials: previewPrivacyState === "empty" ? [] : [{ id: "demo-login", origin: "https://github.com", username: "nahid@example.com", updatedAt: 1_787_408_000 }],
   passwordManagerAvailable: true,
   extensions: {
     developerMode: previewExtensions,
@@ -184,9 +198,9 @@ const previewState: BrowserAppState = {
   onboardingRequired: previewOnboarding,
   settingsOpen: previewSettings,
   paletteOpen: previewPalette,
-  ...(previewSettings ? { internalSurface: { type: "settings" as const } } : previewResearch ? { internalSurface: { type: "research" as const, boardId: previewResearchBoard.id } } : previewSteward ? { internalSurface: { type: "tab-steward" as const } } : {}),
+  ...(previewSettings ? { internalSurface: { type: "settings" as const, ...(previewSettingsPage ? { page: previewSettingsPage } : {}), ...(previewSettingsAnchor ? { anchor: previewSettingsAnchor } : {}) } } : previewResearch ? { internalSurface: { type: "research" as const, boardId: previewResearchBoard.id } } : previewSteward ? { internalSurface: { type: "tab-steward" as const } } : {}),
   settings: {
-    appearance: "system", searchEngine: "duckduckgo", sleepAfterMinutes: 30,
+    appearance: previewAppearance, accent: previewAccentSelection, searchEngine: "duckduckgo", sleepAfterMinutes: 30,
     downloadDirectory: "/Users/nahid/Downloads", onboardingComplete: !previewOnboarding,
     localModelsEnabled: false,
     semanticRecallEnabled: previewRecall,
@@ -362,6 +376,7 @@ export function installPreviewBridge(): void {
   const shellListeners = new Set<(state: ShellState) => void>();
   const workListeners = new Set<(state: WorkDockState) => void>();
   const focusListeners = new Set<() => void>();
+  const accentListeners = new Set<(accent: BrowserAppState["settings"]["accent"]) => void>();
   const publish = () => {
     for (const listener of shellListeners) listener(previewShellState());
     for (const listener of workListeners) listener(previewWorkState());
@@ -371,6 +386,9 @@ export function installPreviewBridge(): void {
     getWorkState: async () => previewWorkState(),
     command: async (value) => {
       applyPreviewCommand(value);
+      if (value.type === "set-accent-color") {
+        for (const listener of accentListeners) listener(previewState.settings.accent);
+      }
       publish();
     },
     query: async (query) => {
@@ -405,6 +423,10 @@ export function installPreviewBridge(): void {
       focusListeners.add(listener);
       return () => focusListeners.delete(listener);
     },
+    onReaderAccent: (listener) => {
+      accentListeners.add(listener);
+      return () => accentListeners.delete(listener);
+    },
   };
   window.locusBrowser = api;
 }
@@ -431,6 +453,7 @@ function previewWorkState(): WorkDockState {
     recording: state.recording,
     settings: {
       appearance: state.settings.appearance,
+      accent: state.settings.accent,
       thinkingVisibility: state.settings.thinkingVisibility,
       toolActivityVisibility: state.settings.toolActivityVisibility,
     },
@@ -745,6 +768,9 @@ function applyPreviewCommand(command: BrowserCommand): void {
       };
       previewState.searchEngine = command.searchEngine;
       previewState.onboardingRequired = false;
+      break;
+    case "set-accent-color":
+      previewState.settings.accent = resolveAccentSelection(command.preset, command.customHex);
       break;
     case "dismiss-pending-credential":
     case "save-pending-credential":

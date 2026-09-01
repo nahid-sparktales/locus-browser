@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { ShellState, WorkDockState } from "../shared/types.js";
+import type { AccentSelectionState, ShellState, WorkDockState } from "../shared/types.js";
 import { ipcChannels } from "../shared/channels.js";
 import type { BrowserCommand, BrowserQuery } from "../shared/ipc.js";
 
@@ -23,6 +23,11 @@ const api = {
     const handler = () => listener();
     ipcRenderer.on(ipcChannels.focusAddress, handler);
     return () => ipcRenderer.removeListener(ipcChannels.focusAddress, handler);
+  },
+  onReaderAccent: (listener: (accent: AccentSelectionState) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, accent: AccentSelectionState) => listener(accent);
+    ipcRenderer.on(ipcChannels.readerAccent, handler);
+    return () => ipcRenderer.removeListener(ipcChannels.readerAccent, handler);
   },
 };
 
