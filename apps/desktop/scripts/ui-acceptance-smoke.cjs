@@ -64,7 +64,7 @@ async function inspectSurface(url, surface, width, height, zoom, expectedSelecto
     height,
     useContentSize: true,
     enableLargerThanScreen: true,
-    webPreferences: { sandbox: true, nodeIntegration: false, contextIsolation: true },
+    webPreferences: { partition: `ui-acceptance-${surface}`, sandbox: true, nodeIntegration: false, contextIsolation: true },
   });
   window.webContents.on("console-message", (details) => {
     const level = typeof details === "object" ? details.level : "";
@@ -93,7 +93,7 @@ async function inspectSurface(url, surface, width, height, zoom, expectedSelecto
   const issues = [...audit.issues, ...consoleErrors.map((message) => `console error: ${message}`)];
   if (!expectedVisible) issues.unshift(`expected surface ${expectedSelector} is not visible`);
   if (p95 > 150) issues.push(`warm tab interaction p95 ${p95.toFixed(1)} ms exceeds 150 ms`);
-  results.push({ surface, width, height, zoom, viewportWidth: audit.viewportWidth, viewportHeight: audit.viewportHeight, reducedMotion: audit.reducedMotion, focusable: audit.focusable, p95TabInteractionMs: p95, issues });
+  results.push({ surface, width, height, zoom, viewportWidth: audit.viewportWidth, viewportHeight: audit.viewportHeight, viewportOffsetLeft: audit.viewportOffsetLeft, bodyLeft: audit.bodyLeft, bodyClientWidth: audit.bodyClientWidth, bodyScrollWidth: audit.bodyScrollWidth, rootScrollWidth: audit.rootScrollWidth, reducedMotion: audit.reducedMotion, focusable: audit.focusable, p95TabInteractionMs: p95, issues });
   window.destroy();
 }
 
@@ -124,18 +124,20 @@ function pageAudit() {
   for (const id of new Set(ids)) if (ids.filter((candidate) => candidate === id).length > 1) issues.push(`duplicate id ${id}`);
   for (const image of document.querySelectorAll("img")) if (!image.hasAttribute("alt")) issues.push("image without alt text");
   if (!document.documentElement.lang) issues.push("document language is missing");
-  if (document.documentElement.scrollWidth > window.innerWidth + 2) {
+  const bodyRect = document.body.getBoundingClientRect();
+  const horizontalOverflow = document.body.scrollWidth - document.body.clientWidth;
+  if (horizontalOverflow > 2) {
     const offenders = [...document.querySelectorAll("*")]
       .filter(visible)
       .map((element) => ({ element, rect: element.getBoundingClientRect() }))
-      .filter(({ rect }) => rect.left < -2 || rect.right > window.innerWidth + 2)
-      .sort((left, right) => Math.max(right.rect.right - window.innerWidth, -right.rect.left) - Math.max(left.rect.right - window.innerWidth, -left.rect.left))
+      .filter(({ rect }) => rect.left < bodyRect.left - 2 || rect.right > bodyRect.right + 2)
+      .sort((left, right) => Math.max(right.rect.right - bodyRect.right, bodyRect.left - right.rect.left) - Math.max(left.rect.right - bodyRect.right, bodyRect.left - left.rect.left))
       .slice(0, 3)
       .map(({ element, rect }) => {
         const classes = typeof element.className === "string" ? element.className.trim().split(/\s+/).filter(Boolean).slice(0, 2).join(".") : "";
         return `${element.tagName.toLowerCase()}${classes ? `.${classes}` : ""}[${rect.left.toFixed(1)},${rect.right.toFixed(1)}]`;
       });
-    issues.push(`horizontal overflow ${document.documentElement.scrollWidth - window.innerWidth}px (root ${document.documentElement.clientWidth}/${document.documentElement.scrollWidth}, body ${document.body.clientWidth}/${document.body.scrollWidth}, inner ${window.innerWidth}, zoom ${window.devicePixelRatio}; ${offenders.join(", ") || "no overflowing element"})`);
+    issues.push(`horizontal overflow ${horizontalOverflow}px (root ${document.documentElement.clientWidth}/${document.documentElement.scrollWidth}, body ${document.body.clientWidth}/${document.body.scrollWidth} at ${bodyRect.left.toFixed(1)}, inner ${window.innerWidth}, zoom ${window.devicePixelRatio}; ${offenders.join(", ") || "no overflowing element"})`);
   }
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
     const moving = [...document.querySelectorAll("*")].filter(visible).filter((element) => {
@@ -148,7 +150,18 @@ function pageAudit() {
     });
     if (moving.length) issues.push(`${moving.length} visible elements still animate with Reduced Motion`);
   }
-  return { issues, focusable: interactive.length, reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches, viewportWidth: window.innerWidth, viewportHeight: window.innerHeight };
+  return {
+    issues,
+    focusable: interactive.length,
+    reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+    viewportOffsetLeft: window.visualViewport?.offsetLeft || 0,
+    bodyLeft: bodyRect.left,
+    bodyClientWidth: document.body.clientWidth,
+    bodyScrollWidth: document.body.scrollWidth,
+    rootScrollWidth: document.documentElement.scrollWidth,
+  };
 }
 
 function serveRenderer(rawUrl, response) {
