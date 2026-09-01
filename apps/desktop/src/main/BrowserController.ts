@@ -59,6 +59,7 @@ import type {
   PendingPermission,
   PendingSitePermission,
   SearchEngine,
+  ShellState,
   SidebarSection,
   TabGroupState,
   WorkAttachmentState,
@@ -70,11 +71,14 @@ import type {
   WorkModelProviderId,
   WorkModelState,
   WorkPlanState,
+  WorkDockState,
+  WorkState,
   WorkTerminalEntryState,
   WalrusMemoryDraftState,
   WalrusMemoryResultState,
 } from "../shared/types.js";
 import { AgentRuntime, type AgentEvent } from "./AgentRuntime.js";
+import { publicationScopeForCommand, SurfaceStatePublisher, type StatePublicationScope } from "./SurfaceStatePublisher.js";
 import { BrowserDatabase, type StoredDownload, type StoredTab, type StoredTabGroup } from "./BrowserDatabase.js";
 import { CredentialVault } from "./CredentialVault.js";
 import { credentialAutofillInvocation, credentialObserverSource, parseCredentialCandidate, type PageCredentialCandidate } from "./CredentialPageBridge.js";
@@ -323,6 +327,7 @@ export class BrowserController {
   readonly #oneTimeSitePermissions = new Set<string>();
   readonly #activeDownloads = new Map<string, Electron.DownloadItem>();
   readonly #hardenedSessions = new WeakSet<Electron.Session>();
+  readonly #statePublisher = new SurfaceStatePublisher((surfaces) => this.#publishState(surfaces));
   #sessionId: string = randomUUID();
   #workView: WebContentsView | undefined;
   #activeTabId: string | undefined;
@@ -550,9 +555,10 @@ export class BrowserController {
     this.#sleepTimer = setInterval(() => this.#sleepEligibleTabs(), SLEEP_CHECK_INTERVAL);
   }
 
-  state(): BrowserAppState {
+  state(): ShellState {
     const activeUrl = this.#active()?.state.url ?? "";
     const credentialSuggestions = this.#credentialSuggestions(activeUrl);
+    const researchBoards = this.#intelligence?.boards() ?? [];
     return {
       windowId: this.#windowId,
       profileId: this.#profileId,
@@ -616,16 +622,9 @@ export class BrowserController {
         enabled: false, status: "disabled", documentCount: 0, storageBytes: 0,
         capBytes: 500 * 1024 * 1024, excludedOrigins: [], message: "Private recall is unavailable in Private Windows.",
       },
-      walrusMemory: this.#walrusMemory ? {
-        ...this.#walrusMemory.state(),
-        ...(this.#walrusMemoryDraft ? { draft: this.#walrusMemoryDraft } : {}),
-        ...(this.#walrusSearchRequestedAt ? { searchRequestedAt: this.#walrusSearchRequestedAt } : {}),
-      } : {
-        status: "disconnected", usable: false, namespace: WALRUS_DEFAULT_NAMESPACE, relayerUrl: WALRUS_PRODUCTION_RELAYER, developmentRelayerAllowed: false,
-        receiptCount: 0, mode: "hosted", manualConfigured: false, message: "Walrus Memory is unavailable in Private Windows.",
-      },
+      walrusMemory: this.#walrusMemoryState(),
       research: {
-        boards: this.#intelligence?.boards() ?? [], generating: this.#intelligence?.boards().some((board) => board.status === "generating") ?? false,
+        boards: researchBoards, generating: researchBoards.some((board) => board.status === "generating"),
         ...(this.#activeResearchBoardId ? { activeBoardId: this.#activeResearchBoardId } : {}),
         message: "Select up to ten shared tabs to create a cited research board.",
         bundleReceipts: this.#researchBundleReceipts(),
@@ -645,30 +644,27 @@ export class BrowserController {
       },
       work: {
         sessionId: this.#sessionId,
-        mode: this.#workMode,
-        panel: this.#workPanel,
         runtime: this.#runtimeState,
-        runtimeMessage: this.#runtimeMessage,
         busy: this.#busy,
-        activity: this.#workActivity,
-        messages: this.#messages,
         conversations: this.#conversations,
-        attachments: [...this.#attachments.values()].map(({ data: _data, ...attachment }) => attachment),
-        portableMemory: [...this.#portableMemoryAttachments.values()].map((memory) => ({
-          blobId: memory.blobId,
-          title: memory.title,
-          characters: memory.text.length,
-          ...(memory.sourceUrl ? { sourceUrl: memory.sourceUrl } : {}),
-        })),
         model: this.#workModel,
-        ...(this.#workPlan ? { plan: this.#workPlan } : {}),
-        changes: this.#workChanges,
-        files: this.#workFiles,
-        terminal: this.#workTerminal,
-        recovery: this.#runtimeRecovery,
-        ...(this.#workspacePath ? { workspace: { name: basename(this.#workspacePath) || this.#workspacePath, path: this.#workspacePath } } : {}),
         ...(this.#pendingPermission ? { pendingPermission: this.#pendingPermission } : {}),
       },
+    };
+  }
+
+  workState(): WorkDockState {
+    return {
+      activeTabGrants: this.#activeTabId ? this.#grants.grantsForTab(this.#activeTabId) : [],
+      recording: this.#recording?.state() ?? idleRecordingState(this.#settings.speech.engine),
+      settings: {
+        appearance: this.#settings.appearance,
+        thinkingVisibility: this.#settings.thinkingVisibility,
+        toolActivityVisibility: this.#settings.toolActivityVisibility,
+      },
+      walrusMemory: this.#walrusMemoryState(),
+      work: this.#fullWorkState(),
+      workWidth: this.#workWidth,
     };
   }
 
@@ -781,7 +777,7 @@ export class BrowserController {
     this.#recording?.handleRendererMessage(raw);
   }
 
-  async command(command: BrowserCommand): Promise<BrowserAppState> {
+  async command(command: BrowserCommand): Promise<void> {
     switch (command.type) {
       case "new-tab":
         this.#settingsOpen = false;
@@ -1494,8 +1490,7 @@ export class BrowserController {
         break;
     }
     this.#scheduleSave();
-    this.#broadcast();
-    return this.state();
+    this.#broadcast(publicationScopeForCommand(command));
   }
 
   async #searchRecall(query: string, limit: number): Promise<SemanticRecallResultState[]> {
@@ -2784,12 +2779,59 @@ export class BrowserController {
     };
   }
 
-  #broadcast(): void {
+  #fullWorkState(): WorkState {
+    return {
+      sessionId: this.#sessionId,
+      mode: this.#workMode,
+      panel: this.#workPanel,
+      runtime: this.#runtimeState,
+      runtimeMessage: this.#runtimeMessage,
+      busy: this.#busy,
+      activity: this.#workActivity,
+      messages: this.#messages,
+      conversations: this.#conversations,
+      attachments: [...this.#attachments.values()].map(({ data: _data, ...attachment }) => attachment),
+      portableMemory: [...this.#portableMemoryAttachments.values()].map((memory) => ({
+        blobId: memory.blobId,
+        title: memory.title,
+        characters: memory.text.length,
+        ...(memory.sourceUrl ? { sourceUrl: memory.sourceUrl } : {}),
+      })),
+      model: this.#workModel,
+      ...(this.#workPlan ? { plan: this.#workPlan } : {}),
+      changes: this.#workChanges,
+      files: this.#workFiles,
+      terminal: this.#workTerminal,
+      recovery: this.#runtimeRecovery,
+      ...(this.#workspacePath ? { workspace: { name: basename(this.#workspacePath) || this.#workspacePath, path: this.#workspacePath } } : {}),
+      ...(this.#pendingPermission ? { pendingPermission: this.#pendingPermission } : {}),
+    };
+  }
+
+  #walrusMemoryState(): WorkDockState["walrusMemory"] {
+    return this.#walrusMemory ? {
+      ...this.#walrusMemory.state(),
+      ...(this.#walrusMemoryDraft ? { draft: this.#walrusMemoryDraft } : {}),
+      ...(this.#walrusSearchRequestedAt ? { searchRequestedAt: this.#walrusSearchRequestedAt } : {}),
+    } : {
+      status: "disconnected", usable: false, namespace: WALRUS_DEFAULT_NAMESPACE, relayerUrl: WALRUS_PRODUCTION_RELAYER, developmentRelayerAllowed: false,
+      receiptCount: 0, mode: "hosted", manualConfigured: false, message: "Walrus Memory is unavailable in Private Windows.",
+    };
+  }
+
+  #broadcast(scope: StatePublicationScope = "both"): void {
+    if (!this.#disposed) this.#statePublisher.request(scope);
+  }
+
+  #publishState(surfaces: ReadonlySet<"shell" | "work">): void {
     if (this.#disposed) return;
-    const state = this.state();
-    if (!this.window.isDestroyed()) this.window.webContents.send(ipcChannels.state, state);
+    if (surfaces.has("shell") && !this.window.isDestroyed()) {
+      this.window.webContents.send(ipcChannels.shellState, this.state());
+    }
     const workContents = this.#workView?.webContents;
-    if (workContents && !workContents.isDestroyed()) workContents.send(ipcChannels.state, state);
+    if (surfaces.has("work") && workContents && !workContents.isDestroyed()) {
+      workContents.send(ipcChannels.workState, this.workState());
+    }
   }
 
   #scheduleSave(): void {

@@ -750,3 +750,23 @@ export interface BrowserAppState {
   reader: ReaderState;
   work: WorkState;
 }
+
+export type ShellWorkState = Pick<
+  WorkState,
+  "sessionId" | "runtime" | "busy" | "conversations" | "model" | "pendingPermission"
+>;
+
+/** State published only to the trusted browser-chrome renderer. */
+export type ShellState = Omit<BrowserAppState, "work"> & {
+  work: ShellWorkState;
+};
+
+/** State published only to the trusted Work renderer. */
+export interface WorkDockState {
+  activeTabGrants: BrowserTabState["grants"];
+  recording: RecordingSessionState;
+  settings: Pick<BrowserSettingsState, "appearance" | "thinkingVisibility" | "toolActivityVisibility">;
+  walrusMemory: WalrusMemoryState;
+  work: WorkState;
+  workWidth: number;
+}

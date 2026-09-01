@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as syncCryptoApi from "./index.js";
 import {
   HybridLogicalClock,
   createRecoveryKey,
@@ -12,6 +13,16 @@ import {
 } from "./index.js";
 
 describe("encrypted sync", () => {
+  it("preserves the public runtime export contract", () => {
+    expect(Object.keys(syncCryptoApi).sort()).toEqual([
+      "EncryptedRecordSchema", "HybridLogicalClock", "compareClocks", "createRecoveryKey",
+      "decryptLocalValue", "decryptRecord", "encryptLocalValue", "encryptRecord",
+      "generateAccountKey", "generateDeviceKeyPair", "generateLocalEncryptionKey",
+      "mergePerField", "randomDeviceId", "ready", "recoverAccountKey",
+      "unwrapAccountKey", "wrapAccountKey",
+    ].sort());
+  });
+
   it("encrypts record contents and authenticates their metadata", async () => {
     const key = await generateAccountKey();
     const clock = new HybridLogicalClock("device-a").tick(1_700_000_000_000);

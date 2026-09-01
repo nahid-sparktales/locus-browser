@@ -140,7 +140,7 @@ def page_cover(c):
     c.drawString(126, H - 88, "Locus Browser")
     c.setFont("Helvetica", 14)
     c.setFillColor(HexColor("#b9b9ac"))
-    c.drawString(127, H - 110, "Architecture and feature guide - Intelligence and Productivity Canary")
+    c.drawString(127, H - 110, "Architecture, modularization, and performance guide - Intelligence and Productivity Canary")
     c.setStrokeColor(HexColor("#3a3c34"))
     c.line(48, H - 143, W - 48, H - 143)
 
@@ -168,7 +168,7 @@ def page_cover(c):
         x += pill(c, x, 126, label, LIME, dark=True) + 7
     c.setFillColor(HexColor("#85877b"))
     c.setFont("Helvetica", 7.5)
-    c.drawString(48, 48, "Updated 2026-08-24 | Public source guide | locushost.co")
+    c.drawString(48, 48, "Updated 2026-09-01 | Public source guide | locushost.co")
 
 
 def page_processes(c):
@@ -183,12 +183,12 @@ def page_processes(c):
         c.setFillColor(HexColor("#8f9186")); c.setFont("Helvetica-Bold", 7); c.drawString(x + 12, y + h - 15, label)
 
     card(c, 50, 363, 154, 92, "Shell renderer", "Permanent browser chrome, Settings, Research Board, Recall, Tab Steward and command palette.", LIME, True, "UI", 7.2)
-    card(c, 219, 363, 134, 92, "Work dock", "Chat, Plan, Changes, Files and Terminal. Active runs continue while hidden.", CORAL, True, "W", 7.2)
+    card(c, 219, 363, 134, 92, "Work dock", "Chat, Plan, Changes, Files and Terminal on a dedicated Work-state channel.", CORAL, True, "W", 7.2)
     card(c, 368, 363, 134, 92, "Reader view", "Sanitized article HTML and macOS speech synthesis. No page scripts or forms.", BLUE, True, "R", 7.2)
     card(c, 517, 363, 108, 92, "Recorder", "Hidden trusted compositor for redacted tab media.", VIOLET, True, "REC", 7.2)
-    card(c, 640, 363, 102, 92, "Preload", "Typed command and query channels only.", GREEN, True, "IPC", 7.2)
+    card(c, 640, 363, 102, 92, "Preload", "Typed commands, queries, and separate Shell/Work state APIs.", GREEN, True, "IPC", 6.8)
 
-    card(c, 50, 219, 178, 82, "Electron main broker", "Validates sender, schema, tab grant, page class, permission and current profile before every privileged action.", LIME, True, "B", 7.1)
+    card(c, 50, 219, 178, 82, "Electron main broker", "Validates sender, schema, tab grant, page class, permission and profile; builds the minimum state projection for each renderer.", LIME, True, "B", 6.9)
     card(c, 243, 219, 146, 82, "Browser database", "WAL-mode SQLite for normal browser state and safe restore.", BLUE, True, "DB", 7.1)
     card(c, 404, 219, 158, 82, "Intelligence utility", "One-page-at-a-time indexing, encrypted vault, search, boards and bundles.", GREEN, True, "AI", 7.1)
     card(c, 577, 219, 165, 82, "Agent runtime", "Authenticated loopback Python process using versioned locus-platform contracts.", CORAL, True, "AG", 7.1)
@@ -207,8 +207,43 @@ def page_processes(c):
     arrow(c, 660, 219, 470, 156, BLUE, "typed messages")
 
 
+def page_modularization(c):
+    title(c, "2026-09 refactor", "State paths, module seams, and build performance", "External exports, SQLite schema, HTTP formats, and locus-platform contracts are unchanged", 3)
+
+    c.setFillColor(INK); c.setFont("Helvetica-Bold", 11); c.drawString(34, 476, "Surface-specific state publication")
+    c.setFillColor(MUTED); c.setFont("Helvetica", 7.5); c.drawString(34, 462, "A mutation is batched once, projected by trust boundary, and sent only to the renderer that consumes it.")
+
+    card(c, 34, 326, 132, 112, "Domain change", "Tabs, settings, runtime events, persistence, recording, sync, extensions, or Work actions invalidate state.", BLUE, badge="1", body_size=7.1)
+    card(c, 196, 326, 150, 112, "State publisher", "Same-turn requests are coalesced. Work-local commands skip the Shell path; shared changes request both surfaces.", LIME, badge="2", body_size=7.1)
+    card(c, 378, 384, 148, 54, "Shell projection", "Browser state + compact Work summary", GREEN, badge="S", body_size=6.8)
+    card(c, 378, 326, 148, 54, "Work projection", "Grants + full Work, model and recording state", CORAL, badge="W", body_size=6.6)
+    card(c, 558, 384, 200, 54, "Trusted browser chrome", "getShellState / subscribeShellState", GREEN, badge="UI", body_size=6.7)
+    card(c, 558, 326, 200, 54, "Trusted Work renderer", "getWorkState / subscribeWorkState", CORAL, badge="UI", body_size=6.7)
+    arrow(c, 166, 382, 196, 382, BLUE)
+    arrow(c, 346, 382, 378, 411, GREEN)
+    arrow(c, 346, 382, 378, 353, CORAL)
+    arrow(c, 526, 411, 558, 411, GREEN, "authorized")
+    arrow(c, 526, 353, 558, 353, CORAL, "authorized")
+
+    c.setStrokeColor(LINE); c.line(34, 298, W - 34, 298)
+    c.setFillColor(INK); c.setFont("Helvetica-Bold", 11); c.drawString(34, 281, "Responsibility-focused modules behind stable entry points")
+    module_groups = [
+        (34, 135, 169, 128, "Extension contract", VIOLET, ["contract + trusted keys", "manifest validation", "archive verification", "gallery documents"]),
+        (219, 135, 169, 128, "Sync cryptography", GREEN, ["encoding + readiness", "device/account keys", "record encryption", "recovery + HLC clocks"]),
+        (404, 135, 169, 128, "Sync service", BLUE, ["request schemas", "request support", "domain models", "repository capabilities"]),
+        (589, 135, 169, 128, "Desktop core", CORAL, ["database record models", "surface state types", "state publisher", "dynamic surface loader"]),
+    ]
+    for x, y, w, h, heading, accent, items in module_groups:
+        card(c, x, y, w, h, heading, "", accent, badge=heading[0])
+        bullet_list(c, items, x + 13, y + h - 47, w - 26, 7.1, MUTED, 4)
+
+    card(c, 34, 55, 211, 62, "Before", "67 renderer assets and about 13 MB because old hashed files survived builds.", CORAL, badge="-", body_size=7.1)
+    card(c, 260, 55, 211, 62, "After", "11 assets, 490.7 KiB total; one surface loads on demand and preview fixtures stay development-only.", LIME, badge="+", body_size=6.9)
+    card(c, 486, 55, 272, 62, "Regression gates", "Cycle scans, hotspot budgets, export snapshots, IPC tests, clean builds, and a 750 KiB renderer ceiling protect CI and canary releases.", BLUE, badge="OK", body_size=6.6)
+
+
 def page_intelligence(c):
-    title(c, "Private intelligence", "Recall, Research Boards, and Tab Steward", "Local-only records never enter browser sync", 3)
+    title(c, "Private intelligence", "Recall, Research Boards, and Tab Steward", "Local-only records never enter browser sync", 4)
     card(c, 34, 342, 226, 142, "Private Semantic Recall", "Opt-in on first use. Eligible pages visited after enablement are captured with strict extraction, canonical URL deduplication, encrypted text, full-text terms and one mean-pooled embedding.", GREEN, badge="R", body_size=8)
     bullet_list(c, [
         "Searches open tabs, bookmarks and history with natural language and time hints.",
@@ -251,8 +286,8 @@ def page_intelligence(c):
 
 
 def page_browser_productivity(c):
-    title(c, "Browser productivity", "Split View, command palette, and Reader", "Both panes remain ordinary tabs with independent grants and audio", 4)
-    card(c, 34, 330, 352, 154, "Two-page Split View", "Primary and secondary pane assignments are stored with a focused pane and a 30-70 percent divider ratio. The focused pane owns omnibox, navigation, find, zoom, Reader, sharing and recording controls.", BLUE, badge="2", body_size=8.2)
+    title(c, "Browser productivity", "Split View, command palette, and Reader", "Both panes remain ordinary tabs with independent grants and audio", 5)
+    card(c, 34, 330, 352, 154, "Two-page Split View", "Two live page panes share one window; the focused pane owns browser controls.", BLUE, badge="2", body_size=8.2)
     # miniature split view
     c.setFillColor(HexColor("#eef1f9")); c.setStrokeColor(BLUE); c.roundRect(52, 352, 145, 70, 6, fill=1, stroke=1)
     c.setFillColor(HexColor("#f7f8fb")); c.roundRect(207, 352, 159, 70, 6, fill=1, stroke=1)
@@ -262,7 +297,7 @@ def page_browser_productivity(c):
     line_text(c, "Drag a tab onto L or R to assign it explicitly.", 216, 387, 7, MUTED, max_width=136)
     bullet_list(c, ["Neither visible pane sleeps.", "Recording pauses before an unshared pane frame.", "Settings hides panes without destroying them."], 52, 310, 310, 7.2)
 
-    card(c, 406, 330, 352, 154, "Universal Command Palette", "Open with Command-K above browser content. Search tabs, bookmarks, history, conversations, Settings, Research Boards, Resume Later bundles, Recall results and allowlisted browser commands.", LIME, badge="K", body_size=8.2)
+    card(c, 406, 330, 352, 154, "Universal Command Palette", "Command-K searches trusted browser data and allowlisted actions in place.", LIME, badge="K", body_size=8.2)
     c.setFillColor(DARK); c.roundRect(425, 358, 314, 66, 8, fill=1, stroke=0)
     c.setFillColor(WHITE); c.setFont("Helvetica", 8); c.drawString(440, 405, "Search tabs, history, settings, or run a command...")
     options = [("Google", "open tab"), ("Toggle Split View", "command"), ("Local models article", "private recall")]
@@ -287,7 +322,7 @@ def page_browser_productivity(c):
     ]
     c.setFillColor(HexColor("#fbf7e8")); c.setStrokeColor(HexColor("#e1d7bc")); c.roundRect(54, 93, 350, 119, 8, fill=1, stroke=1)
     c.setFillColor(INK); c.setFont("Times-Bold", 15); c.drawString(71, 190, "A quieter page for focused reading")
-    line_text(c, "Reader typography keeps the article central while trusted controls stay visible above it.", 71, 171, 8, MUTED, max_width=310)
+    line_text(c, "Reader keeps the article central and trusted controls visible.", 71, 171, 8, MUTED, max_width=310)
     c.setFillColor(LIME); c.rect(71, 133, 4, 28, fill=1, stroke=0)
     line_text(c, "Read Aloud highlights the current sentence and uses voices already installed on this Mac.", 84, 154, 7.4, INK, max_width=286)
     bullet_list(c, left, 427, 194, 145, 7.3, MUTED, 4)
@@ -295,7 +330,7 @@ def page_browser_productivity(c):
 
 
 def page_privacy(c):
-    title(c, "Privacy model", "What is stored, shared, synced, and excluded", "Private windows support only Split View, Palette and ephemeral Reader", 5, dark=True)
+    title(c, "Privacy model", "What is stored, shared, synced, and excluded", "Private windows support only Split View, Palette and ephemeral Reader", 6, dark=True)
     columns = [50, 265, 474, 624]
     widths = [195, 189, 130, 118]
     headers = [("LOCAL ENCRYPTED", GREEN), ("NORMAL LOCAL", BLUE), ("OPTIONAL CLOUD", VIOLET), ("NEVER CAPTURED", CORAL)]
@@ -325,14 +360,14 @@ def page_privacy(c):
 
 
 def page_full_product(c):
-    title(c, "Implemented canary", "Current feature inventory and service topology", "Solo-agent scope - local models remain optional and off by default", 6)
+    title(c, "Implemented canary", "Current feature inventory and service topology", "Solo-agent scope - local models remain optional and off by default", 7)
     groups = [
         (34, 330, 230, 154, "Browser foundation", BLUE, ["Tabs, groups, profiles and private windows", "History, bookmarks, downloads and restore", "Permissions, passwords, zoom, find, media", "Print/PDF, tab sleeping and split panes"]),
         (281, 330, 230, 154, "Solo Work and live context", CORAL, ["Ask, Work, Plan and Build modes", "Chat, Plan, Changes, Files and Terminal", "Explicit read/interact tab grants", "Visible recording, transcript and redacted video"]),
         (528, 330, 230, 154, "Models and local intelligence", GREEN, ["ChatGPT Plan, OpenAI, Claude, Kimi, vLLM", "Optional Ollama Work models", "Private Recall and Tab Steward", "Cited Research and system Read Aloud"]),
         (34, 153, 230, 154, "Extensions", VIOLET, ["Signed .locusx package and inventory", "Publisher + gallery signatures", "Permission review, update and rollback", "Developer Mode isolated from private profiles"]),
         (281, 153, 230, 154, "Encrypted sync", LIME, ["Passkeys and X25519 device approval", "XChaCha20-Poly1305 client ciphertext", "Offline queue, HLC merge and tombstones", "Cloud/device/account deletion"]),
-        (528, 153, 230, 154, "Release and quality", BLUE, ["Apple Silicon macOS 14+ direct download", "Signing, notarization and canary updater", "Typed fixtures, fuzz and security checks", "VoiceOver, 200% scale and Reduced Motion"]),
+        (528, 153, 230, 154, "Release and quality", BLUE, ["Apple Silicon macOS 14+ direct download", "Signing, notarization and canary updater", "Contract, cycle, artifact and security gates", "VoiceOver, 200% scale and Reduced Motion"]),
     ]
     for x, y, w, h, heading, accent, items in groups:
         card(c, x, y, w, h, heading, "", accent, badge=heading[0])
@@ -358,7 +393,7 @@ def build():
     c = canvas.Canvas(str(OUTPUT), pagesize=PAGE, pageCompression=1)
     c.setTitle("Locus Browser Architecture and Feature Guide")
     c.setAuthor("Locus Browser")
-    for renderer in [page_cover, page_processes, page_intelligence, page_browser_productivity, page_privacy, page_full_product]:
+    for renderer in [page_cover, page_processes, page_modularization, page_intelligence, page_browser_productivity, page_privacy, page_full_product]:
         renderer(c)
         c.showPage()
     c.save()

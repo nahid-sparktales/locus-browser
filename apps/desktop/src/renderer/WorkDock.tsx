@@ -40,8 +40,8 @@ import {
   X,
 } from "lucide-react";
 import type { BrowserCommand } from "../shared/ipc.js";
-import type { BrowserAppState, ThinkingVisibility, ToolActivityVisibility, WalrusMemoryResultState, WorkMessage, WorkMode, WorkModelProviderId, WorkModelProviderState, WorkPanel, WorkTerminalEntryState } from "../shared/types.js";
-import { useBrowserState } from "./useBrowserState.js";
+import type { ThinkingVisibility, ToolActivityVisibility, WalrusMemoryResultState, WorkDockState as BrowserAppState, WorkMessage, WorkMode, WorkModelProviderId, WorkModelProviderState, WorkPanel, WorkTerminalEntryState } from "../shared/types.js";
+import { useWorkState } from "./useSurfaceState.js";
 
 const panels: Array<{ id: WorkPanel; label: string; icon: React.ReactNode }> = [
   { id: "chat", label: "Chat", icon: <MessageSquareText size={17} /> },
@@ -59,14 +59,13 @@ const modes: Array<{ id: WorkMode; label: string; detail: string }> = [
 ];
 
 export function WorkDock() {
-  const state = useBrowserState();
+  const state = useWorkState();
   const [modelOpen, setModelOpen] = useState(false);
   const resizing = useRef<{ startX: number; startWidth: number } | null>(null);
 
   if (!state) return <div className="dock-loading"><Sparkles size={20} /></div>;
 
-  const active = state.tabs.find((tab) => tab.id === state.activeTabId);
-  const grant = active?.grants.find((item) => item.sessionId === state.work.sessionId);
+  const grant = state.activeTabGrants.find((item) => item.sessionId === state.work.sessionId);
   const panel = panels.find((item) => item.id === state.work.panel) ?? panels[0]!;
 
   const startResize = (event: React.PointerEvent) => {

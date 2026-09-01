@@ -7,8 +7,8 @@ import {
   Sparkles, Square, Sun, Trash2, UserRound, UsersRound, Video, Volume2, VolumeX, X,
 } from "lucide-react";
 import type { BrowserCommand } from "../shared/ipc.js";
-import type { Appearance, BrowserAppState, BrowserTabState, PaletteResultState, ResearchBoardState, SearchEngine, SemanticRecallResultState, SidebarSection, TabStewardPreviewState } from "../shared/types.js";
-import { useBrowserState } from "./useBrowserState.js";
+import type { Appearance, BrowserTabState, PaletteResultState, ResearchBoardState, SearchEngine, SemanticRecallResultState, ShellState as BrowserAppState, SidebarSection, TabStewardPreviewState } from "../shared/types.js";
+import { useShellState } from "./useSurfaceState.js";
 
 const searchProviders: Array<{ id: SearchEngine; name: string; detail: string; mark: string }> = [
   { id: "duckduckgo", name: "DuckDuckGo", detail: "Privacy-focused", mark: "D" },
@@ -18,7 +18,7 @@ const searchProviders: Array<{ id: SearchEngine; name: string; detail: string; m
 ];
 
 export function Shell() {
-  const state = useBrowserState();
+  const state = useShellState();
   const [address, setAddress] = useState("");
   const [addressFocused, setAddressFocused] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);

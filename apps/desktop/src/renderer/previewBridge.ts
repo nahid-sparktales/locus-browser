@@ -1,6 +1,6 @@
 import type { LocusBrowserAPI } from "../preload/index.js";
 import type { BrowserCommand } from "../shared/ipc.js";
-import type { BrowserAppState, ReaderArticleState, ResearchBoardState } from "../shared/types.js";
+import type { BrowserAppState, ReaderArticleState, ResearchBoardState, ShellState, WorkDockState } from "../shared/types.js";
 
 const previewParams = new URLSearchParams(window.location.search);
 const previewOnboarding = previewParams.has("onboarding");
@@ -355,17 +355,19 @@ const previewState: BrowserAppState = {
 export function installPreviewBridge(): void {
   if (typeof window.locusBrowser !== "undefined") return;
   document.documentElement.dataset.locusPreview = "true";
-  const listeners = new Set<(state: BrowserAppState) => void>();
+  const shellListeners = new Set<(state: ShellState) => void>();
+  const workListeners = new Set<(state: WorkDockState) => void>();
   const focusListeners = new Set<() => void>();
   const publish = () => {
-    for (const listener of listeners) listener(structuredClone(previewState));
+    for (const listener of shellListeners) listener(previewShellState());
+    for (const listener of workListeners) listener(previewWorkState());
   };
   const api: LocusBrowserAPI = {
-    getState: async () => structuredClone(previewState),
+    getShellState: async () => previewShellState(),
+    getWorkState: async () => previewWorkState(),
     command: async (value) => {
       applyPreviewCommand(value);
       publish();
-      return structuredClone(previewState);
     },
     query: async (query) => {
       if (query.type === "research-board-get") return structuredClone(previewResearchBoard);
@@ -387,9 +389,13 @@ export function installPreviewBridge(): void {
       }];
       return [];
     },
-    subscribe: (listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
+    subscribeShellState: (listener) => {
+      shellListeners.add(listener);
+      return () => shellListeners.delete(listener);
+    },
+    subscribeWorkState: (listener) => {
+      workListeners.add(listener);
+      return () => workListeners.delete(listener);
     },
     onFocusAddress: (listener) => {
       focusListeners.add(listener);
@@ -397,6 +403,37 @@ export function installPreviewBridge(): void {
     },
   };
   window.locusBrowser = api;
+}
+
+function previewShellState(): ShellState {
+  const state = structuredClone(previewState);
+  return {
+    ...state,
+    work: {
+      sessionId: state.work.sessionId,
+      runtime: state.work.runtime,
+      busy: state.work.busy,
+      conversations: state.work.conversations,
+      model: state.work.model,
+      ...(state.work.pendingPermission ? { pendingPermission: state.work.pendingPermission } : {}),
+    },
+  };
+}
+
+function previewWorkState(): WorkDockState {
+  const state = structuredClone(previewState);
+  return {
+    activeTabGrants: state.tabs.find((tab) => tab.id === state.activeTabId)?.grants ?? [],
+    recording: state.recording,
+    settings: {
+      appearance: state.settings.appearance,
+      thinkingVisibility: state.settings.thinkingVisibility,
+      toolActivityVisibility: state.settings.toolActivityVisibility,
+    },
+    walrusMemory: state.walrusMemory,
+    work: state.work,
+    workWidth: state.workWidth,
+  };
 }
 
 function applyPreviewCommand(command: BrowserCommand): void {

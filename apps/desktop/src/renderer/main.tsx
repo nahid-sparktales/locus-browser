@@ -1,17 +1,25 @@
-import { StrictMode } from "react";
+import { StrictMode, type ComponentType } from "react";
 import { createRoot } from "react-dom/client";
-import { Shell } from "./Shell.js";
-import { WorkDock } from "./WorkDock.js";
-import { RecorderSurface } from "./RecorderSurface.js";
-import { ReaderSurface } from "./ReaderSurface.js";
-import { installPreviewBridge } from "./previewBridge.js";
-import "./styles.css";
 
-if (["127.0.0.1", "localhost"].includes(window.location.hostname)) {
-  installPreviewBridge();
+type RendererSurface = "shell" | "work" | "recorder" | "reader";
+
+const surfaceLoaders: Record<RendererSurface, () => Promise<ComponentType>> = {
+  shell: async () => (await import("./Shell.js")).Shell,
+  work: async () => (await import("./WorkDock.js")).WorkDock,
+  recorder: async () => (await import("./RecorderSurface.js")).RecorderSurface,
+  reader: async () => (await import("./ReaderSurface.js")).ReaderSurface,
+};
+
+void renderSurface();
+
+async function renderSurface(): Promise<void> {
+  if (["127.0.0.1", "localhost"].includes(window.location.hostname)) {
+    const { installPreviewBridge } = await import("./previewBridge.js");
+    installPreviewBridge();
+  }
+  await import("./styles.css");
+  const requested = new URLSearchParams(window.location.search).get("surface");
+  const surface: RendererSurface = requested === "work" || requested === "recorder" || requested === "reader" ? requested : "shell";
+  const Surface = await surfaceLoaders[surface]();
+  createRoot(document.getElementById("root")!).render(<StrictMode><Surface /></StrictMode>);
 }
-const surface = new URLSearchParams(window.location.search).get("surface");
-
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>{surface === "work" ? <WorkDock /> : surface === "recorder" ? <RecorderSurface /> : surface === "reader" ? <ReaderSurface /> : <Shell />}</StrictMode>,
-);

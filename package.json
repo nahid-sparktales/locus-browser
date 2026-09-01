@@ -5,6 +5,7 @@
   "license": "Apache-2.0",
   "packageManager": "pnpm@11.19.0",
   "scripts": {
+    "architecture:check": "node scripts/check-architecture.mjs",
     "build": "pnpm -r --if-present build",
     "canary:check": "node scripts/canary-readiness.mjs",
     "dev:desktop": "pnpm --filter @locus/browser-desktop dev",
@@ -17,6 +18,7 @@
     "sync:verify-deployment": "node scripts/check-sync-deployment.mjs",
     "pretest": "pnpm --filter './packages/**' build",
     "pretypecheck": "pnpm --filter './packages/**' build",
+    "renderer:budget": "node scripts/check-renderer-budget.mjs",
     "test": "node --test scripts/prepare-managed-component.test.mjs scripts/prepare-agent-runtime.test.mjs scripts/create-update-metadata.test.mjs && pnpm -r --if-present test",
     "typecheck": "pnpm -r --if-present typecheck"
   },
