@@ -1,17 +1,23 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { BrowserAppState } from "../shared/types.js";
+import type { ShellState, WorkDockState } from "../shared/types.js";
 import { ipcChannels } from "../shared/channels.js";
 import type { BrowserCommand, BrowserQuery } from "../shared/ipc.js";
 
 const api = {
-  getState: (): Promise<BrowserAppState> => ipcRenderer.invoke(ipcChannels.getState),
-  command: (command: BrowserCommand): Promise<BrowserAppState> =>
+  getShellState: (): Promise<ShellState> => ipcRenderer.invoke(ipcChannels.getShellState),
+  getWorkState: (): Promise<WorkDockState> => ipcRenderer.invoke(ipcChannels.getWorkState),
+  command: (command: BrowserCommand): Promise<void> =>
     ipcRenderer.invoke(ipcChannels.command, command),
   query: (query: BrowserQuery): Promise<unknown> => ipcRenderer.invoke(ipcChannels.query, query),
-  subscribe: (listener: (state: BrowserAppState) => void): (() => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, state: BrowserAppState) => listener(state);
-    ipcRenderer.on(ipcChannels.state, handler);
-    return () => ipcRenderer.removeListener(ipcChannels.state, handler);
+  subscribeShellState: (listener: (state: ShellState) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: ShellState) => listener(state);
+    ipcRenderer.on(ipcChannels.shellState, handler);
+    return () => ipcRenderer.removeListener(ipcChannels.shellState, handler);
+  },
+  subscribeWorkState: (listener: (state: WorkDockState) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: WorkDockState) => listener(state);
+    ipcRenderer.on(ipcChannels.workState, handler);
+    return () => ipcRenderer.removeListener(ipcChannels.workState, handler);
   },
   onFocusAddress: (listener: () => void): (() => void) => {
     const handler = () => listener();

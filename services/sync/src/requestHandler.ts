@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   passkeyCeremonyHtml,
@@ -8,67 +8,33 @@ import {
   type PasskeyConfig,
   type PasskeyToolkit,
 } from "./passkeyAuth.js";
-import type { AuthenticatedDevice, OpaqueSyncRecord, SyncRepository } from "./types.js";
+import {
+  AccountKeyWrapSchema,
+  DeviceIdentitySchema,
+  EnrollmentClaimSchema,
+  MAX_RECORD_BYTES,
+  PasskeyConfigSchema,
+  PasskeyResponseSchema,
+  PushSchema,
+  RecordSchema,
+  safeRequestErrors,
+} from "./requestContract.js";
+import {
+  bearerToken,
+  hashToken,
+  isPublicRoute,
+  json,
+  requestBody,
+  RequestSizeError,
+  RequestValidationError,
+  requiredDevice,
+  route,
+  syncRecords,
+  text,
+} from "./requestSupport.js";
+import type { AuthenticatedDevice, SyncRepository } from "./types.js";
 
-const MAX_BODY_BYTES = 3 * 1024 * 1024;
-const MAX_RECORD_BYTES = 2 * 1024 * 1024;
-
-const CollectionSchema = z.enum(["bookmarks", "history", "tab-groups", "remote-tabs", "settings", "extensions"]);
-const RecordSchema = z.object({
-  version: z.literal(1).default(1),
-  accountId: z.string().min(1).max(128),
-  deviceId: z.string().min(1).max(128),
-  collection: CollectionSchema,
-  recordId: z.string().min(1).max(512),
-  clock: z.string().regex(/^\d{13}-\d{6}-[A-Za-z0-9_-]+$/),
-  nonce: z.string().min(16).max(128),
-  ciphertext: z.string().min(1).max(2_800_000),
-  tombstone: z.boolean().default(false),
-});
-const PushSchema = z.object({ keyVersion: z.number().int().positive(), records: z.array(RecordSchema).max(500) });
-const DeviceIdentitySchema = z.object({
-  deviceId: z.string().min(8).max(128),
-  deviceName: z.string().trim().min(1).max(80),
-  devicePublicKey: z.string().min(32).max(512),
-});
-const AccountKeyWrapSchema = z.object({
-  deviceId: z.string().min(8).max(128),
-  wrappedAccountKey: z.string().min(32).max(1_024),
-});
-const EnrollmentClaimSchema = z.object({
-  enrollmentId: z.string().uuid(),
-  approvalCode: z.string().min(20).max(128),
-});
-const PasskeyResponseSchema = z.object({
-  id: z.string().min(1).max(2_048),
-  rawId: z.string().min(1).max(2_048),
-  type: z.literal("public-key"),
-  response: z.record(z.string(), z.unknown()),
-  clientExtensionResults: z.record(z.string(), z.unknown()).default({}),
-  authenticatorAttachment: z.string().optional(),
-});
-const PasskeyConfigSchema = z.object({
-  rpName: z.string().trim().min(1).max(80),
-  rpId: z.string().regex(/^(localhost|(?:[A-Za-z0-9-]+\.)*[A-Za-z0-9-]+)$/),
-  origin: z.string().url().refine((value) => {
-    const url = new URL(value);
-    return url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname));
-  }, "Passkey origin must use HTTPS except on localhost"),
-  callbackScheme: z.string().regex(/^[a-z][a-z0-9+.-]*$/),
-});
-const SafeRequestErrors = new Set([
-  "Device identity collision",
-  "Device is unavailable",
-  "Enrollment is unavailable",
-  "Every active device requires exactly one wrapped account key",
-  "Key rotation must replace every sync record",
-  "Passkey account mismatch",
-  "Passkey is already registered",
-  "Passkey is unavailable",
-  "Record ownership mismatch",
-  "Sync account key is not initialized",
-  "Sync account key version changed",
-]);
+export { hashToken } from "./requestSupport.js";
 
 export interface SyncRequestHandlerOptions {
   passkeyConfig?: PasskeyConfig;
@@ -404,73 +370,9 @@ export function createSyncRequestHandler(options: SyncRequestHandlerOptions = {}
         if (error instanceof RequestSizeError) return json({ error: error.message }, 413);
         if (error instanceof RequestValidationError) return json({ error: error.message }, 400);
         if (error instanceof z.ZodError) return json({ error: "Invalid request", issues: error.issues }, 400);
-        if (error instanceof Error && SafeRequestErrors.has(error.message)) return json({ error: error.message }, 400);
+        if (error instanceof Error && safeRequestErrors.has(error.message)) return json({ error: error.message }, 400);
         return json({ error: "Request failed" }, 500);
       }
     },
   };
 }
-
-export function hashToken(token: string): string {
-  return createHash("sha256").update(token).digest("hex");
-}
-
-function isPublicRoute(method: string, path: string): boolean {
-  return path === "/health"
-    || (method === "POST" && path === "/v1/devices/enrollments")
-    || path === "/v1/devices/enrollments/claim"
-    || path.startsWith("/v1/auth/passkeys/");
-}
-
-function bearerToken(authorization: string | null): string {
-  const match = /^Bearer ([A-Za-z0-9_-]{20,})$/.exec(authorization ?? "");
-  return match?.[1] ?? "";
-}
-
-function requiredDevice(device: AuthenticatedDevice | undefined): AuthenticatedDevice {
-  if (!device) throw new Error("Device authentication required");
-  return device;
-}
-
-function route(path: string, pattern: RegExp): RegExpExecArray | null {
-  return pattern.exec(path);
-}
-
-async function requestBody(request: Request): Promise<unknown> {
-  const declaredLength = Number(request.headers.get("content-length") ?? 0);
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) throw new RequestSizeError();
-  const body = await request.arrayBuffer();
-  if (body.byteLength > MAX_BODY_BYTES) throw new RequestSizeError();
-  if (!body.byteLength) return undefined;
-  try {
-    return JSON.parse(new TextDecoder().decode(body));
-  } catch {
-    throw new RequestValidationError("Invalid JSON request");
-  }
-}
-
-function syncRecords(records: z.infer<typeof RecordSchema>[]): OpaqueSyncRecord[] {
-  return records.map((record) => ({ ...record, size: Buffer.byteLength(record.ciphertext, "base64url") }));
-}
-
-function json(body: unknown, status = 200, headers: HeadersInit = {}): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json; charset=utf-8", ...Object.fromEntries(new Headers(headers)) },
-  });
-}
-
-function text(body: string, status = 200, headers: HeadersInit = {}): Response {
-  return new Response(body, {
-    status,
-    headers: { "content-type": "text/plain; charset=utf-8", ...Object.fromEntries(new Headers(headers)) },
-  });
-}
-
-class RequestSizeError extends Error {
-  constructor() {
-    super("Request body exceeds 3 MB");
-  }
-}
-
-class RequestValidationError extends Error {}

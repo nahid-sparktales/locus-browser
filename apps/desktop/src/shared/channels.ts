@@ -1,8 +1,10 @@
 export const ipcChannels = {
-  getState: "browser:get-state",
+  getShellState: "browser:get-shell-state",
+  getWorkState: "browser:get-work-state",
   command: "browser:command",
   query: "browser:query",
-  state: "browser:state",
+  shellState: "browser:shell-state",
+  workState: "browser:work-state",
   focusAddress: "browser:focus-address",
   recorderEvent: "browser:recorder-event",
   recorderMessage: "browser:recorder-message",

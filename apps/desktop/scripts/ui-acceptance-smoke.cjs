@@ -71,10 +71,12 @@ async function inspectSurface(url, surface, width, height, zoom, expectedSelecto
   });
   await window.loadURL(url);
   window.webContents.setZoomFactor(zoom);
-  await new Promise((resolvePromise) => setTimeout(resolvePromise, 150));
-  if (triggerSelector) await window.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(triggerSelector)})?.click()`);
+  if (triggerSelector) {
+    await waitForVisible(window.webContents, triggerSelector);
+    await window.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(triggerSelector)})?.click()`);
+  }
+  const expectedVisible = await waitForVisible(window.webContents, expectedSelector);
   const audit = await window.webContents.executeJavaScript(`(${pageAudit.toString()})()`);
-  const expectedVisible = await window.webContents.executeJavaScript(`(() => { const element = document.querySelector(${JSON.stringify(expectedSelector)}); if (!element) return false; const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden"; })()`);
   const durations = [];
   if (surface === "shell") {
     for (let index = 0; index < 60; index += 1) {
@@ -90,6 +92,16 @@ async function inspectSurface(url, surface, width, height, zoom, expectedSelecto
   if (p95 > 150) issues.push(`warm tab interaction p95 ${p95.toFixed(1)} ms exceeds 150 ms`);
   results.push({ surface, width, height, zoom, reducedMotion: audit.reducedMotion, focusable: audit.focusable, p95TabInteractionMs: p95, issues });
   window.destroy();
+}
+
+async function waitForVisible(webContents, selector, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const visible = await webContents.executeJavaScript(`(() => { const element = document.querySelector(${JSON.stringify(selector)}); if (!element) return false; const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden"; })()`);
+    if (visible) return true;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+  }
+  return false;
 }
 
 function pageAudit() {
@@ -109,8 +121,18 @@ function pageAudit() {
   for (const id of new Set(ids)) if (ids.filter((candidate) => candidate === id).length > 1) issues.push(`duplicate id ${id}`);
   for (const image of document.querySelectorAll("img")) if (!image.hasAttribute("alt")) issues.push("image without alt text");
   if (!document.documentElement.lang) issues.push("document language is missing");
-  if (document.documentElement.scrollWidth > document.documentElement.clientWidth + 2) {
-    issues.push(`horizontal overflow ${document.documentElement.scrollWidth - document.documentElement.clientWidth}px`);
+  if (document.documentElement.scrollWidth > window.innerWidth + 2) {
+    const offenders = [...document.querySelectorAll("*")]
+      .filter(visible)
+      .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+      .filter(({ rect }) => rect.left < -2 || rect.right > window.innerWidth + 2)
+      .sort((left, right) => Math.max(right.rect.right - window.innerWidth, -right.rect.left) - Math.max(left.rect.right - window.innerWidth, -left.rect.left))
+      .slice(0, 3)
+      .map(({ element, rect }) => {
+        const classes = typeof element.className === "string" ? element.className.trim().split(/\s+/).filter(Boolean).slice(0, 2).join(".") : "";
+        return `${element.tagName.toLowerCase()}${classes ? `.${classes}` : ""}[${rect.left.toFixed(1)},${rect.right.toFixed(1)}]`;
+      });
+    issues.push(`horizontal overflow ${document.documentElement.scrollWidth - window.innerWidth}px (root ${document.documentElement.clientWidth}/${document.documentElement.scrollWidth}, body ${document.body.clientWidth}/${document.body.scrollWidth}, inner ${window.innerWidth}, zoom ${window.devicePixelRatio}; ${offenders.join(", ") || "no overflowing element"})`);
   }
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
     const moving = [...document.querySelectorAll("*")].filter(visible).filter((element) => {

@@ -91,6 +91,10 @@ agent rather than every team and orchestration surface in native Locus.
 - Trusted shell/work crash recovery, 1,000 malformed IPC-envelope cases,
   extension-archive fuzzing, sync-envelope fuzzing, offline replay simulations,
   and ciphertext/associated-data tamper checks.
+- Surface-specific shell/Work state channels with sender checks and coalesced
+  publication, dynamic Shell/Work/Recorder/Reader chunks, development-only
+  preview fixtures, clean renderer output, cycle detection, source-hotspot
+  budgets, and a 750 KiB uncompressed renderer asset ceiling.
 - Recording policy, trusted-recorder sender binding, tab-grant revocation,
   protected URL/field redaction, transcript encryption, endpoint validation,
   context bounds, media fallback, and interrupted-video recovery fixtures.
@@ -148,7 +152,9 @@ The local candidate currently passes its unit/integration/fuzz suites, the full
 production build, the Electron compatibility fixture, responsive UI surfaces,
 warm tab switching under the 150 ms p95 gate, Reduced Motion, 200% scaling, a
 complete dependency-graph audit with no high/critical findings, and a CycloneDX
-1.6 SBOM. Walrus fixtures cover connection disclosure, ready/progress/failure
+1.6 SBOM. The modular architecture gate currently covers 140 source modules,
+and the code-split renderer emits 11 assets totaling about 491 KiB uncompressed.
+Walrus fixtures cover connection disclosure, ready/progress/failure
 states, hosted and client-encrypted setup, exact-content and research-quilt
 previews, Work recall and attachment, restore guidance, and remote-persistence
 warnings. A locally signed app also passed deep code-sign

@@ -80,7 +80,7 @@ check("Cloudflare extension gallery deployment contract", () => {
   if (config.vars?.LOCUS_GALLERY_FINGERPRINT !== fingerprint) {
     throw new Error("gallery Worker signing identity is not pinned");
   }
-  const trustStore = readFileSync(join(root, "packages/extensions/src/index.ts"), "utf8");
+  const trustStore = readFileSync(join(root, "packages/extensions/src/contract.ts"), "utf8");
   if (!trustStore.includes(fingerprint)) throw new Error("desktop gallery trust store differs from the Worker");
 });
 check("Pinned managed ChatGPT component contract", () => {

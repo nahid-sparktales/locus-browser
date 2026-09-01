@@ -52,6 +52,33 @@ Resume Later bundles, Settings routes, allowlisted actions, andâ€”when enabledâ€
 bounded Recall results. Executions are rebound to the current profile and
 focused pane; a result cannot provide an arbitrary privileged command.
 
+## Module and state boundaries
+
+The desktop preload exposes separate shell and Work state APIs. The main
+process verifies the sender before serving either projection and publishes each
+projection on its own channel. Browser chrome receives navigation, settings,
+library, and compact Work-summary state; the Work renderer receives the active
+tab grants plus its conversation, model, recording, workspace, and portable
+memory state. Same-turn invalidations are coalesced before serialization, so a
+burst of related mutations crosses IPC once per affected surface.
+
+Persistence record shapes live separately from the SQLite implementation, and
+the shared extension, sync-crypto, and sync-service entry points are barrels
+over responsibility-specific modules. Their public exports, SQLite schema, and
+HTTP formats remain compatibility boundaries even as implementations move.
+
+The renderer boot module dynamically loads exactly one of Shell, Work,
+Recorder, or Reader. Preview fixtures are a development-only dynamic chunk and
+are not referenced by production HTML. Vite clears the renderer output before
+every production build, preventing old content-hashed files from entering the
+Electron package.
+
+`pnpm architecture:check` rejects local import cycles, composite preload state,
+eager surface imports, disabled output cleanup, and growth beyond reviewed
+hotspot budgets. After a production build, `pnpm renderer:budget` requires
+independent surface chunks and caps both asset count and total uncompressed
+renderer output. CI and canary publishing run both checks.
+
 Reader Mode replaces only the selected pane with a trusted local view. The
 isolated DOM bridge excludes forms, inputs, editable or credential-shaped
 regions, hidden content, scripts, and inaccessible frames before article

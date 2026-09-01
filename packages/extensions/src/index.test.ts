@@ -1,6 +1,7 @@
 import { createHash, generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import { strToU8, zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
+import * as extensionsApi from "./index.js";
 import {
   extensionContentScriptMatches,
   ExtensionGalleryCatalogSchema,
@@ -20,6 +21,22 @@ import {
 } from "./index.js";
 
 describe("Locus extension contract", () => {
+  it("preserves the public runtime export contract", () => {
+    expect(Object.keys(extensionsApi).sort()).toEqual([
+      "ExtensionGalleryCatalogSchema", "ExtensionGalleryEntrySchema",
+      "ExtensionRevocationDocumentSchema", "ExtensionRevocationSchema",
+      "SignedExtensionGalleryCatalogSchema", "SignedExtensionRevocationsSchema",
+      "capabilityRegistry", "compareExtensionVersions", "extensionContentScriptMatches",
+      "extensionGalleryCatalogVersion", "extensionGalleryDocumentMessage",
+      "extensionGalleryDocumentVersion", "extensionGalleryDownloadPath", "extensionIsRevoked",
+      "extensionLocalResources", "locusxContractVersion", "locusxGalleryMessage",
+      "locusxPublisherMessage", "permissionExpansion", "publicKeyFingerprint",
+      "trustedGalleryFingerprints", "trustedGalleryKeys", "validateExtensionFile",
+      "validateManifest", "verifyLocusx", "verifySignedExtensionCatalog",
+      "verifySignedExtensionRevocations",
+    ].sort());
+  });
+
   it("rejects unsupported manifest keys and permissions", () => {
     expect(() => validateManifest({ manifest_version: 3, name: "Bad", version: "1.0.0", mystery: true })).toThrow("Unsupported manifest keys");
     expect(() => validateManifest({ manifest_version: 3, name: "Bad", version: "1.0.0", permissions: ["cookies"] })).toThrow("Unsupported extension permissions");

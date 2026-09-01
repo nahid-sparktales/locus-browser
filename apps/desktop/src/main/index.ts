@@ -183,7 +183,16 @@ function controllerForRecorderSender(event: IpcMainEvent): BrowserController | u
 }
 
 function installIpc(): void {
-  ipcMain.handle(ipcChannels.getState, (event) => controllerForSender(event).state());
+  ipcMain.handle(ipcChannels.getShellState, (event) => {
+    const controller = controllerForSender(event);
+    if (!controller.ownsShellSender(event.sender.id)) throw new Error("Shell state requires trusted browser chrome");
+    return controller.state();
+  });
+  ipcMain.handle(ipcChannels.getWorkState, (event) => {
+    const controller = controllerForSender(event);
+    if (!controller.ownsWorkSender(event.sender.id)) throw new Error("Work state requires the trusted Work surface");
+    return controller.workState();
+  });
   ipcMain.handle(ipcChannels.command, async (event, raw) => {
     const controller = controllerForSender(event);
     const command = BrowserCommandSchema.parse(raw);
