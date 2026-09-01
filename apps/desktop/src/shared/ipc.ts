@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SETTINGS_PAGE_IDS } from "./settings.js";
 export { ipcChannels } from "./channels.js";
 
 export const BrowserCommandSchema = z.discriminatedUnion("type", [
@@ -52,6 +53,11 @@ export const BrowserCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("answer-site-permission"), requestId: z.string().min(1), decision: z.enum(["allow-once", "always", "deny"]) }),
   z.object({ type: z.literal("reset-site-permission"), origin: z.string().min(1), permission: z.string().min(1) }),
   z.object({ type: z.literal("set-appearance"), appearance: z.enum(["system", "light", "dark"]) }),
+  z.object({
+    type: z.literal("set-accent-color"),
+    preset: z.enum(["lime", "green", "blue", "purple", "orange", "pink", "neutral", "custom"]),
+    customHex: z.string().regex(/^[0-9A-Fa-f]{6}$/),
+  }).strict(),
   z.object({ type: z.literal("set-search-engine"), searchEngine: z.enum(["duckduckgo", "brave", "google", "bing"]) }),
   z.object({ type: z.literal("set-sleep-after"), minutes: z.union([z.literal(0), z.literal(15), z.literal(30), z.literal(60)]) }),
   z.object({ type: z.literal("set-local-models-enabled"), enabled: z.boolean() }),
@@ -188,7 +194,11 @@ export const BrowserCommandSchema = z.discriminatedUnion("type", [
       z.object({ type: z.literal("open-research"), boardId: z.string().min(1).max(255) }),
       z.object({ type: z.literal("open-bundle"), bundleId: z.string().min(1).max(255) }),
       z.object({ type: z.literal("open-settings") }),
-      z.object({ type: z.literal("open-settings-section"), section: z.string().min(1).max(80) }),
+      z.object({
+        type: z.literal("open-settings-section"),
+        section: z.enum(SETTINGS_PAGE_IDS),
+        anchor: z.string().regex(/^settings-[a-z0-9-]+$/).max(120).optional(),
+      }).strict(),
       z.object({ type: z.literal("set-sidebar-section"), section: z.enum(["tabs", "bookmarks", "history", "downloads", "spaces", "conversations"]) }),
       z.object({ type: z.literal("toggle-work") }),
       z.object({ type: z.literal("toggle-split") }),

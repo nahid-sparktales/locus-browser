@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bookmark, Bot, Check, ChevronDown,
-  CircleAlert, Clock3, Cloud, CloudOff, Copy, Database, Download, ExternalLink, EyeOff, FileDown, FolderPlus, Globe2, History,
-  KeyRound, Laptop, Layers3, LayoutList, LockKeyhole, LogIn, LogOut, Minus, Monitor, Moon, MoreHorizontal, PanelLeft,
-  BookOpenText, Columns2, Command as CommandIcon, LibraryBig, Mic, Pause, Play, Plus, Printer, Puzzle, RefreshCw, Search, Settings, ShieldCheck,
+  CircleAlert, Clock3, Copy, Database, Download, ExternalLink, EyeOff, FileDown, Globe2, History,
+  KeyRound, Laptop, Layers3, LayoutList, LockKeyhole, Minus, Monitor, Moon, MoreHorizontal, PanelLeft,
+  BookOpenText, Columns2, Command as CommandIcon, LibraryBig, Mic, Pause, Play, Plus, Printer, RefreshCw, Search, Settings, ShieldCheck,
   Sparkles, Square, Sun, Trash2, UserRound, UsersRound, Video, Volume2, VolumeX, X,
 } from "lucide-react";
 import type { BrowserCommand } from "../shared/ipc.js";
+import type { SettingsPageId } from "../shared/settings.js";
 import type { Appearance, BrowserTabState, PaletteResultState, ResearchBoardState, SearchEngine, SemanticRecallResultState, ShellState as BrowserAppState, SidebarSection, TabStewardPreviewState } from "../shared/types.js";
+import { accentCssVariables } from "../shared/accent.js";
 import { useShellState } from "./useSurfaceState.js";
-import { ModelSettings } from "./ModelSettings.js";
+import { SettingsSurface } from "./SettingsSurface.js";
+import { resolveSessionSettingsPage } from "./settingsCatalog.js";
 
 const searchProviders: Array<{ id: SearchEngine; name: string; detail: string; mark: string }> = [
   { id: "duckduckgo", name: "DuckDuckGo", detail: "Privacy-focused", mark: "D" },
@@ -26,8 +29,13 @@ export function Shell() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [passwordMenuOpen, setPasswordMenuOpen] = useState(false);
   const [recordOpen, setRecordOpen] = useState(false);
+  const [settingsPage, setSettingsPage] = useState<SettingsPageId>("general");
   const addressRef = useRef<HTMLInputElement>(null);
   const active = state?.tabs.find((tab) => tab.id === state.activeTabId);
+
+  useEffect(() => {
+    if (state?.internalSurface?.type === "settings") setSettingsPage((current) => resolveSessionSettingsPage(current, state.internalSurface?.type === "settings" ? state.internalSurface.page : undefined));
+  }, [state?.internalSurface]);
 
   useEffect(() => {
     if (!addressFocused) setAddress(state?.internalSurface?.type === "settings" ? "locus://settings" : state?.internalSurface?.type === "research" ? `locus://research/${state.internalSurface.boardId || "new"}` : state?.internalSurface?.type === "tab-steward" ? "locus://tabs/steward" : active?.url === "about:blank" ? "" : active?.url ?? "");
@@ -105,7 +113,10 @@ export function Shell() {
   };
 
   return (
-    <div className={`browser-shell theme-${state.settings.appearance} ${state.privateWindow ? "private-window" : ""}`}>
+    <div
+      className={`browser-shell theme-${state.settings.appearance} ${state.privateWindow ? "private-window" : ""}`}
+      style={accentCssVariables(state.settings.accent) as React.CSSProperties}
+    >
       <header className={`browser-chrome ${state.find.open ? "find-open" : ""} ${state.pendingSitePermission ? "permission-open" : ""}`} style={{ height: chromeHeight }}>
         <div className="tab-row">
           <div className="traffic-light-space" aria-hidden="true" />
@@ -233,7 +244,7 @@ export function Shell() {
 
       {document.documentElement.dataset.locusPreview === "true" && !state.internalSurface && !state.paletteOpen
         ? <PreviewPageCanvas state={state} top={chromeHeight} /> : null}
-      {state.internalSurface?.type === "settings" ? <SettingsSurface state={state} top={chromeHeight} /> : null}
+      {state.internalSurface?.type === "settings" ? <SettingsSurface state={state} top={chromeHeight} page={settingsPage} onPageChange={setSettingsPage} {...(state.internalSurface.anchor ? { requestedAnchor: state.internalSurface.anchor } : {})} /> : null}
       {state.internalSurface?.type === "research" ? <ResearchSurface state={state} top={chromeHeight} {...(state.internalSurface.boardId ? { boardId: state.internalSurface.boardId } : {})} /> : null}
       {state.internalSurface?.type === "tab-steward" ? <TabStewardSurface state={state} top={chromeHeight} /> : null}
       {state.paletteOpen ? <CommandPalette state={state} top={chromeHeight} /> : null}
@@ -341,7 +352,7 @@ function OnboardingSurface({ state }: { state: BrowserAppState }) {
     void command({ type: "complete-onboarding", searchEngine, appearance, sleepAfterMinutes });
   };
   return (
-    <main className={`onboarding-shell theme-${appearance}`}>
+    <main className={`onboarding-shell theme-${appearance}`} style={accentCssVariables(state.settings.accent) as React.CSSProperties}>
       <form className="onboarding-card" onSubmit={submit}>
         <header className="onboarding-heading">
           <span className="onboarding-mark" aria-hidden="true">L</span>
@@ -840,203 +851,6 @@ function TabStewardSurface({ state, top }: { state: BrowserAppState; top: number
   </main>;
 }
 
-function SettingsSurface({ state, top }: { state: BrowserAppState; top: number }) {
-  const openSection = (id: string) => document.getElementById(id)?.scrollIntoView({ block: "start" });
-  return (
-    <main className="settings-surface" style={{ top, right: state.workOpen && !state.workOverlay ? state.workWidth : 0 }} aria-label="Locus Browser settings">
-      <header className="settings-page-heading">
-        <span className="settings-page-mark"><Settings size={19} /></span>
-        <span><h1>Settings</h1><p>Personalize Locus Browser and control what runs on this Mac.</p></span>
-        <button type="button" title="Close settings" onClick={() => void command({ type: "close-settings" })}><X size={16} /></button>
-      </header>
-      <div className="settings-page-layout">
-        <nav className="settings-page-nav" aria-label="Settings sections">
-          <button type="button" onClick={() => openSection("settings-general")}><Settings size={15} /><span>General</span></button>
-          <button type="button" onClick={() => openSection("settings-models")}><Bot size={15} /><span>AI models</span></button>
-          <button type="button" onClick={() => openSection("settings-speech")}><Mic size={15} /><span>Speech</span></button>
-          <button type="button" onClick={() => openSection("settings-extensions")}><Puzzle size={15} /><span>Extensions</span></button>
-          <button type="button" onClick={() => openSection("settings-profiles")}><UserRound size={15} /><span>Profiles</span></button>
-          <button type="button" onClick={() => openSection("settings-privacy")}><ShieldCheck size={15} /><span>Privacy</span></button>
-          {!state.privateWindow ? <button type="button" onClick={() => openSection("settings-integrations")}><Database size={15} /><span>Integrations</span></button> : null}
-          {!state.privateWindow ? <button type="button" onClick={() => openSection("settings-sync")}><Cloud size={15} /><span>Sync</span></button> : null}
-        </nav>
-        <div className="settings-page-scroll">
-          <section className="settings-page-section" id="settings-general">
-            <SettingsSectionHeading title="General" detail="Browser appearance, search, downloads, and background tabs." />
-            <div className="settings-card settings-general-grid">
-              <SettingRow label="Appearance" detail="Uses the Locus palette">
-                <select value={state.settings.appearance} onChange={(event) => void command({ type: "set-appearance", appearance: event.target.value as BrowserAppState["settings"]["appearance"] })}>
-                  <option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option>
-                </select>
-              </SettingRow>
-              <SettingRow label="Search engine" detail="Used for omnibox searches">
-                <select value={state.settings.searchEngine} onChange={(event) => void command({ type: "set-search-engine", searchEngine: event.target.value as BrowserAppState["settings"]["searchEngine"] })}>
-                  <option value="duckduckgo">DuckDuckGo</option><option value="brave">Brave</option><option value="google">Google</option><option value="bing">Bing</option>
-                </select>
-              </SettingRow>
-              <SettingRow label="Sleep background tabs" detail="Never sleeps audio, downloads, or shared tabs">
-                <select value={state.settings.sleepAfterMinutes} onChange={(event) => void command({ type: "set-sleep-after", minutes: Number(event.target.value) as 0 | 15 | 30 | 60 })}>
-                  <option value={0}>Never</option><option value={15}>After 15 minutes</option><option value={30}>After 30 minutes</option><option value={60}>After 1 hour</option>
-                </select>
-              </SettingRow>
-              <SettingRow label="Downloads" detail={state.settings.downloadDirectory}>
-                <button type="button" onClick={() => void command({ type: "choose-download-directory" })}>Choose folder…</button>
-              </SettingRow>
-            </div>
-          </section>
-
-          <ModelSettings state={state} />
-
-          <section className="settings-page-section settings-component-section" id="settings-speech">
-            <SettingsSectionHeading title="Speech" detail="Choose how live browser audio is transcribed." />
-            <div className="settings-card"><SpeechSettings state={state} /></div>
-          </section>
-
-          <section className="settings-page-section settings-component-section" id="settings-extensions">
-            <SettingsSectionHeading title="Extensions" detail="Manage verified gallery extensions and Developer Mode." />
-            <div className="settings-card"><ExtensionSettings state={state} /></div>
-          </section>
-
-          <section className="settings-page-section" id="settings-profiles">
-            <SettingsSectionHeading title="Profiles" detail="Keep cookies, browsing data, and extensions separate." />
-            <div className="settings-card settings-list-card">
-              {state.profiles.map((profile) => (
-                <div className="permission-setting" key={profile.id}>
-                  <span><strong>{profile.name}</strong><small>{profile.id === state.profileId ? "Current profile" : "Separate cookies and browsing data"}</small></span>
-                  {profile.id !== "default" && profile.id !== state.profileId
-                    ? <button title={`Delete ${profile.name}`} onClick={() => deleteProfile(profile.id, profile.name)}><X size={11} /></button>
-                    : null}
-                </div>
-              ))}
-            </div>
-          </section>
-
-          <section className="settings-page-section" id="settings-privacy">
-            <SettingsSectionHeading title="Privacy and security" detail="Passwords stay OS-encrypted and are never available to agents." />
-            <div className="settings-card settings-list-card">
-              <div className="settings-subheading">Private Semantic Recall</div>
-              <button type="button" role="switch" aria-checked={state.settings.semanticRecallEnabled} className="local-model-toggle" disabled={state.privateWindow} onClick={() => void command({ type: "set-semantic-recall-enabled", enabled: !state.settings.semanticRecallEnabled })}>
-                <span><strong>Recall pages on this Mac</strong><small>Opt-in. Eligible pages visited from now on are encrypted locally; private pages, fields, local files, and internal pages are excluded.</small></span>
-                <span className={`settings-switch ${state.settings.semanticRecallEnabled ? "on" : ""}`} aria-hidden="true"><span /></span>
-              </button>
-              <div className="recall-settings-status"><span><strong>{state.semanticRecall.documentCount} indexed pages</strong><small>{formatBytes(state.semanticRecall.storageBytes)} of {formatBytes(state.semanticRecall.capBytes)} · {state.semanticRecall.message}</small></span><button type="button" onClick={() => addRecallExclusion()}>Exclude site…</button><button type="button" className="danger" disabled={!state.semanticRecall.documentCount} onClick={() => clearRecallData()}>Clear Recall Data</button></div>
-              {state.semanticRecall.excludedOrigins.length ? <div className="recall-exclusions">{state.semanticRecall.excludedOrigins.map((origin) => <span key={origin}>{origin}<button title={`Allow recall on ${origin}`} onClick={() => void command({ type: "remove-recall-exclusion", origin })}><X size={10} /></button></span>)}</div> : null}
-              <div className="settings-subheading">Passwords</div>
-              {!state.passwordManagerAvailable && <p className="settings-empty">OS-backed password encryption is unavailable on this Mac.</p>}
-              {state.savedCredentials.length ? state.savedCredentials.map((credential) => (
-                <div className="permission-setting credential-setting" key={credential.id}>
-                  <span><strong>{credential.username || "No username"}</strong><small>{safeHostname(credential.origin)} · Updated {formatTime(credential.updatedAt)}</small></span>
-                  <button title={`Delete saved login for ${safeHostname(credential.origin)}`} onClick={() => deleteCredential(credential.id, credential.origin)}><X size={11} /></button>
-                </div>
-              )) : state.passwordManagerAvailable ? <p className="settings-empty">Saved logins will appear here. Passwords are never shown in browser chrome or Work Mode.</p> : null}
-              <div className="settings-subheading">Site permissions</div>
-              {state.sitePermissions.length ? state.sitePermissions.map((permission) => (
-                <div className="permission-setting" key={`${permission.origin}:${permission.permission}`}>
-                  <span><strong>{safeHostname(permission.origin)}</strong><small>{permission.permission} · {permission.decision}</small></span>
-                  <button title="Ask again" onClick={() => void command({ type: "reset-site-permission", origin: permission.origin, permission: permission.permission })}><X size={11} /></button>
-                </div>
-              )) : <p className="settings-empty">Sites you allow or block will appear here.</p>}
-            </div>
-          </section>
-
-          {!state.privateWindow ? (
-            <section className="settings-page-section settings-component-section" id="settings-integrations">
-              <SettingsSectionHeading title="Integrations" detail="Optional services that receive only content you explicitly confirm." />
-              <div className="settings-card"><WalrusMemorySettings state={state} /></div>
-            </section>
-          ) : null}
-
-          {!state.privateWindow ? (
-            <section className="settings-page-section settings-component-section" id="settings-sync">
-              <SettingsSectionHeading title="Locus encrypted sync" detail="Optional end-to-end encrypted sync for browser data." />
-              <div className="settings-card"><SyncSettings state={state} /></div>
-            </section>
-          ) : null}
-        </div>
-      </div>
-    </main>
-  );
-}
-
-function WalrusMemorySettings({ state }: { state: BrowserAppState }) {
-  const walrus = state.walrusMemory;
-  const [accountId, setAccountId] = useState(walrus.accountId ?? "");
-  const [namespace, setNamespace] = useState(walrus.namespace);
-  const [relayerUrl, setRelayerUrl] = useState(walrus.relayerUrl);
-  const [network, setNetwork] = useState<"mainnet" | "testnet">(walrus.network ?? "testnet");
-  const [packageId, setPackageId] = useState(walrus.packageId ?? "");
-  const [registryId, setRegistryId] = useState(walrus.registryId ?? "");
-  const [embeddingApiBase, setEmbeddingApiBase] = useState(walrus.embeddingApiBase ?? "https://api.openai.com/v1");
-  const [embeddingModel, setEmbeddingModel] = useState(walrus.embeddingModel ?? "text-embedding-3-small");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const usable = walrus.usable;
-  const connect = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setBusy(true); setError("");
-    try {
-      await command({
-        type: "connect-walrus-memory",
-        accountId,
-        namespace,
-        ...(walrus.developmentRelayerAllowed ? { relayerUrl } : {}),
-      });
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Walrus Memory could not connect");
-    } finally { setBusy(false); }
-  };
-  const run = async (value: BrowserCommand) => {
-    setBusy(true); setError("");
-    try { await command(value); }
-    catch (caught) { setError(caught instanceof Error ? caught.message : "Walrus Memory request failed"); }
-    finally { setBusy(false); }
-  };
-  const configureManual = async (event: React.FormEvent) => {
-    event.preventDefault();
-    await run({ type: "configure-walrus-client-encrypted", network, packageId, registryId, embeddingApiBase, embeddingModel });
-  };
-  return <div className="walrus-settings">
-    <header className="walrus-heading"><span><Database size={18} /></span><div><strong>Walrus Memory <i>Experimental</i></strong><small>Portable memory for selected pages and cited research summaries.</small></div><em className={walrus.status}>{walrus.status.replace("-", " ")}</em></header>
-    <div className="walrus-disclosure" role="note">
-      <ShieldCheck size={16} />
-      <p><strong>{walrus.mode === "client-encrypted" ? "Client-encrypted mode" : "Hosted mode trust boundary"}</strong>{walrus.mode === "client-encrypted" ? "Locus embeds and SEAL-encrypts in its private process. The selected embedding provider receives plaintext; the Walrus relayer receives ciphertext and vectors." : "The managed Walrus relayer processes plaintext to create embeddings and encrypt content. Locus sends nothing automatically; every write opens a preview and requires confirmation."}</p>
-    </div>
-    {usable ? <div className="walrus-connected">
-      <div className="walrus-connection-detail"><span><small>Account</small><strong>{walrus.accountId}</strong></span><span><small>Namespace</small><strong>{walrus.namespace}</strong></span><span><small>Relayer</small><strong>{safeHostname(walrus.relayerUrl)}</strong></span></div>
-      <div className="walrus-mode-picker" role="group" aria-label="Walrus Memory encryption mode">
-        <button type="button" className={walrus.mode === "client-encrypted" ? "active" : ""} disabled={busy || !walrus.manualConfigured} onClick={() => void run({ type: "set-walrus-memory-mode", mode: "client-encrypted" })}>Client-encrypted <small>Recommended</small></button>
-        <button type="button" className={walrus.mode === "hosted" ? "active" : ""} disabled={busy} onClick={() => void run({ type: "set-walrus-memory-mode", mode: "hosted" })}>Hosted <small>Advanced convenience</small></button>
-      </div>
-      <p className={`walrus-message ${walrus.status}`} role="status">{walrus.message}</p>
-      <div className="walrus-actions">
-        <button type="button" disabled={busy || walrus.status === "checking" || walrus.status === "saving" || walrus.status === "restoring"} onClick={() => void run({ type: "restore-walrus-memory" })}><RefreshCw size={12} />Restore index</button>
-        <button type="button" onClick={() => void run({ type: "manage-walrus-delegates" })}><ExternalLink size={12} />Manage delegates</button>
-        <button type="button" className="danger" disabled={busy} onClick={() => void run({ type: "disconnect-walrus-memory" })}>Disconnect</button>
-      </div>
-      <small className="walrus-receipts">{walrus.receiptCount} content-free local {walrus.receiptCount === 1 ? "receipt" : "receipts"}. Disconnecting does not delete remote memories.</small>
-      <form className="walrus-manual-config" onSubmit={configureManual}>
-        <header><strong>{walrus.manualConfigured ? "Update client-encrypted mode" : "Set up client-encrypted mode"}</strong><small>Uses a dedicated Sui signer and a separately configured embedding credential. Neither is shared with Work providers.</small></header>
-        <div><label><span>Network</span><select value={network} onChange={(event) => setNetwork(event.target.value as typeof network)}><option value="testnet">Testnet</option><option value="mainnet">Mainnet</option></select></label><label><span>Embedding model</span><input aria-label="Embedding model" value={embeddingModel} onChange={(event) => setEmbeddingModel(event.target.value)} autoComplete="off" spellCheck={false} /></label></div>
-        <label><span>Memory package ID</span><input value={packageId} onChange={(event) => setPackageId(event.target.value)} placeholder="0x…" autoComplete="off" spellCheck={false} /></label>
-        <label><span>Account registry ID</span><input value={registryId} onChange={(event) => setRegistryId(event.target.value)} placeholder="0x…" autoComplete="off" spellCheck={false} /></label>
-        <label><span>OpenAI-compatible embedding endpoint</span><input aria-label="OpenAI-compatible embedding endpoint" type="url" value={embeddingApiBase} onChange={(event) => setEmbeddingApiBase(event.target.value)} autoComplete="off" spellCheck={false} /></label>
-        <button type="submit" disabled={busy || !packageId.trim() || !registryId.trim() || !embeddingModel.trim()}>{busy ? "Validating…" : walrus.manualConfigured ? "Revalidate and update…" : "Set up secure mode…"}</button>
-        {walrus.signerAddress ? <small>Dedicated signer: <code>{walrus.signerAddress}</code></small> : null}
-      </form>
-    </div> : <form className="walrus-connect" onSubmit={connect}>
-      <label><span>Walrus account ID</span><input value={accountId} onChange={(event) => setAccountId(event.target.value)} placeholder="0x…" autoComplete="off" spellCheck={false} /></label>
-      <label><span>Namespace</span><input value={namespace} onChange={(event) => setNamespace(event.target.value)} placeholder="locus-browser-v1" autoComplete="off" spellCheck={false} /></label>
-      {walrus.developmentRelayerAllowed ? <label><span>Development relayer</span><input value={relayerUrl} onChange={(event) => setRelayerUrl(event.target.value)} placeholder="https://relayer.memory.walrus.xyz" autoComplete="off" spellCheck={false} /></label> : <p className="walrus-production-pin"><LockKeyhole size={12} />Production builds are pinned to {walrus.relayerUrl}</p>}
-      <p>The delegate key is collected next in a hidden macOS prompt. Use a revocable delegate key, never an owner wallet key.</p>
-      <button className="primary" disabled={busy || !accountId.trim() || !namespace.trim()}>{busy ? "Checking…" : "Connect Walrus Memory…"}</button>
-      <button type="button" onClick={() => void run({ type: "manage-walrus-delegates" })}><ExternalLink size={12} />Create or manage delegates</button>
-      {walrus.accountId ? <button type="button" className="danger" disabled={busy} onClick={() => void run({ type: "disconnect-walrus-memory" })}>Remove local connection</button> : null}
-      <p className={`walrus-message ${walrus.status}`} role="status">{error || walrus.message}</p>
-    </form>}
-    {error && usable ? <p className="recording-error" role="alert">{error}</p> : null}
-  </div>;
-}
-
 function WalrusMemoryPreview({ state }: { state: BrowserAppState }) {
   const draft = state.walrusMemory.draft!;
   const [note, setNote] = useState(draft.note);
@@ -1099,292 +913,6 @@ function ResearchBundlePreview({ state }: { state: BrowserAppState }) {
   </div>;
 }
 
-function SettingsSectionHeading({ title, detail }: { title: string; detail: string }) {
-  return <header className="settings-section-heading"><h2>{title}</h2><p>{detail}</p></header>;
-}
-
-function SpeechSettings({ state }: { state: BrowserAppState }) {
-  const speech = state.settings.speech;
-  const [engine, setEngine] = useState(speech.engine);
-  const [baseUrl, setBaseUrl] = useState(speech.customBaseUrl ?? "https://");
-  const [model, setModel] = useState(speech.customModel ?? "whisper-1");
-  const [error, setError] = useState("");
-  const save = async (engine: BrowserAppState["settings"]["speech"]["engine"] = speech.engine) => {
-    setError("");
-    try {
-      await command({
-        type: "configure-speech", engine, language: speech.language,
-        ...(engine === "custom" ? { baseUrl, model } : {}),
-      });
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Speech settings could not be saved");
-    }
-  };
-  return (
-    <section className="speech-settings" aria-labelledby="speech-settings-title">
-      <div className="settings-subheading" id="speech-settings-title">Speech</div>
-      <div className="speech-card">
-        <label><span><strong>Transcription</strong><small>Used only during a visible live recording</small></span><select value={engine} onChange={(event) => { const next = event.target.value as typeof speech.engine; setEngine(next); if (next !== "custom") void save(next); }}><option value="local">On-device</option><option value="openai">OpenAI API</option><option value="custom">Custom endpoint</option></select></label>
-        {engine === "local" ? (
-          <div className="speech-runtime-row"><span><strong>{speech.localModelStatus === "ready" ? "Ready on this Mac" : "Model download required"}</strong><small>{speech.message || "A checksummed multilingual Whisper model is stored locally."}</small></span>{speech.localModelStatus !== "ready" ? <button type="button" disabled={speech.localModelStatus === "downloading"} onClick={() => void command({ type: "download-speech-model" })}>{speech.localModelStatus === "downloading" ? `${Math.round((speech.localModelProgress ?? 0) * 100)}%` : "Download"}</button> : <Check size={13} />}</div>
-        ) : engine === "openai" ? (
-          <p>Uses the encrypted OpenAI API credential from the model picker and <code>gpt-4o-mini-transcribe</code>. Short audio chunks leave this Mac; raw audio is never stored.</p>
-        ) : (
-          <form onSubmit={(event) => { event.preventDefault(); void save("custom"); }}>
-            <label><span>HTTPS or loopback URL</span><input type="url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://speech.example.com/v1" /></label>
-            <label><span>Model</span><input value={model} onChange={(event) => setModel(event.target.value)} /></label>
-            <p>The API key, if needed, is entered in a macOS masked prompt after you choose Save.</p>
-            <button type="submit">Save & enter key…</button>
-          </form>
-        )}
-        {error ? <p className="recording-error" role="alert">{error}</p> : null}
-      </div>
-    </section>
-  );
-}
-
-function ExtensionSettings({ state }: { state: BrowserAppState }) {
-  const [busy, setBusy] = useState<string>();
-  const [error, setError] = useState<string>();
-  const run = async (key: string, value: BrowserCommand) => {
-    setBusy(key);
-    setError(undefined);
-    try {
-      await command(value);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Extension request failed");
-    } finally {
-      setBusy(undefined);
-    }
-  };
-  const manager = state.extensions;
-  const gallery = manager.gallery ?? {
-    status: "disabled" as const,
-    message: "The curated extension gallery is unavailable.",
-    entries: [],
-  };
-  return (
-    <section className="extension-settings" aria-labelledby="extension-settings-title">
-      <div className="settings-subheading" id="extension-settings-title">Extensions</div>
-      {state.privateWindow ? (
-        <div className="extension-private-note"><EyeOff size={14} /><span><strong>Off in Private Windows</strong><small>Extensions cannot inspect or change private pages.</small></span></div>
-      ) : (
-        <>
-          <div className="extension-gallery-heading">
-            <span><span className="extension-icon verified"><ShieldCheck size={15} /></span><span><strong>Curated gallery</strong><small>Every download is independently verified before installation.</small></span></span>
-            <button
-              type="button"
-              disabled={Boolean(busy) || gallery.status === "loading"}
-              onClick={() => void run("refresh-gallery", { type: "refresh-extension-gallery" })}
-            ><RefreshCw size={11} />Refresh</button>
-          </div>
-          <p className={`extension-gallery-status ${gallery.status === "error" ? "error" : ""}`} role={gallery.status === "error" ? "alert" : undefined}>{gallery.message}</p>
-          {gallery.entries.length ? (
-            <div className="extension-gallery-list">
-              {gallery.entries.map((extension) => (
-                <article className="extension-gallery-item" key={extension.id}>
-                  <header><span><strong>{extension.name}</strong><small>{extension.version} · {formatBytes(extension.packageSize)}</small></span><button
-                    type="button"
-                    disabled={Boolean(busy) || gallery.status !== "ready" || extension.action === "installed"}
-                    onClick={() => void run(`gallery-${extension.id}`, { type: "install-gallery-extension", extensionId: extension.id })}
-                  >{extension.action === "update" ? `Update from ${extension.installedVersion}` : extension.action === "installed" ? "Installed" : "Install"}</button></header>
-                  {extension.description ? <p>{extension.description}</p> : null}
-                  <div className="extension-verification"><ShieldCheck size={11} /><span>Publisher {extension.verifiedPublisher}</span></div>
-                  <div className="extension-access"><span>APIs · {extension.permissions.length || "None"}</span><span>Sites · {extension.hostPermissions.length || "None"}</span></div>
-                </article>
-              ))}
-            </div>
-          ) : null}
-          <div className="extension-gallery-card">
-            <span className="extension-icon"><FolderPlus size={15} /></span>
-            <span><strong>Signed package file</strong><small>Install a trusted `.locusx` file you already downloaded.</small></span>
-            <button
-              type="button"
-              disabled={Boolean(busy) || manager.loading || manager.trustedGalleryKeyCount === 0}
-              onClick={() => void run("install-signed", { type: "install-signed-extension" })}
-            >Install…</button>
-          </div>
-          <div className="extension-developer-card">
-            <span className="extension-icon"><Puzzle size={15} /></span>
-            <span><strong>Developer Mode</strong><small>Load reviewed, unpacked MV3 extensions for this profile only.</small></span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={manager.developerMode}
-              aria-label="Extension Developer Mode"
-              className={`settings-switch ${manager.developerMode ? "on" : ""}`}
-              disabled={Boolean(busy) || manager.loading}
-              onClick={() => void run("developer-mode", { type: "set-extension-developer-mode", enabled: !manager.developerMode })}
-            ><span /></button>
-          </div>
-          <p className="extension-contract">{manager.message} {manager.trustedGalleryKeyCount} trusted gallery key · {manager.supportedApiCount} current engine-backed permission groups. Unsupported capabilities and remote executable code are rejected.</p>
-          {error ? <p className="extension-error" role="alert"><CircleAlert size={12} />{error}</p> : null}
-          <button
-            className="extension-load-button"
-            type="button"
-            disabled={!manager.developerMode || Boolean(busy) || manager.loading}
-            onClick={() => void run("install", { type: "install-unpacked-extension" })}
-          ><FolderPlus size={13} />Load unpacked extension…</button>
-          {manager.installs.length ? (
-            <div className="extension-list">
-              {manager.installs.map((extension) => {
-                const attention = Boolean(extension.error);
-                const needsGalleryInstall = extension.source === "gallery" && !extension.installPath;
-                const status = needsGalleryInstall ? "Not on this Mac" : attention ? "Needs attention" : extension.loaded ? "Loaded" : extension.source === "developer" && extension.enabled && !manager.developerMode ? "Developer Mode off" : extension.enabled ? "Waiting" : "Disabled";
-                const disableToggle = Boolean(busy) || manager.loading || needsGalleryInstall || (extension.source === "developer" && !manager.developerMode);
-                const nextEnabled = attention ? true : !extension.enabled;
-                return (
-                  <article className={`extension-card ${attention ? "attention" : ""}`} key={extension.id}>
-                    <header><span className="extension-icon"><Puzzle size={14} /></span><span><strong>{extension.name}</strong><small>{extension.version} · {extension.source === "developer" ? "Unpacked" : "Gallery"}</small></span><i className={extension.loaded ? "loaded" : attention ? "attention" : ""}>{status}</i></header>
-                    {extension.description ? <p>{extension.description}</p> : null}
-                    {extension.source === "developer" && extension.installPath ? <small className="extension-path" title={extension.installPath}>{extension.installPath}</small> : null}
-                    {extension.source === "gallery" && extension.galleryKeyName ? <div className="extension-verification"><ShieldCheck size={11} /><span>{extension.galleryKeyName}{extension.verifiedPublisher ? ` · Publisher ${extension.verifiedPublisher}` : ""}</span></div> : null}
-                    <div className="extension-access"><span>APIs · {extension.permissions.length || "None"}</span><span>Sites · {extension.hostPermissions.length || "None"}</span></div>
-                    {attention ? <p className="extension-card-error"><CircleAlert size={11} />{extension.error}</p> : null}
-                    <footer>
-                      {extension.rollbackVersion ? <button type="button" disabled={Boolean(busy) || manager.loading} onClick={() => void run(`rollback-${extension.id}`, { type: "rollback-extension", extensionId: extension.id })}>Roll back to {extension.rollbackVersion}</button> : null}
-                      <button type="button" disabled={disableToggle} onClick={() => void run(extension.id, { type: "set-extension-enabled", extensionId: extension.id, enabled: nextEnabled })}>{needsGalleryInstall ? "Gallery required" : attention ? "Review & enable" : extension.enabled ? "Disable" : "Enable"}</button>
-                      <button type="button" className="danger" disabled={Boolean(busy)} onClick={() => void run(`remove-${extension.id}`, { type: "remove-extension", extensionId: extension.id })}>Remove</button>
-                    </footer>
-                  </article>
-                );
-              })}
-            </div>
-          ) : <p className="settings-empty">No extensions installed in this profile.</p>}
-        </>
-      )}
-    </section>
-  );
-}
-
-function SyncSettings({ state }: { state: BrowserAppState }) {
-  const [serviceUrl, setServiceUrl] = useState(state.sync.serviceUrl ?? state.configuredSyncServiceUrl ?? "");
-  const [recoveryKey, setRecoveryKey] = useState("");
-  const [connectionMethod, setConnectionMethod] = useState<"create" | "recover" | "device">("create");
-  const [pairingCode, setPairingCode] = useState("");
-  const [formError, setFormError] = useState<string>();
-  const busy = state.sync.status === "connecting" || state.sync.status === "syncing";
-  const serviceConfigured = Boolean(serviceUrl);
-  const connected = Boolean(state.sync.accountId);
-  const run = async (action: () => Promise<unknown>) => {
-    setFormError(undefined);
-    try { await action(); } catch (error) { setFormError(error instanceof Error ? error.message : "Sync request failed"); }
-  };
-  const register = (event: React.FormEvent) => {
-    event.preventDefault();
-    void run(() => command({ type: "begin-sync-registration", displayName: state.currentProfile.name, serviceUrl }));
-  };
-  const signIn = (event: React.FormEvent) => {
-    event.preventDefault();
-    void run(() => command({ type: "begin-sync-sign-in", recoveryKey, serviceUrl }));
-  };
-  const enroll = (event: React.FormEvent) => {
-    event.preventDefault();
-    void run(() => command({ type: "begin-sync-device-enrollment", serviceUrl }));
-  };
-  const approve = (event: React.FormEvent) => {
-    event.preventDefault();
-    void run(async () => {
-      await command({ type: "approve-sync-device", pairingCode });
-      setPairingCode("");
-    });
-  };
-  const pendingEnrollment = state.sync.pendingEnrollment;
-  return (
-    <section className="sync-settings" aria-labelledby="sync-settings-title">
-      <div className="settings-subheading" id="sync-settings-title">Locus encrypted sync</div>
-      {connected ? (
-        <div className="sync-card">
-          <div className="sync-card-heading">
-            <span className={`sync-status-icon ${state.sync.status}`}><Cloud size={15} /></span>
-            <span><strong>{state.sync.status === "syncing" ? "Syncing…" : state.sync.status === "error" ? "Sync needs attention" : "End-to-end encrypted"}</strong>
-              <small>{state.sync.lastSyncedAt ? `Last synced ${formatTime(state.sync.lastSyncedAt)}` : "Ready for its first sync"}</small></span>
-          </div>
-          {state.sync.lastError && <p className="sync-error" role="alert">{state.sync.lastError}</p>}
-          <p className="sync-privacy">Bookmarks, history, tab groups, open web tabs, selected settings, and gallery extension metadata. Never passwords, cookies, downloads, workspaces, or Locus sessions.</p>
-          <div className="sync-actions">
-            <button className="primary" disabled={busy} onClick={() => void command({ type: "sync-now" })}><Cloud size={12} /> Sync now{state.sync.pendingRecords ? ` · ${state.sync.pendingRecords}` : ""}</button>
-            <button disabled={busy} onClick={() => disconnectSync()}><LogOut size={12} /> Disconnect</button>
-          </div>
-          <div className="sync-section-heading"><span>Devices</span><small>{state.sync.devices.length}</small></div>
-          <div className="sync-device-list">
-            {state.sync.devices.map((device) => (
-              <div className="sync-device" key={device.deviceId}>
-                <span className="sync-device-icon"><Laptop size={12} /></span>
-                <span><strong>{device.name}</strong><small>{device.current ? "This Mac" : `Seen ${formatTime(device.lastSeenAt)}`} · Key v{device.keyVersion}</small></span>
-                {!device.current && <button title={`Revoke ${device.name}`} disabled={busy} onClick={() => void run(() => command({ type: "revoke-sync-device", deviceId: device.deviceId }))}><X size={11} /></button>}
-              </div>
-            ))}
-          </div>
-          <details className="sync-device-add">
-            <summary><Plus size={11} /> Approve another device</summary>
-            <form className="sync-form" onSubmit={approve}>
-              <label><span>Pairing code from the new device</span><textarea required rows={3} value={pairingCode} onChange={(event) => setPairingCode(event.target.value)} placeholder="LOCUS-DEVICE:…" autoComplete="off" spellCheck={false} /></label>
-              <button className="sync-connect primary" type="submit" disabled={busy}><ShieldCheck size={12} /> Review device</button>
-            </form>
-          </details>
-          <div className="sync-recovery-row">
-            <span><strong>Recovery key</strong><small>Version {state.sync.keyVersion ?? 1} · rotating updates every active device</small></span>
-            <button disabled={busy} onClick={() => void run(() => command({ type: "rotate-sync-recovery-key" }))}><RefreshCw size={11} /> Rotate</button>
-          </div>
-          <details className="sync-danger">
-            <summary>Cloud data controls</summary>
-            <p>Deleting cloud data keeps this Mac connected. Local data can upload again on a later sync.</p>
-            <div className="sync-actions">
-              <button disabled={busy} onClick={() => deleteSyncCloudData()}><CloudOff size={12} /> Delete cloud data</button>
-              <button className="danger" disabled={busy} onClick={() => deleteSyncAccount()}><X size={12} /> Delete account</button>
-            </div>
-          </details>
-        </div>
-      ) : (
-        <div className="sync-card">
-          <div className="sync-card-heading"><span className="sync-status-icon"><ShieldCheck size={15} /></span><span><strong>Optional and private</strong><small>A passkey protects your account. Locus cannot decrypt your browser data.</small></span></div>
-          {pendingEnrollment ? (
-            <div className="sync-pairing" aria-live="polite">
-              <span className="sync-pairing-mark"><Laptop size={15} /></span>
-              <strong>Approve this Mac from another device</strong>
-              <p>On an already connected device, open Settings → Locus encrypted sync → Approve another device, then paste this code.</p>
-              <code>{pendingEnrollment.pairingCode}</code>
-              {(formError || state.sync.lastError) && <p className="sync-error" role="alert">{formError ?? state.sync.lastError}</p>}
-              <div className="sync-actions">
-                <button className="primary" onClick={() => void command({ type: "copy-sync-pairing-code" })}><Copy size={11} /> Copy code</button>
-                <button onClick={() => void command({ type: "check-sync-device-enrollment" })}><RefreshCw size={11} /> Check again</button>
-                <button onClick={() => void command({ type: "cancel-sync-device-enrollment" })}>Cancel</button>
-              </div>
-              <small>Expires {formatTime(pendingEnrollment.expiresAt)}</small>
-            </div>
-          ) : (
-            <>
-              <div className="sync-methods" role="radiogroup" aria-label="Connect to Locus Sync">
-                {(["create", "recover", "device"] as const).map((method) => (
-                  <button key={method} role="radio" aria-checked={connectionMethod === method} className={connectionMethod === method ? "active" : ""} onKeyDown={navigateRadioGroup} onClick={() => { setConnectionMethod(method); setFormError(undefined); }}>
-                    {method === "create" ? "New" : method === "recover" ? "Recovery" : "Device"}
-                  </button>
-                ))}
-              </div>
-              <form className="sync-form" onSubmit={connectionMethod === "create" ? register : connectionMethod === "recover" ? signIn : enroll}>
-                <label><span>Sync service</span><input type="url" required readOnly={Boolean(state.configuredSyncServiceUrl)} value={serviceUrl} onChange={(event) => setServiceUrl(event.target.value)} placeholder="Not configured in this build" /></label>
-                {connectionMethod === "recover" && <label><span>Recovery key</span><textarea required rows={3} value={recoveryKey} onChange={(event) => setRecoveryKey(event.target.value)} placeholder="LOCUS-…" autoComplete="off" spellCheck={false} /></label>}
-                <p className="sync-method-detail">{connectionMethod === "create" ? "Create an account with a passkey and receive a one-time recovery key." : connectionMethod === "recover" ? "Use your passkey and recovery key on this Mac." : "Get a pairing code and approve this Mac from a connected device—no recovery key needed."}</p>
-                {!serviceConfigured && <p className="sync-error" role="status">Encrypted sync is disabled in this build.</p>}
-                {(formError || state.sync.lastError) && <p className="sync-error" role="alert">{formError ?? state.sync.lastError}</p>}
-                <button className="sync-connect primary" type="submit" disabled={busy || !serviceConfigured}>
-                  {connectionMethod === "create" ? <KeyRound size={13} /> : connectionMethod === "recover" ? <LogIn size={13} /> : <Laptop size={13} />}
-                  {busy ? "Waiting for passkey…" : connectionMethod === "create" ? "Create sync account" : connectionMethod === "recover" ? "Sign in with recovery key" : "Get pairing code"}
-                </button>
-              </form>
-            </>
-          )}
-        </div>
-      )}
-    </section>
-  );
-}
-
-function SettingRow({ label, detail, children }: { label: string; detail: string; children: React.ReactNode }) {
-  return <label className="setting-row"><span><strong>{label}</strong><small>{detail}</small></span>{children}</label>;
-}
-
 function SidebarList({ title, count, children }: { title: string; count: number; children: React.ReactNode }) {
   return <><div className="sidebar-heading"><span>{title}</span><span>{count}</span></div><div className="sidebar-list">{children}</div></>;
 }
@@ -1406,33 +934,10 @@ function deleteGroup(groupId: string, name: string): void {
   if (window.confirm(`Delete “${name}”? Its tabs will stay open.`)) void command({ type: "delete-tab-group", groupId });
 }
 
-function deleteProfile(profileId: string, name: string): void {
-  if (window.confirm(`Delete the “${name}” profile and its local browsing data? This cannot be undone.`)) {
-    void command({ type: "delete-profile", profileId });
-  }
-}
-
-function deleteCredential(credentialId: string, origin: string): void {
-  if (window.confirm(`Delete the saved login for ${safeHostname(origin)}? This cannot be undone.`)) {
-    void command({ type: "delete-credential", credentialId });
-  }
-}
-
 function deleteRecordingTranscript(recordingId: string): void {
   if (window.confirm("Delete this encrypted transcript from this Mac? This cannot be undone.")) {
     void command({ type: "delete-recording-transcript", recordingId });
   }
-}
-
-function addRecallExclusion(): void {
-  const value = window.prompt("Exclude a website from Private Recall", "https://");
-  if (!value?.trim()) return;
-  try { void command({ type: "add-recall-exclusion", origin: new URL(value.trim()).origin }); }
-  catch { window.alert("Enter a valid http or https website address."); }
-}
-
-function clearRecallData(): void {
-  if (window.confirm("Delete every encrypted Private Recall page from this profile? Bookmarks and normal history will stay.")) void command({ type: "clear-semantic-recall" });
 }
 
 function navigateRadioGroup(event: React.KeyboardEvent<HTMLButtonElement>): void {
@@ -1456,18 +961,6 @@ function safeHostname(origin: string): string {
 
 function shortDevice(deviceId: string): string {
   return `Device ${deviceId.slice(0, 6)}`;
-}
-
-function disconnectSync(): void {
-  if (window.confirm("Disconnect sync from this profile? Local browser data will stay on this Mac.")) void command({ type: "disconnect-sync" });
-}
-
-function deleteSyncCloudData(): void {
-  if (window.confirm("Delete all encrypted browser data stored in the cloud? It can upload again if this profile remains connected.")) void command({ type: "delete-sync-cloud-data" });
-}
-
-function deleteSyncAccount(): void {
-  if (window.confirm("Permanently delete this sync account, its devices, passkeys, and all encrypted cloud data? Local browser data will stay on this Mac.")) void command({ type: "delete-sync-account" });
 }
 
 function formatTime(timestamp: number): string {

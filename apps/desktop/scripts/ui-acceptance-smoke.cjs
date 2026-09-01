@@ -21,13 +21,28 @@ app.whenReady().then(async () => {
     if (!address || typeof address === "string") throw new Error("UI acceptance server did not bind");
     const origin = `http://127.0.0.1:${address.port}`;
     await inspectSurface(`${origin}/?surface=shell`, "shell", 1440, 940, 1, ".browser-shell");
-    await inspectSurface(`${origin}/?surface=shell&settings=1`, "shell-settings", 1440, 940, 1, ".settings-surface");
-    await inspectSurface(`${origin}/?surface=shell&settings=1&chatgpt=signed-in&providers=connected`, "settings-provider-accounts", 1440, 940, 1, ".provider-account-grid");
-    await inspectSurface(`${origin}/?surface=shell&settings=1&chatgpt=signed-in&providers=connected`, "settings-provider-accounts-200-percent", 1440, 940, 2, ".provider-account-grid");
-    await inspectSurface(`${origin}/?surface=shell&settings=1&walrus=connected`, "walrus-connected", 1440, 940, 1, ".walrus-disclosure");
-    await inspectSurface(`${origin}/?surface=shell&settings=1&walrus=connected&walrus-manual=1`, "walrus-client-encrypted", 1440, 940, 1, ".walrus-mode-picker .active");
-    await inspectSurface(`${origin}/?surface=shell&settings=1&walrus=failure`, "walrus-failure", 1440, 940, 1, ".walrus-message.error");
-    await inspectSurface(`${origin}/?surface=shell&settings=1&walrus=progress`, "walrus-progress", 1440, 940, 1, ".walrus-heading > em.saving");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsPage=general`, "shell-settings", 1440, 940, 1, ".settings-page-nav [aria-current='page']");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsPage=appearance&accent=purple`, "settings-purple-accent", 960, 700, 1, ".accent-option-grid > button.selected");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsPage=appearance&accent=FF5FA2`, "settings-custom-accent-200-percent", 1440, 940, 2, ".settings-compact-controls select");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsPage=models&chatgpt=signed-in&providers=connected`, "settings-provider-accounts", 1440, 940, 1, ".provider-account-featured");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsPage=models&chatgpt=signed-in&providers=connected`, "settings-provider-accounts-200-percent", 1440, 940, 2, ".settings-compact-controls .settings-search");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsSearch=password%20manager`, "settings-search-results", 960, 700, 1, ".settings-search-results");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsSearch=password%20manager`, "settings-search-navigation", 960, 700, 1, "#settings-passwords", ".settings-search-results button");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsPage=privacy&settingsAnchor=settings-passwords`, "settings-routed-anchor", 960, 700, 1, "#settings-passwords");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsSearch=definitely-not-a-setting`, "settings-search-empty", 720, 470, 1, ".settings-search-empty");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsPage=privacy&privacy=populated&recall=1`, "settings-privacy-populated", 960, 700, 1, ".privacy-settings-grid");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsPage=privacy&privacy=empty`, "settings-privacy-empty", 720, 470, 1, "#settings-passwords .settings-empty");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsPage=appearance&appearance=dark&accent=purple`, "settings-dark", 960, 700, 1, ".accent-option-grid > button.selected");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsPage=general&appearance=light`, "settings-increased-contrast", 960, 700, 1, ".settings-card", undefined, [{ name: "prefers-contrast", value: "more" }]);
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsPage=extensions&extensions=1`, "settings-extensions", 960, 700, 1, "#settings-extension-gallery");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsPage=sync&sync=1`, "settings-sync", 960, 700, 1, "#settings-encrypted-sync");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsPage=integrations&walrus=connected`, "walrus-connected", 1440, 940, 1, "#settings-walrus");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsPage=integrations&walrus=connected&walrus-manual=1`, "walrus-client-encrypted", 1440, 940, 1, ".walrus-mode-picker .active");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsPage=integrations&walrus=failure`, "walrus-failure", 1440, 940, 1, ".walrus-message.error");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsPage=integrations&walrus=progress`, "walrus-progress", 1440, 940, 1, ".walrus-heading > em.saving");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsPage=models&chatgpt=signed-in&providers=connected`, "settings-destructive-dialog", 960, 700, 1, ".settings-dialog", "[data-provider='chatgpt-plan'] .provider-account-actions .danger");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsPage=models&settingsDialog=provider-removal`, "settings-dialog-fixture", 960, 700, 1, ".settings-dialog");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&settingsPage=sync&private=1`, "settings-private", 720, 470, 1, ".settings-private-unavailable");
     await inspectSurface(`${origin}/?surface=shell&walrus=connected&walrus-preview=1`, "walrus-preview", 1180, 840, 1, ".walrus-preview");
     await inspectSurface(`${origin}/?surface=shell&research=1&walrus=connected&walrus-manual=1&walrus-bundle=1`, "walrus-research-bundle", 1280, 900, 1, ".research-bundle-preview");
     await inspectSurface(`${origin}/?surface=shell&research=1&walrus=connected&walrus-manual=1&walrus-bundle=1`, "walrus-research-bundle-200-percent", 1440, 940, 2, ".research-bundle-preview");
@@ -58,7 +73,7 @@ app.whenReady().then(async () => {
   }
 });
 
-async function inspectSurface(url, surface, width, height, zoom, expectedSelector, triggerSelector) {
+async function inspectSurface(url, surface, width, height, zoom, expectedSelector, triggerSelector, mediaFeatures = []) {
   const consoleErrors = [];
   const window = new BrowserWindow({
     show: false,
@@ -74,13 +89,37 @@ async function inspectSurface(url, surface, width, height, zoom, expectedSelecto
     if (level === "error" || /uncaught|unhandled/i.test(message)) consoleErrors.push(message);
   });
   await window.loadURL(url);
+  if (mediaFeatures.length) {
+    window.webContents.debugger.attach("1.3");
+    await window.webContents.debugger.sendCommand("Emulation.setEmulatedMedia", { media: "", features: mediaFeatures });
+  }
   window.setContentSize(width, height, false);
   window.webContents.setZoomFactor(zoom);
   if (triggerSelector) {
     await waitForVisible(window.webContents, triggerSelector);
-    await window.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(triggerSelector)})?.click()`);
+    await window.webContents.executeJavaScript(`(() => { const trigger = document.querySelector(${JSON.stringify(triggerSelector)}); trigger?.focus(); trigger?.click(); })()`);
   }
   const expectedVisible = await waitForVisible(window.webContents, expectedSelector);
+  const interactionIssues = [];
+  if (surface === "settings-destructive-dialog" && expectedVisible) {
+    const dialogAudit = await window.webContents.executeJavaScript(`(async () => {
+      const dialog = document.querySelector('.settings-dialog');
+      const controls = [...dialog.querySelectorAll('button:not([disabled]), input:not([disabled])')];
+      const cancel = controls.find((control) => control.textContent.trim() === 'Cancel');
+      const initialCancelFocus = document.activeElement === cancel;
+      const consequenceNamed = /lose access|disconnect|removed/i.test(dialog.querySelector('#settings-dialog-detail')?.textContent || '');
+      const destructiveActionNamed = controls.some((control) => /sign out|remove|disconnect|delete/i.test(control.textContent.trim()));
+      const first = controls[0]; const last = controls[controls.length - 1];
+      last.focus(); last.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+      const wrappedForward = document.activeElement === first;
+      first.focus(); first.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
+      const wrappedBackward = document.activeElement === last;
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+      return { initialCancelFocus, consequenceNamed, destructiveActionNamed, wrappedForward, wrappedBackward, closed: !document.querySelector('.settings-dialog'), restored: document.activeElement?.matches("[data-provider='chatgpt-plan'] .provider-account-actions .danger") };
+    })()`);
+    for (const [check, passed] of Object.entries(dialogAudit)) if (!passed) interactionIssues.push(`dialog ${check} check failed`);
+  }
   const audit = await window.webContents.executeJavaScript(`(${pageAudit.toString()})()`);
   const durations = [];
   if (surface === "shell") {
@@ -92,10 +131,18 @@ async function inspectSurface(url, surface, width, height, zoom, expectedSelecto
   }
   const ordered = durations.toSorted((left, right) => left - right);
   const p95 = ordered.length ? ordered[Math.floor((ordered.length - 1) * 0.95)] : 0;
-  const issues = [...audit.issues, ...consoleErrors.map((message) => `console error: ${message}`)];
+  const issues = [...audit.issues, ...interactionIssues, ...consoleErrors.map((message) => `console error: ${message}`)];
   if (!expectedVisible) issues.unshift(`expected surface ${expectedSelector} is not visible`);
   if (p95 > 150) issues.push(`warm tab interaction p95 ${p95.toFixed(1)} ms exceeds 150 ms`);
+  if (process.env.LOCUS_CAPTURE_UI === "1" && surface.includes("settings")) {
+    await window.webContents.executeJavaScript(`new Promise((resolvePromise) => requestAnimationFrame(() => requestAnimationFrame(resolvePromise)))`);
+    const captureDirectory = join(repositoryRoot, "release", "ui-captures");
+    mkdirSync(captureDirectory, { recursive: true });
+    const image = await window.webContents.capturePage();
+    writeFileSync(join(captureDirectory, `${surface}.png`), image.toPNG(), { mode: 0o600 });
+  }
   results.push({ surface, width, height, zoom, viewportWidth: audit.viewportWidth, viewportHeight: audit.viewportHeight, viewportOffsetLeft: audit.viewportOffsetLeft, bodyLeft: audit.bodyLeft, bodyClientWidth: audit.bodyClientWidth, bodyScrollWidth: audit.bodyScrollWidth, rootScrollWidth: audit.rootScrollWidth, reducedMotion: audit.reducedMotion, focusable: audit.focusable, p95TabInteractionMs: p95, issues });
+  if (window.webContents.debugger.isAttached()) window.webContents.debugger.detach();
   window.destroy();
 }
 
@@ -116,16 +163,60 @@ function pageAudit() {
     const rect = element.getBoundingClientRect();
     return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
   };
+  const renderedText = (element) => {
+    if (!element) return "";
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    const parts = [];
+    let node;
+    while ((node = walker.nextNode())) {
+      if (node.parentElement && visible(node.parentElement)) parts.push(node.nodeValue || "");
+    }
+    return parts.join(" ").replace(/\s+/g, " ").trim();
+  };
   const interactive = [...document.querySelectorAll("button, input, select, textarea, a[href], [role='button'], [role='tab']")].filter(visible);
   for (const element of interactive) {
+    const labelledBy = element.getAttribute("aria-labelledby")?.split(/\s+/).map((id) => renderedText(document.getElementById(id))).filter(Boolean).join(" ");
+    const associatedLabel = renderedText(element.labels?.[0]);
     const name = element.getAttribute("aria-label") || element.getAttribute("title")
-      || element.getAttribute("placeholder") || element.textContent?.trim();
-    if (!name) issues.push(`unnamed interactive ${element.tagName.toLowerCase()}`);
+      || labelledBy || associatedLabel || element.getAttribute("placeholder") || renderedText(element);
+    if (!name) issues.push(`unnamed interactive ${element.tagName.toLowerCase()}${element.className ? `.${String(element.className).split(/\s+/).join(".")}` : ""}`);
   }
   const ids = [...document.querySelectorAll("[id]")].map((element) => element.id);
   for (const id of new Set(ids)) if (ids.filter((candidate) => candidate === id).length > 1) issues.push(`duplicate id ${id}`);
   for (const image of document.querySelectorAll("img")) if (!image.hasAttribute("alt")) issues.push("image without alt text");
+  if (document.querySelector(".settings-surface")) {
+    const current = [...document.querySelectorAll(".settings-page-nav [aria-current='page']")];
+    const heading = document.querySelector("#settings-detail-title")?.textContent?.trim();
+    if (heading === "Search settings") {
+      if (current.length) issues.push("settings search should not mark a category as current");
+    } else {
+      if (current.length !== 1) issues.push(`settings navigation has ${current.length} current pages`);
+      if (current[0]?.textContent?.trim() !== heading) issues.push(`settings current page ${current[0]?.textContent?.trim() || "missing"} does not match ${heading || "missing heading"}`);
+      const compact = document.querySelector(".settings-compact-controls select");
+      if (compact && compact.selectedOptions[0]?.textContent?.trim() !== heading) issues.push("compact settings category does not match the selected page");
+    }
+    const requestedAnchor = new URL(location.href).searchParams.get("settingsAnchor");
+    if (requestedAnchor && document.activeElement?.id !== requestedAnchor) issues.push(`settings anchor ${requestedAnchor} was not focused`);
+  }
   if (!document.documentElement.lang) issues.push("document language is missing");
+  const accentFixture = new URL(location.href).searchParams.get("accent");
+  const appearanceFixture = new URL(location.href).searchParams.get("appearance");
+  const accentRoot = document.querySelector(".browser-shell");
+  if (accentFixture && accentRoot) {
+    const expected = accentFixture === "purple"
+      ? { brand: "#A56EFF", logo: "#BC86FF", accent: appearanceFixture === "dark" ? "#A56EFF" : "#7C53BF" }
+      : accentFixture === "FF5FA2"
+        ? { brand: "#FF5FA2", logo: "#FF5FA2", accent: "#B34371" }
+        : undefined;
+    if (expected) {
+      const style = getComputedStyle(accentRoot);
+      for (const [token, value] of Object.entries(expected)) {
+        const property = token === "logo" ? "--brand-logo" : `--${token}`;
+        const actual = style.getPropertyValue(property).trim().toUpperCase();
+        if (actual !== value) issues.push(`${property} ${actual || "missing"} did not match ${value}`);
+      }
+    }
+  }
   const bodyRect = document.body.getBoundingClientRect();
   const horizontalOverflow = document.body.scrollWidth - document.body.clientWidth;
   if (horizontalOverflow > 2) {

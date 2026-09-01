@@ -6,6 +6,7 @@ describe("browser command sender policy", () => {
   it.each<BrowserCommand>([
     { type: "open-settings" },
     { type: "close-settings" },
+    { type: "set-accent-color", preset: "purple", customHex: "4A90FF" },
     { type: "set-local-models-enabled", enabled: true },
     { type: "set-semantic-recall-enabled", enabled: true },
     { type: "clear-semantic-recall" },

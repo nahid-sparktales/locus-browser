@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Pause, Play, RotateCcw, X } from "lucide-react";
-import type { ReaderArticleState, ReaderPreferencesState } from "../shared/types.js";
+import type { AccentSelectionState, ReaderArticleState, ReaderPreferencesState } from "../shared/types.js";
+import { DEFAULT_ACCENT_SELECTION, accentCssVariables } from "../shared/accent.js";
 
 export function ReaderSurface() {
   const [article, setArticle] = useState<ReaderArticleState>();
   const [preferences, setPreferences] = useState<ReaderPreferencesState>({ theme: "locus", textScale: 1, columnWidth: "medium", lineSpacing: 1.6, rate: 1 });
+  const [accent, setAccent] = useState<AccentSelectionState>(DEFAULT_ACCENT_SELECTION);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [playing, setPlaying] = useState(false);
   const [sentenceIndex, setSentenceIndex] = useState(0);
@@ -13,11 +15,12 @@ export function ReaderSurface() {
   useEffect(() => {
     void window.locusBrowser.query({ type: "reader-current" }).then((value) => {
       const next = value as ReaderArticleState | undefined;
-      if (next) { setArticle(next); setPreferences(next.preferences); }
+      if (next) { setArticle(next); setPreferences(next.preferences); setAccent(next.accent); }
     });
+    const unsubscribeAccent = window.locusBrowser.onReaderAccent(setAccent);
     const loadVoices = () => setVoices(speechSynthesis.getVoices());
     loadVoices(); speechSynthesis.addEventListener("voiceschanged", loadVoices);
-    return () => { speechGeneration.current += 1; speechSynthesis.cancel(); speechSynthesis.removeEventListener("voiceschanged", loadVoices); };
+    return () => { unsubscribeAccent(); speechGeneration.current += 1; speechSynthesis.cancel(); speechSynthesis.removeEventListener("voiceschanged", loadVoices); };
   }, []);
 
   const sentences = useMemo(() => article ? sentenceRanges(article.text) : [], [article]);
@@ -54,7 +57,10 @@ export function ReaderSurface() {
   if (!article) return <main className="reader-surface reader-loading">Preparing Reader Mode…</main>;
   const current = sentences[sentenceIndex];
   return (
-    <main className={`reader-surface reader-theme-${preferences.theme}`} style={{ "--reader-scale": preferences.textScale, "--reader-line": preferences.lineSpacing } as React.CSSProperties}>
+    <main
+      className={`reader-surface reader-theme-${preferences.theme}`}
+      style={{ ...accentCssVariables(accent), "--reader-scale": preferences.textScale, "--reader-line": preferences.lineSpacing } as React.CSSProperties}
+    >
       <header className="reader-toolbar">
         <button className="reader-close" onClick={() => void window.locusBrowser.command({ type: "toggle-reader" })} aria-label="Exit Reader Mode"><X size={17} /></button>
         <div className="reader-title"><strong>{article.title}</strong><span>{article.byline || new URL(article.url).hostname}</span></div>

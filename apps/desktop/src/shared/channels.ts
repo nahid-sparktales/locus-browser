@@ -6,6 +6,7 @@ export const ipcChannels = {
   shellState: "browser:shell-state",
   workState: "browser:work-state",
   focusAddress: "browser:focus-address",
+  readerAccent: "browser:reader-accent",
   recorderEvent: "browser:recorder-event",
   recorderMessage: "browser:recorder-message",
 } as const;
