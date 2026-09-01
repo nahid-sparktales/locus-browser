@@ -62,6 +62,8 @@ async function inspectSurface(url, surface, width, height, zoom, expectedSelecto
     show: false,
     width,
     height,
+    useContentSize: true,
+    enableLargerThanScreen: true,
     webPreferences: { sandbox: true, nodeIntegration: false, contextIsolation: true },
   });
   window.webContents.on("console-message", (details) => {
@@ -70,6 +72,7 @@ async function inspectSurface(url, surface, width, height, zoom, expectedSelecto
     if (level === "error" || /uncaught|unhandled/i.test(message)) consoleErrors.push(message);
   });
   await window.loadURL(url);
+  window.setContentSize(width, height, false);
   window.webContents.setZoomFactor(zoom);
   if (triggerSelector) {
     await waitForVisible(window.webContents, triggerSelector);
@@ -90,7 +93,7 @@ async function inspectSurface(url, surface, width, height, zoom, expectedSelecto
   const issues = [...audit.issues, ...consoleErrors.map((message) => `console error: ${message}`)];
   if (!expectedVisible) issues.unshift(`expected surface ${expectedSelector} is not visible`);
   if (p95 > 150) issues.push(`warm tab interaction p95 ${p95.toFixed(1)} ms exceeds 150 ms`);
-  results.push({ surface, width, height, zoom, reducedMotion: audit.reducedMotion, focusable: audit.focusable, p95TabInteractionMs: p95, issues });
+  results.push({ surface, width, height, zoom, viewportWidth: audit.viewportWidth, viewportHeight: audit.viewportHeight, reducedMotion: audit.reducedMotion, focusable: audit.focusable, p95TabInteractionMs: p95, issues });
   window.destroy();
 }
 
@@ -145,7 +148,7 @@ function pageAudit() {
     });
     if (moving.length) issues.push(`${moving.length} visible elements still animate with Reduced Motion`);
   }
-  return { issues, focusable: interactive.length, reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches };
+  return { issues, focusable: interactive.length, reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches, viewportWidth: window.innerWidth, viewportHeight: window.innerHeight };
 }
 
 function serveRenderer(rawUrl, response) {
