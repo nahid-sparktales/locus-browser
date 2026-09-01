@@ -22,6 +22,8 @@ app.whenReady().then(async () => {
     const origin = `http://127.0.0.1:${address.port}`;
     await inspectSurface(`${origin}/?surface=shell`, "shell", 1440, 940, 1, ".browser-shell");
     await inspectSurface(`${origin}/?surface=shell&settings=1`, "shell-settings", 1440, 940, 1, ".settings-surface");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&chatgpt=signed-in&providers=connected`, "settings-provider-accounts", 1440, 940, 1, ".provider-account-grid");
+    await inspectSurface(`${origin}/?surface=shell&settings=1&chatgpt=signed-in&providers=connected`, "settings-provider-accounts-200-percent", 1440, 940, 2, ".provider-account-grid");
     await inspectSurface(`${origin}/?surface=shell&settings=1&walrus=connected`, "walrus-connected", 1440, 940, 1, ".walrus-disclosure");
     await inspectSurface(`${origin}/?surface=shell&settings=1&walrus=connected&walrus-manual=1`, "walrus-client-encrypted", 1440, 940, 1, ".walrus-mode-picker .active");
     await inspectSurface(`${origin}/?surface=shell&settings=1&walrus=failure`, "walrus-failure", 1440, 940, 1, ".walrus-message.error");

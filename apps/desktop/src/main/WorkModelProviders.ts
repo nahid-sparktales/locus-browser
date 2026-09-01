@@ -5,6 +5,10 @@ import type { CredentialCipher } from "./CredentialVault.js";
 
 export type ConfigurableWorkModelProviderId = "openai-api" | "kimi" | "claude-api" | "vllm";
 
+export const KIMI_MEMBERSHIP_BASE_URL = "https://api.kimi.com/coding/v1";
+export const KIMI_MEMBERSHIP_MODELS = ["kimi-for-coding", "kimi-for-coding-highspeed"] as const;
+export const KIMI_DEFAULT_MODEL = KIMI_MEMBERSHIP_MODELS[0];
+
 export interface WorkModelProviderDefinition {
   id: WorkModelProviderId;
   name: string;
@@ -54,14 +58,14 @@ export const WORK_MODEL_PROVIDERS: WorkModelProviderDefinition[] = [
   },
   {
     id: "kimi",
-    name: "Kimi",
+    name: "Kimi Membership",
     shortName: "Kimi",
-    detail: "Moonshot API models",
+    detail: "Kimi Code membership usage",
     mark: "K",
-    curatedModels: ["kimi-k3", "kimi-k2.7-code-highspeed", "kimi-k2.7-code", "kimi-k2.6"],
-    baseUrl: "https://api.moonshot.ai/v1",
+    curatedModels: [...KIMI_MEMBERSHIP_MODELS],
+    baseUrl: KIMI_MEMBERSHIP_BASE_URL,
     authStyle: "bearer",
-    listsModels: true,
+    listsModels: false,
     requiresApiKey: true,
   },
   {
@@ -120,6 +124,7 @@ export class WorkModelProviderStore {
     this.#settings = parsed.success
       ? { activeProvider: parsed.data.activeProvider, providers: parsed.data.providers }
       : { activeProvider: "chatgpt-plan", providers: {} };
+    this.migrateLegacyKimi();
   }
 
   activeProvider(): WorkModelProviderId {
@@ -165,6 +170,36 @@ export class WorkModelProviderStore {
     this.#persist();
   }
 
+  clearCredential(providerId: WorkModelProviderId): void {
+    const existing = this.#settings.providers[providerId];
+    if (!existing?.encryptedApiKey) return;
+    this.#settings.providers[providerId] = {
+      ...(existing.baseUrl ? { baseUrl: existing.baseUrl } : {}),
+      model: existing.model,
+    };
+    this.#persist();
+  }
+
+  clearProvider(providerId: WorkModelProviderId): void {
+    if (!this.#settings.providers[providerId]) return;
+    delete this.#settings.providers[providerId];
+    this.#persist();
+  }
+
+  migrateLegacyKimi(): boolean {
+    const existing = this.#settings.providers.kimi;
+    if (!existing) return false;
+    const baseUrl = existing.baseUrl?.trim().replace(/\/+$/, "");
+    const isMembershipModel = KIMI_MEMBERSHIP_MODELS.some((model) => model === existing.model);
+    if (baseUrl === KIMI_MEMBERSHIP_BASE_URL && isMembershipModel) return false;
+    this.#settings.providers.kimi = {
+      baseUrl: KIMI_MEMBERSHIP_BASE_URL,
+      model: KIMI_DEFAULT_MODEL,
+    };
+    this.#persist();
+    return true;
+  }
+
   setActive(providerId: WorkModelProviderId): void {
     this.#settings.activeProvider = providerId;
     this.#persist();
@@ -207,6 +242,26 @@ export function normalizeProviderSetup(
   return { baseUrl, model };
 }
 
+export function remoteProviderConfiguration(
+  providerId: ConfigurableWorkModelProviderId,
+  setup: { baseUrl: string; model: string },
+  apiKey: string,
+  verify = false,
+): Record<string, unknown> {
+  const definition = workModelProvider(providerId);
+  return {
+    provider: "remote",
+    base_url: setup.baseUrl,
+    api_key: apiKey,
+    model: setup.model,
+    auth_style: definition.authStyle,
+    account_label: definition.name,
+    lists_models: definition.listsModels,
+    published_context_window: publishedContextWindow(providerId, setup.model) ?? 0,
+    ...(verify ? { verify: true } : {}),
+  };
+}
+
 export function publishedContextWindow(providerId: WorkModelProviderId, model: string): number | undefined {
   const name = model.toLowerCase();
   if (providerId === "openai-api") {
@@ -220,10 +275,7 @@ export function publishedContextWindow(providerId: WorkModelProviderId, model: s
     if (name.includes("haiku-4-5") || (name.startsWith("claude-") && name.includes("-4"))) return 200_000;
   }
   if (providerId === "kimi") {
-    if (name.includes("256k")) return 256_000;
-    if (name === "k3" || name.startsWith("kimi-k3")) return 1_000_000;
-    if (name.startsWith("kimi-k2") || name.startsWith("kimi-for-coding")) return 256_000;
-    if (name.includes("128k")) return 128_000;
+    if (KIMI_MEMBERSHIP_MODELS.some((model) => model === name)) return 256_000;
   }
   return undefined;
 }

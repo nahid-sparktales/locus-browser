@@ -150,6 +150,10 @@ export class AgentRuntime extends EventEmitter {
     return await this.#requestJson("/api/chatgpt/models");
   }
 
+  async chatGPTUsage(): Promise<unknown> {
+    return await this.#requestJson("/api/chatgpt/usage");
+  }
+
   async startChatGPTLogin(): Promise<unknown> {
     return await this.#requestJson("/api/chatgpt/login/start", { method: "POST", body: "{}" });
   }

@@ -21,14 +21,22 @@ describe("Work model commands", () => {
     expect(BrowserCommandSchema.safeParse({ type: "set-local-models-enabled", enabled: "yes" }).success).toBe(false);
   });
 
-  it("strips credentials from renderer commands before they reach the broker", () => {
-    const parsed = BrowserCommandSchema.parse({
+  it("rejects credentials before renderer commands reach the broker", () => {
+    expect(BrowserCommandSchema.safeParse({
       type: "configure-work-provider",
       providerId: "openai-api",
       model: "gpt-5.6",
-      apiKey: "sk-must-not-cross-ipc",
-    });
-    expect(parsed).not.toHaveProperty("apiKey");
+      apiKey: "credential-must-not-cross-ipc",
+    }).success).toBe(false);
+  });
+
+  it("allowlists credential actions and never accepts a renderer secret", () => {
+    expect(BrowserCommandSchema.safeParse({
+      type: "test-work-provider-credential", providerId: "kimi", model: "kimi-for-coding", apiKey: "must-not-cross-ipc",
+    }).success).toBe(false);
+    expect(BrowserCommandSchema.safeParse({ type: "test-work-provider-credential", providerId: "unknown" }).success).toBe(false);
+    expect(BrowserCommandSchema.safeParse({ type: "remove-work-provider-credential", providerId: "chatgpt-plan" }).success).toBe(false);
+    expect(BrowserCommandSchema.safeParse({ type: "remove-work-provider-credential", providerId: "kimi" }).success).toBe(true);
   });
 });
 
@@ -57,8 +65,12 @@ describe("live recording commands", () => {
   it("validates speech configuration and transcript identities", () => {
     expect(BrowserCommandSchema.safeParse({
       type: "configure-speech", engine: "custom", language: "auto",
-      baseUrl: "https://speech.example.com/v1", model: "whisper-1", apiKey: "secret",
+      baseUrl: "https://speech.example.com/v1", model: "whisper-1",
     }).success).toBe(true);
+    expect(BrowserCommandSchema.safeParse({
+      type: "configure-speech", engine: "custom", language: "auto",
+      baseUrl: "https://speech.example.com/v1", model: "whisper-1", apiKey: "secret",
+    }).success).toBe(false);
     expect(BrowserCommandSchema.safeParse({ type: "delete-recording-transcript", recordingId: "not-a-uuid" }).success).toBe(false);
   });
 });

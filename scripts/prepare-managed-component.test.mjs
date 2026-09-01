@@ -28,6 +28,12 @@ const validManifest = {
       executable_path: "package/vendor/aarch64-apple-darwin/bin/codex",
       executable_sha256: "b".repeat(64),
       executable_size: 20,
+      companion_executables: [{
+        name: "codex-code-mode-host",
+        executable_path: "package/vendor/aarch64-apple-darwin/bin/codex-code-mode-host",
+        executable_sha256: "c".repeat(64),
+        executable_size: 30,
+      }],
       upstream_signing_team_id: "2DC432GLL2",
     },
   },
@@ -37,6 +43,7 @@ test("accepts the exact pinned Apple Silicon component contract", () => {
   const result = validateManagedComponentManifest(validManifest);
   assert.equal(result.version, "0.147.0");
   assert.equal(result.target.package_version, "0.147.0-darwin-arm64");
+  assert.deepEqual(result.target.companion_executables, validManifest.targets["darwin-arm64"].companion_executables);
 });
 
 test("rejects untrusted download origins and path traversal", () => {
@@ -48,6 +55,30 @@ test("rejects untrusted download origins and path traversal", () => {
     ...validManifest,
     targets: { "darwin-arm64": { ...validManifest.targets["darwin-arm64"], executable_path: "../codex" } },
   }), /remain inside/);
+  assert.throws(() => validateManagedComponentManifest({
+    ...validManifest,
+    targets: {
+      "darwin-arm64": {
+        ...validManifest.targets["darwin-arm64"],
+        companion_executables: [{
+          ...validManifest.targets["darwin-arm64"].companion_executables[0],
+          executable_path: "../codex-code-mode-host",
+        }],
+      },
+    },
+  }), /remain inside/);
+});
+
+test("rejects duplicate or malformed companion executable contracts", () => {
+  const companion = validManifest.targets["darwin-arm64"].companion_executables[0];
+  assert.throws(() => validateManagedComponentManifest({
+    ...validManifest,
+    targets: { "darwin-arm64": { ...validManifest.targets["darwin-arm64"], companion_executables: [{ ...companion, name: "codex" }] } },
+  }), /must be unique/);
+  assert.throws(() => validateManagedComponentManifest({
+    ...validManifest,
+    targets: { "darwin-arm64": { ...validManifest.targets["darwin-arm64"], companion_executables: [{ ...companion, executable_sha256: "bad" }] } },
+  }), /must be SHA-256/);
 });
 
 test("reads a manifest and validates staged file size and digest", () => {

@@ -10,11 +10,15 @@ export default async function signAgentRuntime(context) {
   const identity = process.env.CSC_NAME || developerIdIdentity() || "-";
   const candidates = walk(runtime).filter((path) => {
     const name = path.split("/").at(-1) || "";
-    return name === "codex" || name === "whisper-cli" || name === "locus-semantic-helper"
+    return name === "codex" || name === "codex-code-mode-host" || name === "whisper-cli" || name === "locus-semantic-helper"
       || name.endsWith(".so") || name.endsWith(".dylib") || /^python3(?:\.\d+)?$/.test(name);
   });
   for (const path of candidates.sort((left, right) => right.length - left.length)) {
     const arguments_ = ["--force", "--options", "runtime", "--sign", identity];
+    const name = path.split("/").at(-1) || "";
+    if (name === "codex" || name === "codex-code-mode-host") {
+      arguments_.splice(3, 0, "--preserve-metadata=entitlements");
+    }
     if (identity !== "-") arguments_.push("--timestamp");
     arguments_.push(path);
     execFileSync("/usr/bin/codesign", arguments_, { stdio: "pipe" });

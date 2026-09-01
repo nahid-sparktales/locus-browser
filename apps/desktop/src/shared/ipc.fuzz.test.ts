@@ -2,16 +2,14 @@ import { describe, expect, it } from "vitest";
 import { BrowserCommandSchema } from "./ipc.js";
 
 describe("renderer IPC fuzz boundary", () => {
-  it("rejects malformed commands and strips unexpected secret-shaped fields", () => {
-    const configured = BrowserCommandSchema.parse({
+  it("rejects malformed commands and unexpected secret-shaped fields", () => {
+    expect(BrowserCommandSchema.safeParse({
       type: "configure-work-provider",
       providerId: "openai-api",
       model: "gpt-5.6",
       apiKey: "must-not-cross-renderer-ipc",
       token: "must-not-cross-renderer-ipc",
-    });
-    expect(configured).not.toHaveProperty("apiKey");
-    expect(configured).not.toHaveProperty("token");
+    }).success).toBe(false);
 
     let state = 0xdecafbad;
     const types = [null, true, 0, "", "__proto__", "navigate", "work-send", "configure-work-provider"];

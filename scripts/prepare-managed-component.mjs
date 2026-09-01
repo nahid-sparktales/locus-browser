@@ -17,7 +17,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -57,10 +57,32 @@ export function validateManagedComponentManifest(manifest) {
   if (archiveUrl.protocol !== "https:" || archiveUrl.hostname !== REGISTRY_HOST || archiveUrl.username || archiveUrl.password || archiveUrl.search || archiveUrl.hash) {
     fail(`archive URL must be a credential-free HTTPS URL on ${REGISTRY_HOST}`);
   }
-  if (target.executable_path.startsWith("/") || target.executable_path.split("/").includes("..")) {
-    fail("executable path must remain inside the archive");
+  validateArchivePath(target.executable_path, "executable path");
+  const companions = target.companion_executables ?? [];
+  if (!Array.isArray(companions)) fail(`${TARGET}.companion_executables must be an array`);
+  const names = new Set(["codex"]);
+  for (const [index, companion] of companions.entries()) {
+    const label = `${TARGET}.companion_executables[${index}]`;
+    if (!companion || typeof companion !== "object" || Array.isArray(companion)) fail(`${label} must be an object`);
+    if (typeof companion.name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(companion.name)) {
+      fail(`${label}.name must be a safe file name`);
+    }
+    if (names.has(companion.name)) fail(`${label}.name must be unique`);
+    names.add(companion.name);
+    if (typeof companion.executable_path !== "string" || !companion.executable_path) fail(`${label}.executable_path is required`);
+    validateArchivePath(companion.executable_path, `${label}.executable_path`);
+    if (!/^[0-9a-f]{64}$/.test(companion.executable_sha256 ?? "")) fail(`${label}.executable_sha256 must be SHA-256`);
+    if (!Number.isSafeInteger(companion.executable_size) || companion.executable_size <= 0) {
+      fail(`${label}.executable_size must be a positive integer`);
+    }
   }
-  return { ...manifest, target: { ...target } };
+  return {
+    ...manifest,
+    target: {
+      ...target,
+      companion_executables: companions.map((companion) => ({ ...companion })),
+    },
+  };
 }
 
 export function sha256File(path) {
@@ -90,18 +112,20 @@ export async function prepareManagedComponent({ manifestPath, cacheRoot, destina
   const manifest = readManagedComponentManifest(manifestPath);
   const target = manifest.target;
   const cacheDirectory = join(cacheRoot, manifest.id, manifest.version, target.executable_sha256);
-  const cachedExecutable = join(cacheDirectory, "codex");
-  if (!validCachedExecutable(cachedExecutable, manifest)) {
-    await downloadAndVerify(manifest, cachedExecutable);
+  if (!validCachedComponent(cacheDirectory, manifest)) {
+    await downloadAndVerify(manifest, cacheDirectory);
   }
-  assertPinnedFile(cachedExecutable, target.executable_size, target.executable_sha256, "cached managed component");
-  verifyExecutable(cachedExecutable, manifest, false);
 
   mkdirSync(destination, { recursive: true, mode: 0o755 });
-  const stagedExecutable = join(destination, "codex");
-  copyFileSync(cachedExecutable, stagedExecutable);
-  chmodSync(stagedExecutable, 0o755);
-  assertPinnedFile(stagedExecutable, target.executable_size, target.executable_sha256, "staged managed component");
+  for (const executable of managedExecutables(target)) {
+    const cachedExecutable = join(cacheDirectory, executable.name);
+    assertPinnedFile(cachedExecutable, executable.size, executable.sha256, `cached managed component ${executable.name}`);
+    verifyExecutable(cachedExecutable, manifest, false, executable.primary);
+    const stagedExecutable = join(destination, executable.name);
+    copyFileSync(cachedExecutable, stagedExecutable);
+    chmodSync(stagedExecutable, 0o755);
+    assertPinnedFile(stagedExecutable, executable.size, executable.sha256, `staged managed component ${executable.name}`);
+  }
   copyFileSync(manifestPath, join(destination, "component.json"));
   copyFileSync(licensePath, join(destination, "LICENSE.txt"));
   writeFileSync(join(destination, "NOTICE.md"), managedComponentNotice(manifest), { mode: 0o644 });
@@ -113,25 +137,30 @@ export async function prepareManagedComponent({ manifestPath, cacheRoot, destina
     `package_version=${target.package_version}`,
     `archive_sha256=${target.archive_sha256}`,
     `executable_sha256=${target.executable_sha256}`,
+    ...target.companion_executables.map((companion) => `companion_executable_sha256.${companion.name}=${companion.executable_sha256}`),
     `upstream_signing_team_id=${target.upstream_signing_team_id}`,
     "",
   ].join("\n"), { mode: 0o644 });
   process.stdout.write(`Pinned ${manifest.name} ${manifest.version} staged at ${destination}.\n`);
 }
 
-function validCachedExecutable(path, manifest) {
-  if (!existsSync(path)) return false;
+function validCachedComponent(cacheDirectory, manifest) {
   try {
-    assertPinnedFile(path, manifest.target.executable_size, manifest.target.executable_sha256, "cached managed component");
-    verifyExecutable(path, manifest, true);
+    for (const executable of managedExecutables(manifest.target)) {
+      const path = join(cacheDirectory, executable.name);
+      if (!existsSync(path)) return false;
+      assertPinnedFile(path, executable.size, executable.sha256, `cached managed component ${executable.name}`);
+      verifyExecutable(path, manifest, true, executable.primary);
+    }
     return true;
   } catch {
     return false;
   }
 }
 
-async function downloadAndVerify(manifest, cachedExecutable) {
+async function downloadAndVerify(manifest, cacheDirectory) {
   const target = manifest.target;
+  const executables = managedExecutables(target);
   const workDirectory = mkdtempSync(join(tmpdir(), "locus-managed-component."));
   try {
     const archive = join(workDirectory, "component.tgz");
@@ -153,29 +182,34 @@ async function downloadAndVerify(manifest, cachedExecutable) {
 
     const extractionRoot = join(workDirectory, "extracted");
     mkdirSync(extractionRoot, { mode: 0o700 });
-    execFileSync("/usr/bin/tar", ["-xzf", archive, "-C", extractionRoot, target.executable_path], { stdio: "pipe" });
-    const extractedExecutable = resolve(extractionRoot, target.executable_path);
-    if (!isContained(extractionRoot, extractedExecutable)) throw new Error("managed component escaped its extraction root");
-    assertPinnedFile(extractedExecutable, target.executable_size, target.executable_sha256, "managed component executable");
-    chmodSync(extractedExecutable, 0o755);
-    verifyExecutable(extractedExecutable, manifest, true);
+    execFileSync("/usr/bin/tar", ["-xzf", archive, "-C", extractionRoot, ...executables.map((item) => item.archivePath)], { stdio: "pipe" });
+    mkdirSync(cacheDirectory, { recursive: true, mode: 0o755 });
+    for (const executable of executables) {
+      const extractedExecutable = resolve(extractionRoot, executable.archivePath);
+      if (!isContained(extractionRoot, extractedExecutable)) throw new Error("managed component escaped its extraction root");
+      assertPinnedFile(extractedExecutable, executable.size, executable.sha256, `managed component executable ${executable.name}`);
+      chmodSync(extractedExecutable, 0o755);
+      verifyExecutable(extractedExecutable, manifest, true, executable.primary);
 
-    mkdirSync(dirname(cachedExecutable), { recursive: true, mode: 0o755 });
-    const temporaryCachePath = join(dirname(cachedExecutable), `.codex-${process.pid}-${Date.now()}`);
-    copyFileSync(extractedExecutable, temporaryCachePath);
-    chmodSync(temporaryCachePath, 0o755);
-    renameSync(temporaryCachePath, cachedExecutable);
+      const cachedExecutable = join(cacheDirectory, executable.name);
+      const temporaryCachePath = join(cacheDirectory, `.${executable.name}-${process.pid}-${Date.now()}`);
+      copyFileSync(extractedExecutable, temporaryCachePath);
+      chmodSync(temporaryCachePath, 0o755);
+      renameSync(temporaryCachePath, cachedExecutable);
+    }
   } finally {
     rmSync(workDirectory, { recursive: true, force: true });
   }
 }
 
-function verifyExecutable(path, manifest, verifyUpstreamSignature) {
+function verifyExecutable(path, manifest, verifyUpstreamSignature, verifyVersion) {
   const target = manifest.target;
   const fileDescription = execFileSync("/usr/bin/file", [path], { encoding: "utf8" });
   if (!fileDescription.includes("Mach-O 64-bit executable arm64")) throw new Error("managed component is not an Apple Silicon executable");
-  const version = execFileSync(path, ["--version"], { encoding: "utf8", timeout: 15_000 }).trim();
-  if (version !== `codex-cli ${manifest.version}`) throw new Error(`managed component version mismatch: ${version || "unknown"}`);
+  if (verifyVersion) {
+    const version = execFileSync(path, ["--version"], { encoding: "utf8", timeout: 15_000 }).trim();
+    if (version !== `codex-cli ${manifest.version}`) throw new Error(`managed component version mismatch: ${version || "unknown"}`);
+  }
   if (!verifyUpstreamSignature) return;
   execFileSync("/usr/bin/codesign", ["--verify", "--strict", "--verbose=2", path], { stdio: "pipe" });
   const signature = spawnSync("/usr/bin/codesign", ["-dv", "--verbose=4", path], { encoding: "utf8" });
@@ -188,6 +222,31 @@ function verifyExecutable(path, manifest, verifyUpstreamSignature) {
 
 function managedComponentNotice(manifest) {
   return `# ${manifest.name}\n\nLocus Browser bundles ${manifest.name} ${manifest.version} for its optional ChatGPT Plan route.\n\n- Package: ${manifest.target.package}@${manifest.target.package_version}\n- Source: ${manifest.source_url}\n- Documentation: ${manifest.documentation_url}\n- License: ${manifest.license} (see LICENSE.txt)\n`;
+}
+
+function managedExecutables(target) {
+  return [
+    {
+      name: "codex",
+      archivePath: target.executable_path,
+      sha256: target.executable_sha256,
+      size: target.executable_size,
+      primary: true,
+    },
+    ...target.companion_executables.map((companion) => ({
+      name: companion.name,
+      archivePath: companion.executable_path,
+      sha256: companion.executable_sha256,
+      size: companion.executable_size,
+      primary: false,
+    })),
+  ];
+}
+
+function validateArchivePath(path, label) {
+  if (path.startsWith("/") || path.split("/").includes("..")) {
+    fail(`${label} must remain inside the archive`);
+  }
 }
 
 function isContained(root, candidate) {

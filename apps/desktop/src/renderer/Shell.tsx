@@ -9,6 +9,7 @@ import {
 import type { BrowserCommand } from "../shared/ipc.js";
 import type { Appearance, BrowserTabState, PaletteResultState, ResearchBoardState, SearchEngine, SemanticRecallResultState, ShellState as BrowserAppState, SidebarSection, TabStewardPreviewState } from "../shared/types.js";
 import { useShellState } from "./useSurfaceState.js";
+import { ModelSettings } from "./ModelSettings.js";
 
 const searchProviders: Array<{ id: SearchEngine; name: string; detail: string; mark: string }> = [
   { id: "duckduckgo", name: "DuckDuckGo", detail: "Privacy-focused", mark: "D" },
@@ -1102,56 +1103,19 @@ function SettingsSectionHeading({ title, detail }: { title: string; detail: stri
   return <header className="settings-section-heading"><h2>{title}</h2><p>{detail}</p></header>;
 }
 
-function ModelSettings({ state }: { state: BrowserAppState }) {
-  const primaryProviders = state.work.model.providers.filter((provider) => provider.id !== "local");
-  return (
-    <section className="settings-page-section" id="settings-models">
-      <SettingsSectionHeading title="AI models" detail="Choose which model sources appear in Work Mode." />
-      <div className="settings-card model-settings-card">
-        <div className="model-context-guidance" role="note">
-          <CircleAlert size={16} />
-          <span><strong>Use a large-context model for browser work</strong><small>128K context is the practical minimum for shorter sessions. 200K or more is recommended for long pages, recordings, and multi-step work.</small></span>
-        </div>
-        <div className="primary-model-sources" aria-label="Primary model sources">
-          {primaryProviders.map((provider) => <span key={provider.id}><i>{provider.mark}</i>{provider.name}</span>)}
-        </div>
-        <button type="button" role="switch" aria-checked={state.settings.localModelsEnabled} className="local-model-toggle" onClick={() => void command({ type: "set-local-models-enabled", enabled: !state.settings.localModelsEnabled })}>
-          <span><strong>Local Work models</strong><small>Show Ollama models in the Work model picker. Off by default because local inference can slow browsing.</small></span>
-          <span className={`settings-switch ${state.settings.localModelsEnabled ? "on" : ""}`} aria-hidden="true"><span /></span>
-        </button>
-        <p className="local-model-note">This setting affects Work Mode only. On-device speech transcription remains available separately.</p>
-        <div className="ai-display-settings">
-          <SettingRow label="Thinking" detail="How model reasoning appears in Chat">
-            <select value={state.settings.thinkingVisibility} onChange={(event) => void command({ type: "set-thinking-visibility", visibility: event.target.value as BrowserAppState["settings"]["thinkingVisibility"] })}>
-              <option value="hidden">Hidden</option><option value="collapsed">Collapsed</option><option value="expanded">Expanded</option>
-            </select>
-          </SettingRow>
-          <SettingRow label="Tool activity" detail="How agent tool runs appear in Chat">
-            <select value={state.settings.toolActivityVisibility} onChange={(event) => void command({ type: "set-tool-activity-visibility", visibility: event.target.value as BrowserAppState["settings"]["toolActivityVisibility"] })}>
-              <option value="verbose">Verbose</option><option value="collapsed">Collapsed</option><option value="hidden">Hidden</option>
-            </select>
-          </SettingRow>
-        </div>
-      </div>
-    </section>
-  );
-}
-
 function SpeechSettings({ state }: { state: BrowserAppState }) {
   const speech = state.settings.speech;
   const [engine, setEngine] = useState(speech.engine);
   const [baseUrl, setBaseUrl] = useState(speech.customBaseUrl ?? "https://");
   const [model, setModel] = useState(speech.customModel ?? "whisper-1");
-  const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState("");
   const save = async (engine: BrowserAppState["settings"]["speech"]["engine"] = speech.engine) => {
     setError("");
     try {
       await command({
         type: "configure-speech", engine, language: speech.language,
-        ...(engine === "custom" ? { baseUrl, model, ...(apiKey ? { apiKey } : {}) } : {}),
+        ...(engine === "custom" ? { baseUrl, model } : {}),
       });
-      setApiKey("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Speech settings could not be saved");
     }
@@ -1169,8 +1133,8 @@ function SpeechSettings({ state }: { state: BrowserAppState }) {
           <form onSubmit={(event) => { event.preventDefault(); void save("custom"); }}>
             <label><span>HTTPS or loopback URL</span><input type="url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://speech.example.com/v1" /></label>
             <label><span>Model</span><input value={model} onChange={(event) => setModel(event.target.value)} /></label>
-            <label><span>API key</span><input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="Leave blank to keep saved key" autoComplete="off" /></label>
-            <button type="submit">Save custom speech</button>
+            <p>The API key, if needed, is entered in a macOS masked prompt after you choose Save.</p>
+            <button type="submit">Save & enter key…</button>
           </form>
         )}
         {error ? <p className="recording-error" role="alert">{error}</p> : null}
