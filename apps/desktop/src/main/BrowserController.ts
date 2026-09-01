@@ -37,8 +37,7 @@ import {
 } from "@locus/extensions";
 import { z } from "zod";
 import { ipcChannels } from "../shared/channels.js";
-import type { BrowserCommand } from "../shared/ipc.js";
-import type { BrowserQuery } from "../shared/ipc.js";
+import type { BrowserCommand, BrowserQuery } from "../shared/ipc.js";
 import type {
   Appearance,
   BrowserAppState,
@@ -70,6 +69,7 @@ import type {
   WorkModelOptionState,
   WorkModelProviderId,
   WorkModelState,
+  ChatGPTUsageState,
   WorkPlanState,
   WorkDockState,
   WorkState,
@@ -78,6 +78,10 @@ import type {
   WalrusMemoryResultState,
 } from "../shared/types.js";
 import { AgentRuntime, type AgentEvent } from "./AgentRuntime.js";
+import { normalizeChatGPTUsage, preferredChatGPTModel } from "./ChatGPTUsage.js";
+import { probeKimiMembership } from "./KimiMembershipProbe.js";
+import { ManagedAssistantEventAdapter } from "./ManagedAssistantEvents.js";
+import { commitVerifiedProviderConnection, removeProviderCredential } from "./WorkProviderLifecycle.js";
 import { publicationScopeForCommand, SurfaceStatePublisher, type StatePublicationScope } from "./SurfaceStatePublisher.js";
 import { BrowserDatabase, type StoredDownload, type StoredTab, type StoredTabGroup } from "./BrowserDatabase.js";
 import { CredentialVault } from "./CredentialVault.js";
@@ -101,7 +105,7 @@ import {
   deduplicatedWorkModels,
   enabledWorkModelProviders,
   normalizeProviderSetup,
-  publishedContextWindow,
+  remoteProviderConfiguration,
   workModelProvider,
   type ConfigurableWorkModelProviderId,
 } from "./WorkModelProviders.js";
@@ -328,6 +332,7 @@ export class BrowserController {
   readonly #activeDownloads = new Map<string, Electron.DownloadItem>();
   readonly #hardenedSessions = new WeakSet<Electron.Session>();
   readonly #statePublisher = new SurfaceStatePublisher((surfaces) => this.#publishState(surfaces));
+  readonly #managedAssistantEvents = new ManagedAssistantEventAdapter();
   #sessionId: string = randomUUID();
   #workView: WebContentsView | undefined;
   #activeTabId: string | undefined;
@@ -375,6 +380,8 @@ export class BrowserController {
   #workModel: WorkModelState = initialWorkModelState();
   #workModelCatalogs = new Map<WorkModelProviderId, WorkModelOptionState[]>();
   #chatGPTAccount = ChatGPTAccountSchema.parse({ status: "signed_out" });
+  #chatGPTUsage: ChatGPTUsageState = { windows: [] };
+  #activateChatGPTAfterSignIn = false;
   #chatGPTPollTimer: NodeJS.Timeout | undefined;
   #chatGPTPollStartedAt = 0;
   #workModelSwitching = false;
@@ -1204,13 +1211,28 @@ export class BrowserController {
         for (const article of this.#readerArticles.values()) article.preferences = this.#readerPreferences;
         break;
       case "configure-speech":
-        this.#speechSettings.save({
-          engine: command.engine,
-          language: command.language,
-          ...(command.baseUrl !== undefined ? { baseUrl: command.baseUrl } : {}),
-          ...(command.model !== undefined ? { model: command.model } : {}),
-          ...(command.apiKey !== undefined ? { apiKey: command.apiKey } : {}),
-        });
+        if (command.engine === "custom") {
+          const apiKey = await promptForNativeSecret({
+            title: "Configure custom speech",
+            message: "Enter the endpoint API key. Leave it empty to keep the encrypted key already saved on this Mac, or to use an endpoint that does not require one.",
+            confirmLabel: "Save",
+          });
+          if (apiKey === undefined) break;
+          this.#speechSettings.save({
+            engine: command.engine,
+            language: command.language,
+            ...(command.baseUrl !== undefined ? { baseUrl: command.baseUrl } : {}),
+            ...(command.model !== undefined ? { model: command.model } : {}),
+            ...(apiKey ? { apiKey } : {}),
+          });
+        } else {
+          this.#speechSettings.save({
+            engine: command.engine,
+            language: command.language,
+            ...(command.baseUrl !== undefined ? { baseUrl: command.baseUrl } : {}),
+            ...(command.model !== undefined ? { model: command.model } : {}),
+          });
+        }
         this.#settings = this.#loadSettings();
         break;
       case "download-speech-model":
@@ -1461,6 +1483,12 @@ export class BrowserController {
         break;
       case "select-work-model":
         await this.#selectWorkModel(command.providerId, command.model);
+        break;
+      case "test-work-provider-credential":
+        await this.#testWorkProviderCredential(command.providerId, command.model, command.baseUrl);
+        break;
+      case "remove-work-provider-credential":
+        await this.#removeWorkProviderCredential(command.providerId);
         break;
       case "start-chatgpt-login":
         await this.#startChatGPTLogin();
@@ -3481,10 +3509,13 @@ export class BrowserController {
     });
     this.#runtime.on("event", (event: AgentEvent) => void this.#handleAgentEvent(event));
   }
-
   async #handleAgentEvent(event: AgentEvent): Promise<void> {
     const type = String(event.type ?? "");
     if (await this.#handleResearchAgentEvent(event)) return;
+    const managedActivity = this.#managedAssistantEvents.apply(this.#messages, event);
+    if (managedActivity) {
+      this.#busy = true; this.#workActivity = managedActivity; this.#broadcast(); return;
+    }
     const nextPlan = updateWorkPlan(this.#workPlan, event);
     if (nextPlan !== this.#workPlan) this.#workPlan = nextPlan;
     const nextTerminal = updateWorkTerminal(this.#workTerminal, event);
@@ -3875,23 +3906,20 @@ export class BrowserController {
       this.#workModelMessage = `Connecting ${definition.name}…`;
       this.#rebuildWorkModelState();
       this.#broadcast();
-      const response = AgentProviderStateSchema.parse(await this.#runtime.configureProvider({
-        provider: "remote",
-        base_url: setup.baseUrl,
-        api_key: apiKey,
-        model: setup.model,
-        auth_style: definition.authStyle,
-        account_label: definition.name,
-        lists_models: definition.listsModels,
-        published_context_window: publishedContextWindow(providerId, setup.model) ?? 0,
-        verify: true,
-      }));
-      this.#workModelProviders.saveProvider(
-        providerId,
-        setup,
-        enteredKey ? enteredKey : savedKey ? undefined : "",
-      );
-      this.#workModelProviders.setActive(providerId);
+      const connect = async () => AgentProviderStateSchema.parse(await this.#runtime.configureProvider(remoteProviderConfiguration(providerId, setup, apiKey, true)));
+      const persist = () => this.#workModelProviders.saveProvider(providerId, setup, enteredKey ? enteredKey : savedKey ? undefined : "");
+      const response = providerId === "kimi"
+        ? await commitVerifiedProviderConnection({
+            verify: () => probeKimiMembership(apiKey, setup.model),
+            connect,
+            persist,
+            activate: () => this.#workModelProviders.setActive(providerId),
+          })
+        : await connect();
+      if (providerId !== "kimi") {
+        persist();
+        this.#workModelProviders.setActive(providerId);
+      }
       await this.#refreshActiveAgentCatalog(providerId).catch(() => undefined);
       this.#workModelMessage = `Using ${definition.shortName} · ${response.model || setup.model}`;
     } catch (error) {
@@ -3930,6 +3958,78 @@ export class BrowserController {
     }
   }
 
+  async #testWorkProviderCredential(
+    providerId: ConfigurableWorkModelProviderId,
+    requestedModel?: string,
+    rawBaseUrl?: string,
+  ): Promise<void> {
+    if (this.#busy || this.#runtimeState !== "online" || this.#workModelSwitching) return;
+    const definition = workModelProvider(providerId);
+    const config = this.#workModelProviders.config(providerId);
+    const model = requestedModel || config?.model || definition.curatedModels[0] || "";
+    const setup = normalizeProviderSetup(providerId, rawBaseUrl || config?.baseUrl, model);
+    const apiKey = this.#workModelProviders.apiKey(providerId);
+    if (definition.requiresApiKey && !apiKey) throw new Error(`Connect ${definition.name} before testing it`);
+    const previousProvider = this.#workModelProviders.activeProvider();
+    const previousModel = this.#workModelProviders.config(previousProvider)?.model || this.#workModel.activeModel;
+    let remoteRouteWasTouched = false;
+    this.#workModelSwitching = true;
+    this.#workModelMessage = `Testing ${definition.name}…`;
+    this.#rebuildWorkModelState();
+    this.#broadcast();
+    try {
+      if (providerId === "kimi") {
+        await probeKimiMembership(apiKey, setup.model);
+      } else {
+        remoteRouteWasTouched = true;
+        await this.#runtime.configureProvider(remoteProviderConfiguration(providerId, setup, apiKey, true));
+      }
+      this.#workModelMessage = `${definition.name} connection verified`;
+    } catch (error) {
+      this.#workModelMessage = agentRequestError(error, `Could not verify ${definition.name}`);
+    } finally {
+      if (remoteRouteWasTouched) {
+        await this.#restoreWorkModelRoute(previousProvider, previousModel);
+      }
+      this.#workModelSwitching = false;
+      this.#rebuildWorkModelState();
+      this.#broadcast();
+    }
+  }
+  async #removeWorkProviderCredential(providerId: ConfigurableWorkModelProviderId): Promise<void> {
+    if (this.#busy || this.#runtimeState !== "online" || this.#workModelSwitching) return;
+    const definition = workModelProvider(providerId);
+    this.#workModelSwitching = true;
+    this.#workModelMessage = `Disconnecting ${definition.name}…`;
+    this.#rebuildWorkModelState();
+    this.#broadcast();
+    try {
+      await removeProviderCredential({
+        providerId,
+        active: this.#workModelProviders.activeProvider() === providerId,
+        clearInMemory: async () => { await this.#runtime.configureProvider({ provider: "ollama" }); },
+        clearCredential: () => this.#workModelProviders.clearCredential(providerId),
+        clearProvider: () => this.#workModelProviders.clearProvider(providerId),
+      });
+      this.#workModelCatalogs.delete(providerId);
+      this.#workModelMessage = `${definition.name} disconnected. Choose or connect a provider to use Work.`;
+    } catch (error) {
+      this.#workModelMessage = agentRequestError(error, `Could not disconnect ${definition.name}`);
+    } finally {
+      this.#workModelSwitching = false;
+      this.#rebuildWorkModelState();
+      this.#broadcast();
+    }
+  }
+  async #restoreWorkModelRoute(providerId: WorkModelProviderId, model: string): Promise<void> {
+    try {
+      if (this.#providerCanConnect(providerId)) await this.#applyWorkModelRoute(providerId, model);
+      else await this.#runtime.configureProvider({ provider: "ollama" });
+    } catch {
+      await this.#runtime.configureProvider({ provider: "ollama" }).catch(() => undefined);
+    }
+  }
+
   async #applyWorkModelRoute(providerId: WorkModelProviderId, requestedModel: string): Promise<void> {
     const definition = workModelProvider(providerId);
     const model = requestedModel.trim();
@@ -3962,17 +4062,10 @@ export class BrowserController {
     if (definition.requiresApiKey && !apiKey) throw new Error(`${definition.name} needs an API key`);
     const selected = model || config.model;
     if (!selected) throw new Error("Choose a model before switching providers");
-    const state = AgentProviderStateSchema.parse(await this.#runtime.configureProvider({
-      provider: "remote",
-      base_url: config.baseUrl,
-      api_key: apiKey,
-      model: selected,
-      auth_style: definition.authStyle,
-      account_label: definition.name,
-      lists_models: definition.listsModels,
-      published_context_window: publishedContextWindow(providerId, selected) ?? 0,
-    }));
-    this.#workModelProviders.saveProvider(providerId, { baseUrl: config.baseUrl, model: state.model || selected });
+    const setup = normalizeProviderSetup(providerId, config.baseUrl, selected);
+    if (providerId === "kimi") await probeKimiMembership(apiKey, setup.model);
+    const state = AgentProviderStateSchema.parse(await this.#runtime.configureProvider(remoteProviderConfiguration(providerId, setup, apiKey)));
+    this.#workModelProviders.saveProvider(providerId, { baseUrl: setup.baseUrl, model: state.model || setup.model });
     this.#workModelProviders.setActive(providerId);
   }
 
@@ -3981,6 +4074,7 @@ export class BrowserController {
     try {
       const result = ChatGPTLoginSchema.parse(await this.#runtime.startChatGPTLogin());
       await shell.openExternal(result.auth_url);
+      this.#activateChatGPTAfterSignIn = true;
       this.#chatGPTAccount = { ...this.#chatGPTAccount, status: "signing_in", message: "Finish signing in in the page that opened." };
       this.#workModelMessage = "Finish signing in with ChatGPT, then return to Locus Browser";
       clearInterval(this.#chatGPTPollTimer);
@@ -4009,6 +4103,8 @@ export class BrowserController {
     if (this.#busy || this.#runtimeState !== "online") return;
     try {
       this.#chatGPTAccount = ChatGPTAccountSchema.parse(await this.#runtime.signOutChatGPT());
+      this.#chatGPTUsage = { windows: [] };
+      this.#activateChatGPTAfterSignIn = false;
       this.#workModelCatalogs.delete("chatgpt-plan");
       if (this.#workModelProviders.activeProvider() === "chatgpt-plan") {
         if (this.#settings.localModelsEnabled) {
@@ -4058,6 +4154,7 @@ export class BrowserController {
       this.#chatGPTAccount = ChatGPTAccountSchema.parse(await this.#runtime.chatGPTAccount(refresh));
       if (this.#chatGPTAccount.status === "signed_in") {
         const models = ChatGPTModelsSchema.parse(await this.#runtime.chatGPTModels());
+        this.#chatGPTUsage = normalizeChatGPTUsage(await this.#runtime.chatGPTUsage().catch(() => ({})));
         this.#workModelCatalogs.set("chatgpt-plan", models.models.map((model) => ({
           id: model.id,
           name: model.display_name || model.id,
@@ -4066,6 +4163,18 @@ export class BrowserController {
         clearInterval(this.#chatGPTPollTimer);
         this.#chatGPTPollTimer = undefined;
         this.#workModelMessage = "ChatGPT Plan is connected";
+        if (this.#activateChatGPTAfterSignIn) {
+          this.#activateChatGPTAfterSignIn = false;
+          const selected = preferredChatGPTModel(models.models);
+          if (selected) {
+            try {
+              await this.#applyWorkModelRoute("chatgpt-plan", selected);
+              this.#workModelMessage = `Using ChatGPT Plan · ${selected}`;
+            } catch (error) {
+              this.#workModelMessage = agentRequestError(error, "ChatGPT signed in, but its default model could not be activated");
+            }
+          }
+        }
       } else if (this.#chatGPTAccount.status === "runtime_unavailable") {
         clearInterval(this.#chatGPTPollTimer);
         this.#chatGPTPollTimer = undefined;
@@ -4075,6 +4184,7 @@ export class BrowserController {
         status: "runtime_unavailable",
         message: agentRequestError(error, "ChatGPT Plan is unavailable"),
       });
+      this.#chatGPTUsage = { windows: [] };
     }
   }
 
@@ -4114,7 +4224,13 @@ export class BrowserController {
     const values: WorkModelOptionState[] = [
       ...(configuredModel ? [{ id: configuredModel, name: configuredModel }] : []),
       ...(this.#workModelCatalogs.get(providerId) ?? []),
-      ...definition.curatedModels.map((name) => ({ id: name, name })),
+      ...definition.curatedModels.map((name) => ({
+        id: name,
+        name,
+        ...(providerId === "kimi"
+          ? { detail: name === "kimi-for-coding-highspeed" ? "5–6× faster · Allegretto or higher · about 3× usage" : "Standard · all Kimi Code membership plans" }
+          : {}),
+      })),
     ];
     return deduplicatedWorkModels(values);
   }
@@ -4145,6 +4261,12 @@ export class BrowserController {
             status: signingIn ? "signing-in" as const : signedIn ? "ready" as const : unavailable ? "unavailable" as const : "needs-sign-in" as const,
             statusMessage: signingIn ? "Finish sign-in in your browser" : signedIn ? accountDetail || "Signed in" : this.#chatGPTAccount.message || "Sign in required",
             models,
+            account: {
+              ...(this.#chatGPTAccount.email ? { email: this.#chatGPTAccount.email } : {}),
+              ...(this.#chatGPTAccount.plan_type ? { plan: this.#chatGPTAccount.plan_type } : {}),
+              ...(this.#chatGPTAccount.runtime_version ? { runtimeVersion: this.#chatGPTAccount.runtime_version } : {}),
+            },
+            usage: this.#chatGPTUsage,
           };
         }
         if (definition.id === "local") {
@@ -4167,7 +4289,7 @@ export class BrowserController {
           mark: definition.mark,
           configured,
           status: configured ? "ready" as const : definition.id === "vllm" ? "needs-setup" as const : "needs-key" as const,
-          statusMessage: configured ? definition.id === "vllm" ? "Endpoint saved on this Mac" : "Key saved on this Mac" : definition.id === "vllm" ? "Endpoint setup required" : "API key required",
+          statusMessage: configured ? definition.id === "vllm" ? "Endpoint saved on this Mac" : "Key saved on this Mac" : definition.id === "vllm" ? "Endpoint setup required" : definition.id === "kimi" ? "Membership key required" : "API key required",
           models,
           ...(config?.baseUrl ? { baseUrl: config.baseUrl } : {}),
         };

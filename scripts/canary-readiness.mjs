@@ -1,5 +1,5 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -95,6 +95,11 @@ check("Pinned managed ChatGPT component contract", () => {
   for (const field of ["archive_sha256", "executable_sha256"]) {
     if (!/^[0-9a-f]{64}$/.test(target[field] ?? "")) throw new Error(`${field} is not pinned`);
   }
+  const codeModeHost = target.companion_executables?.find((item) => item.name === "codex-code-mode-host");
+  if (!codeModeHost || !/^[0-9a-f]{64}$/.test(codeModeHost.executable_sha256 ?? "")
+    || !Number.isSafeInteger(codeModeHost.executable_size) || codeModeHost.executable_size <= 0) {
+    throw new Error("Code Mode host companion is not pinned");
+  }
 });
 check("Pinned Electron compatibility evidence", () => {
   const registry = JSON.parse(readFileSync(join(root, "packages/extensions/registry.json"), "utf8"));
@@ -103,7 +108,7 @@ check("Pinned Electron compatibility evidence", () => {
 });
 check("Pinned platform canary contract", () => {
   const workflow = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
-  if (!workflow.includes("ref: v0.1.0-canary.5")) throw new Error("browser CI is not pinned to the reviewed platform tag");
+  if (!workflow.includes("ref: v0.1.0-canary.7")) throw new Error("browser CI is not pinned to the reviewed platform tag");
 });
 check("Discoverable canary update contract", () => {
   const workflow = readFileSync(join(root, ".github/workflows/canary-release.yml"), "utf8");
@@ -175,12 +180,22 @@ if (release) {
     const componentRoot = join(root, "release/mac-arm64/Locus Browser.app/Contents/Resources/AgentRuntime/components/codex-app-server");
     const packagedManifest = join(componentRoot, "component.json");
     const executable = join(componentRoot, "codex");
+    const codeModeHost = join(componentRoot, "codex-code-mode-host");
     if (sha256(packagedManifest) !== sha256(codexComponentPath)) throw new Error("packaged component contract differs from the platform release");
     const reported = execFileSync(executable, ["--version"], { encoding: "utf8", timeout: 15_000 }).trim();
     if (reported !== `codex-cli ${codexComponent.version}`) throw new Error(`unexpected helper version ${reported || "unknown"}`);
     const file = execFileSync("/usr/bin/file", [executable], { encoding: "utf8" });
     if (!file.includes("Mach-O 64-bit executable arm64")) throw new Error("helper is not Apple Silicon");
     execFileSync("/usr/bin/codesign", ["--verify", "--strict", "--verbose=2", executable], { stdio: "pipe" });
+    const hostFile = execFileSync("/usr/bin/file", [codeModeHost], { encoding: "utf8" });
+    if (!hostFile.includes("Mach-O 64-bit executable arm64")) throw new Error("Code Mode host is not Apple Silicon");
+    execFileSync("/usr/bin/codesign", ["--verify", "--strict", "--verbose=2", codeModeHost], { stdio: "pipe" });
+    for (const path of [executable, codeModeHost]) {
+      const entitlements = signedEntitlements(path);
+      for (const entitlement of ["com.apple.security.cs.allow-jit", "com.apple.security.cs.allow-unsigned-executable-memory"]) {
+        if (!entitlements.includes(`<key>${entitlement}</key>`)) throw new Error(`${entitlement} is missing from ${path}`);
+      }
+    }
   });
   check("Bundled semantic helper", () => {
     const executable = join(root, "release/mac-arm64/Locus Browser.app/Contents/Resources/AgentRuntime/components/semantic/locus-semantic-helper");
@@ -230,4 +245,10 @@ function serviceOrigin(raw) {
 
 function sha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function signedEntitlements(path) {
+  const result = spawnSync("/usr/bin/codesign", ["-d", "--entitlements", ":-", path], { encoding: "utf8" });
+  if (result.status !== 0) throw new Error(`could not inspect signed entitlements for ${path}`);
+  return `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
 }

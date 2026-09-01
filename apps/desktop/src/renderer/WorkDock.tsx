@@ -209,7 +209,7 @@ function ModelPicker({ state, close }: { state: BrowserAppState; close: () => vo
         ) : provider.id !== "vllm" && provider.status === "ready" ? <p className="model-empty">No models were reported. Refresh to try again.</p> : null}
 
         {(provider.id === "openai-api" || provider.id === "kimi" || provider.id === "claude-api") && provider.configured ? (
-          <button type="button" className="model-secondary-action" disabled={disabled} onClick={reconnectProvider}><KeyRound size={13} />Update API key</button>
+          <button type="button" className="model-secondary-action" disabled={disabled} onClick={reconnectProvider}><KeyRound size={13} />{provider.id === "kimi" ? "Update membership key" : "Update API key"}</button>
         ) : null}
         {provider.id === "chatgpt-plan" && provider.status === "ready" ? (
           <button type="button" className="model-secondary-action danger" disabled={disabled} onClick={() => void command({ type: "sign-out-chatgpt" })}><LogOut size={13} />Sign out</button>

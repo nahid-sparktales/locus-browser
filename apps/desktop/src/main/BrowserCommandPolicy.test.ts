@@ -56,6 +56,8 @@ describe("browser command sender policy", () => {
     { type: "delete-sync-account" },
     { type: "configure-speech", engine: "local", language: "auto" },
     { type: "download-speech-model" },
+    { type: "test-work-provider-credential", providerId: "kimi" },
+    { type: "remove-work-provider-credential", providerId: "kimi" },
     { type: "start-recording", shareLevel: "read", tabAudio: true, microphone: true, saveVideo: false },
     { type: "pause-recording" },
     { type: "resume-recording" },

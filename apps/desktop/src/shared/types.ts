@@ -580,6 +580,25 @@ export interface WorkModelOptionState {
   vision?: boolean;
 }
 
+export interface ChatGPTUsageWindowState {
+  id: string;
+  label: string;
+  usedPercent: number;
+  windowDurationMinutes?: number;
+  resetsAt?: number;
+  reached: boolean;
+}
+
+export interface ChatGPTUsageState {
+  windows: ChatGPTUsageWindowState[];
+}
+
+export interface ChatGPTAccountState {
+  email?: string;
+  plan?: string;
+  runtimeVersion?: string;
+}
+
 export interface WorkModelProviderState {
   id: WorkModelProviderId;
   name: string;
@@ -590,6 +609,8 @@ export interface WorkModelProviderState {
   statusMessage: string;
   models: WorkModelOptionState[];
   baseUrl?: string;
+  account?: ChatGPTAccountState;
+  usage?: ChatGPTUsageState;
 }
 
 export interface WorkModelState {

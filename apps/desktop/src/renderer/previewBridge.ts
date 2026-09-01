@@ -10,6 +10,8 @@ const previewPairing = previewParams.has("pairing");
 const previewExtensions = previewParams.has("extensions");
 const previewRecording = previewParams.has("recording");
 const previewSettings = previewParams.has("settings");
+const previewChatGPTSignedIn = previewParams.get("chatgpt") === "signed-in";
+const previewProvidersConnected = previewParams.get("providers") === "connected";
 const previewSplit = previewParams.has("split");
 const previewPalette = previewParams.has("palette");
 const previewRecall = previewParams.has("recall");
@@ -299,17 +301,19 @@ const previewState: BrowserAppState = {
     portableMemory: previewWalrusAttached ? [{ blobId: "walrus-blob-preview", title: "Portable research finding", characters: 684, sourceUrl: "https://example.com/report" }] : [],
     workspace: { name: "locus-browser", path: "/Users/nahid/Documents/locus-browser" },
     model: {
-      activeProvider: "openai-api",
-      activeModel: "gpt-5.6",
-      label: "ChatGPT API · gpt-5.6",
+      activeProvider: previewChatGPTSignedIn ? "chatgpt-plan" : "openai-api",
+      activeModel: previewChatGPTSignedIn ? "gpt-5.3-codex" : "gpt-5.6",
+      label: previewChatGPTSignedIn ? "ChatGPT Plan · gpt-5.3-codex" : "ChatGPT API · gpt-5.6",
       switching: false,
       message: "Model options are ready",
       providers: [
-        { id: "chatgpt-plan", name: "ChatGPT Plan", detail: "Use included ChatGPT subscription usage", mark: "P", configured: false, status: "needs-sign-in", statusMessage: "Sign in required", models: [{ id: "gpt-5.3-codex", name: "gpt-5.3-codex" }] },
+        previewChatGPTSignedIn
+          ? { id: "chatgpt-plan", name: "ChatGPT Plan", detail: "Use included ChatGPT subscription usage", mark: "P", configured: true, status: "ready", statusMessage: "nahid@example.com · plus", models: [{ id: "gpt-5.3-codex", name: "GPT-5.3 Codex" }, { id: "gpt-5.2-codex", name: "GPT-5.2 Codex" }], account: { email: "nahid@example.com", plan: "plus", runtimeVersion: "0.147.0" }, usage: { windows: [{ id: "primary", label: "Primary window", usedPercent: 38, windowDurationMinutes: 300, resetsAt: 1_788_200_000, reached: false }, { id: "secondary", label: "Secondary window", usedPercent: 12, windowDurationMinutes: 10_080, resetsAt: 1_788_800_000, reached: false }] } }
+          : { id: "chatgpt-plan", name: "ChatGPT Plan", detail: "Use included ChatGPT subscription usage", mark: "P", configured: false, status: "needs-sign-in", statusMessage: "Sign in required", models: [{ id: "gpt-5.3-codex", name: "gpt-5.3-codex" }], account: {}, usage: { windows: [] } },
         { id: "openai-api", name: "ChatGPT API", detail: "OpenAI API key and usage billing", mark: "O", configured: true, status: "ready", statusMessage: "Key saved on this Mac", models: [{ id: "gpt-5.6", name: "gpt-5.6" }, { id: "gpt-5", name: "gpt-5" }] },
-        { id: "claude-api", name: "Claude API", detail: "Anthropic API key", mark: "C", configured: false, status: "needs-key", statusMessage: "API key required", models: [{ id: "claude-sonnet-5", name: "claude-sonnet-5" }] },
-        { id: "kimi", name: "Kimi", detail: "Moonshot API models", mark: "K", configured: false, status: "needs-key", statusMessage: "API key required", models: [{ id: "kimi-k3", name: "kimi-k3" }] },
-        { id: "vllm", name: "vLLM", detail: "Your OpenAI-compatible endpoint", mark: "V", configured: false, status: "needs-setup", statusMessage: "Endpoint setup required", models: [] },
+        { id: "claude-api", name: "Claude API", detail: "Anthropic API key", mark: "C", configured: previewProvidersConnected, status: previewProvidersConnected ? "ready" : "needs-key", statusMessage: previewProvidersConnected ? "Key saved on this Mac" : "API key required", models: [{ id: "claude-sonnet-5", name: "claude-sonnet-5" }] },
+        { id: "kimi", name: "Kimi Membership", detail: "Kimi Code membership usage", mark: "K", configured: previewProvidersConnected, status: previewProvidersConnected ? "ready" : "needs-key", statusMessage: previewProvidersConnected ? "Key saved on this Mac" : "Membership key required", models: [{ id: "kimi-for-coding", name: "kimi-for-coding", detail: "Standard · all Kimi Code membership plans" }, { id: "kimi-for-coding-highspeed", name: "kimi-for-coding-highspeed", detail: "5–6× faster · Allegretto or higher · about 3× usage" }] },
+        { id: "vllm", name: "vLLM", detail: "Your OpenAI-compatible endpoint", mark: "V", configured: previewProvidersConnected, status: previewProvidersConnected ? "ready" : "needs-setup", statusMessage: previewProvidersConnected ? "Endpoint saved on this Mac" : "Endpoint setup required", models: previewProvidersConnected ? [{ id: "organization/model", name: "organization/model" }] : [], ...(previewProvidersConnected ? { baseUrl: "http://127.0.0.1:8000/v1" } : {}) },
       ],
     },
     plan: {
@@ -551,6 +555,19 @@ function applyPreviewCommand(command: BrowserCommand): void {
         previewState.work.model.activeProvider = command.providerId;
         previewState.work.model.activeModel = command.model;
         previewState.work.model.label = `${provider.name} · ${command.model}`;
+      }
+      break;
+    }
+    case "test-work-provider-credential":
+      previewState.work.model.message = `${previewState.work.model.providers.find((item) => item.id === command.providerId)?.name || "Provider"} connection verified`;
+      break;
+    case "remove-work-provider-credential": {
+      const provider = previewState.work.model.providers.find((item) => item.id === command.providerId);
+      if (provider) {
+        provider.configured = false;
+        provider.status = command.providerId === "vllm" ? "needs-setup" : "needs-key";
+        provider.statusMessage = command.providerId === "vllm" ? "Endpoint setup required" : "API key required";
+        if (command.providerId === "vllm") delete provider.baseUrl;
       }
       break;
     }

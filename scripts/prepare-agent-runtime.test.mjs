@@ -33,9 +33,11 @@ test("the speech cache is invalidated when the build contract changes", () => {
 });
 
 test("every standalone managed runtime executable enters the hardened signing pass", () => {
-  for (const name of ["codex", "whisper-cli", "locus-semantic-helper"]) {
+  for (const name of ["codex", "codex-code-mode-host", "whisper-cli", "locus-semantic-helper"]) {
     assert.match(signingScript, new RegExp(`name === ["']${name}["']`));
   }
+  assert.match(signingScript, /name === "codex" \|\| name === "codex-code-mode-host"/);
+  assert.match(signingScript, /--preserve-metadata=entitlements/);
   assert.match(signingScript, /--options", "runtime/);
   assert.match(signingScript, /--timestamp/);
 });

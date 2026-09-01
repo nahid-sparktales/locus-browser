@@ -57,6 +57,8 @@ const SHELL_ONLY_COMMANDS = new Set<BrowserCommand["type"]>([
   "delete-sync-account",
   "configure-speech",
   "download-speech-model",
+  "test-work-provider-credential",
+  "remove-work-provider-credential",
   "start-recording",
   "pause-recording",
   "resume-recording",
