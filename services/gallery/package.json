@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@locus/extensions": "workspace:*",
-    "fastify": "5.12.1",
+    "fastify": "5.12.5",
     "zod": "4.4.3"
   },
   "devDependencies": {
