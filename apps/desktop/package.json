@@ -58,7 +58,7 @@
     "electron-builder": "26.15.3",
     "fflate": "0.8.2",
     "tsup": "8.5.1",
-    "vite": "8.2.2",
+    "vite": "8.2.4",
     "wait-on": "9.0.4"
   }
 }
